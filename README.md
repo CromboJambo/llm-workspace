@@ -52,7 +52,7 @@ Workspace includes path dependencies to cuda-oxide crates (not published):
 
 ## Current State
 
-GGUF parsing, safetensors storage, and weight loading are functional. The GPU kernel path (tcgen05/WGMMA) is stubbed. The transformer model architecture is not yet implemented. See `ROADMAP.md` for the implementation plan.
+GGUF parsing, safetensors storage, and weight loading are functional. The transformer model architecture (`LlamaModel`) is implemented: Q/K/V projections, multi-head attention (CPU), FFN with SwiGLU, RMSNorm, RoPE, LM head, and end-to-end `forward()` all wired. The GPU kernel path (tcgen05/WGMMA) is stubbed. Remaining: tokenizer wiring, sampling integration, and connecting the GPU-focused `Model::run()` loop to `LlamaModel` weights. See `ROADMAP.md` for the implementation plan.
 
 ## License
 

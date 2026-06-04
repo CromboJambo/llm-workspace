@@ -1,21 +1,21 @@
 # LLM-Workspace Roadmap
 
-## Status: ~30% — Infrastructure solid, inference pipeline not yet connected
+## Status: ~75% — Transformer layers wired, tokenizer and sampling remain
 
 ### Phase 1: CPU Inference (~2-3 weeks)
 
 **Goal:** Run a real llama-style model on CPU using existing GGUF weights.
 
-- [ ] Wire `load_gguf_weights()` output to `Model` — map tensor names to model layers
-- [ ] Implement Q/K/V linear projections
-- [ ] Implement multi-head attention (CPU path)
-- [ ] Implement FFN layers with SwiGLU activation
-- [ ] Implement RMSNorm (layer normalization)
-- [ ] Implement RoPE positional embeddings
+- [x] Wire `load_gguf_weights()` output to `Model` — map tensor names to model layers
+- [x] Implement Q/K/V linear projections
+- [x] Implement multi-head attention (CPU path)
+- [x] Implement FFN layers with SwiGLU activation
+- [x] Implement RMSNorm (layer normalization)
+- [x] Implement RoPE positional embeddings
 - [ ] Wire tokenizer to GGUF vocab or fast tokenizer
-- [ ] Implement token sampling (temperature, top-p, top-k)
-- [ ] Implement LM head (final linear layer for logits)
-- [ ] Connect `Model::run()` to actual weight data end-to-end
+- [ ] Wire token sampling to model (temp, top-p, top-k) — `sample()` exists in `transformer/sampling.rs` but not wired into `LlamaModel`
+- [x] Implement LM head (final linear layer for logits)
+- [ ] Connect `Model::run()` to actual weight data end-to-end — GPU-focused `Model` in `model.rs` has `prefill()`/`decode()` but doesn't use `LlamaModel` weights
 
 ### Phase 2: GPU Acceleration (~3-4 weeks)
 
