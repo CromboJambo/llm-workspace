@@ -1,0 +1,282 @@
+//! Single transformer layer: attention + feed-forward with RMSNorm.
+//!
+//! Llama-style layer:
+//!   x = x + attn(RMSNorm(x), Wq, Wk, Wv, Wo)
+//!   x = x + ffn(RMSNorm(x), W1, W2, W3)
+//!
+//! FFN uses SwiGLU: gate = x @ W1^T, up = x @ W3^T,
+//!   output = silu(gate) * (up @ W2^T)
+
+use crate::transformer::linear::Linear;
+use crate::transformer::rms_norm::RmsNorm;
+use crate::transformer::rope::RopeConfig;
+
+/// SwiGLU activation: silu(x) * y
+fn swiglu(x: &[f32], y: &[f32], size: usize) -> Vec<f32> {
+    let mut output = vec![0.0f32; size];
+    for i in 0..size {
+        // silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
+        let sigmoid = if x[i] >= 0.0 {
+            1.0 / (1.0 + (-x[i]).exp())
+        } else {
+            x[i] / (1.0 + x[i].exp())
+        };
+        output[i] = sigmoid * x[i] * y[i];
+    }
+    output
+}
+
+/// Attention mechanism for a single transformer layer.
+pub struct Attention {
+    pub wq: Linear,
+    pub wk: Linear,
+    pub wv: Linear,
+    pub wo: Linear,
+    pub rope: RopeConfig,
+    pub num_heads: usize,
+    pub num_kv_heads: usize,
+    pub head_dim: usize,
+    pub kv_dim: usize, // num_kv_heads * head_dim
+}
+
+impl Attention {
+    pub fn new(
+        wq: Linear,
+        wk: Linear,
+        wv: Linear,
+        wo: Linear,
+        head_dim: usize,
+        num_heads: usize,
+        num_kv_heads: usize,
+    ) -> Self {
+        let kv_dim = num_kv_heads * head_dim;
+        Self {
+            wq, wk, wv, wo,
+            rope: RopeConfig::new(head_dim, 10000.0, 4096),
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            kv_dim,
+        }
+    }
+
+    /// Compute scaled dot-product attention.
+    ///
+    /// input: [batch, embed_dim]
+    /// Returns: [batch, embed_dim]
+    pub fn forward(&self, x: &[f32], batch_size: usize, seq_len: usize, start_pos: usize) -> Vec<f32> {
+        let embed_dim = self.num_heads * self.head_dim;
+
+        // Q/K/V projections
+        let q = self.wq.forward(x, batch_size);
+        let k = self.wk.forward(x, batch_size);
+        let v = self.wv.forward(x, batch_size);
+
+        // Apply RoPE to Q and K
+        let mut q_rope = q;
+        let mut k_rope = k;
+        self.rope.apply(
+            &mut q_rope, &mut k_rope,
+            self.num_heads, seq_len, start_pos,
+        );
+
+        // Scaled dot-product attention: softmax(Q @ K^T / sqrt(head_dim)) @ V
+        let scale = 1.0 / (self.head_dim as f32).sqrt();
+
+        // Q: [batch, seq_len, num_heads, head_dim] → [batch*seq_len, num_heads*head_dim]
+        // K: [batch, seq_len, num_heads, head_dim] → [batch*seq_len, num_heads*head_dim]
+        // We compute attention per position in the batch
+
+        let mut output = vec![0.0f32; batch_size * seq_len * embed_dim];
+
+        for b in 0..batch_size {
+            for pos in 0..seq_len {
+                let q_idx = (b * seq_len + pos) * embed_dim;
+                let mut attn_weights = vec![0.0f32; seq_len];
+
+                // Q @ K^T for this position
+                for j in 0..seq_len {
+                    let mut sum = 0.0f32;
+                    for h in 0..self.num_heads {
+                        let q_start = q_idx + h * self.head_dim;
+                        let k_start = (b * seq_len + j) * self.kv_dim + h / (self.num_heads / self.num_kv_heads) * self.head_dim;
+                        for d in 0..self.head_dim {
+                            sum += q_rope[q_start + d] * k_rope[k_start + d];
+                        }
+                    }
+                    attn_weights[j] = sum * scale;
+                }
+
+                // Softmax
+                let max_val = attn_weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exps: Vec<f32> = attn_weights.iter().map(|w| (*w - max_val).exp()).collect();
+                let exp_sum: f32 = exps.iter().sum();
+                let softmax_out: Vec<f32> = if exp_sum > 0.0 {
+                    exps.iter().map(|e| e / exp_sum).collect()
+                } else {
+                    vec![1.0 / seq_len as f32; seq_len]
+                };
+
+                // softmax_out @ V
+                let mut attn_output = vec![0.0f32; self.num_heads * self.head_dim];
+                for h in 0..self.num_heads {
+                    let group = h / (self.num_heads / self.num_kv_heads);
+                    for d in 0..self.head_dim {
+                        let mut sum = 0.0f32;
+                        for j in 0..seq_len {
+                            let v_start = (b * seq_len + j) * self.kv_dim + group * self.head_dim + d;
+                            sum += softmax_out[j] * v[v_start];
+                        }
+                        attn_output[h * self.head_dim + d] = sum;
+                    }
+                }
+
+                // Output projection: attn_output @ wo^T
+                let wo_output = self.wo.forward(&attn_output, 1);
+                for i in 0..embed_dim {
+                    output[(b * seq_len + pos) * embed_dim + i] = wo_output[i];
+                }
+            }
+        }
+
+        // Add residual: output = output + x (but we need to accumulate, not replace)
+        // Actually the caller handles residual in the layer
+        output
+    }
+}
+
+/// Feed-forward network with SwiGLU activation.
+pub struct FeedForward {
+    pub w1: Linear,
+    pub w2: Linear,
+    pub w3: Linear,
+    pub intermediate_dim: usize,
+}
+
+impl FeedForward {
+    pub fn new(w1: Linear, w2: Linear, w3: Linear, intermediate_dim: usize) -> Self {
+        Self { w1, w2, w3, intermediate_dim }
+    }
+
+    /// Forward pass: silu(x @ W1^T) * (x @ W3^T) @ W2^T
+    pub fn forward(&self, x: &[f32], batch_size: usize) -> Vec<f32> {
+        let gate = self.w1.forward(x, batch_size);
+        let up = self.w3.forward(x, batch_size);
+
+        let swiglu_out = swiglu(&gate, &up, self.intermediate_dim);
+        let output = self.w2.forward(&swiglu_out, batch_size);
+
+        output
+    }
+}
+
+/// Single transformer layer.
+pub struct TransformerLayer {
+    pub attention: Attention,
+    pub feed_forward: FeedForward,
+    pub attention_norm: RmsNorm,
+    pub ffn_norm: RmsNorm,
+}
+
+impl TransformerLayer {
+    pub fn new(
+        attention: Attention,
+        feed_forward: FeedForward,
+        attention_norm: RmsNorm,
+        ffn_norm: RmsNorm,
+    ) -> Self {
+        Self {
+            attention,
+            feed_forward,
+            attention_norm,
+            ffn_norm,
+        }
+    }
+
+    /// Forward pass through one transformer layer.
+    ///
+    /// input: [batch, embed_dim]
+    /// Returns: [batch, embed_dim] with residual connections applied
+    pub fn forward(&self, x: &[f32], batch_size: usize, seq_len: usize, start_pos: usize) -> Vec<f32> {
+        let embed_dim = x.len() / batch_size;
+
+        // Attention sub-layer: x + attn(RMSNorm(x))
+        let normed = self.attention_norm.forward(x, batch_size);
+        let attn_out = self.attention.forward(&normed, batch_size, seq_len, start_pos);
+
+        // Residual: x + attn_out
+        let mut h = vec![0.0f32; batch_size * embed_dim];
+        for i in 0..h.len() {
+            h[i] = x[i] + attn_out[i];
+        }
+
+        // FFN sub-layer: h + ffn(RMSNorm(h))
+        let normed_ffn = self.ffn_norm.forward(&h, batch_size);
+        let ffn_out = self.feed_forward.forward(&normed_ffn, batch_size);
+
+        // Residual: h + ffn_out
+        for i in 0..h.len() {
+            h[i] += ffn_out[i];
+        }
+
+        h
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swiglu_basic() {
+        let x = vec![1.0, 2.0];
+        let y = vec![1.0, 1.0];
+        let output = swiglu(&x, &y, 2);
+        // silu(1) * 1 = 1 * sigmoid(1) ≈ 0.731
+        // silu(2) * 1 = 2 * sigmoid(2) ≈ 1.762
+        assert!(output[0] > 0.0 && output[0] < 1.0);
+        assert!(output[1] > 1.0 && output[1] < 2.0);
+    }
+
+    #[test]
+    fn feed_forward_forward() {
+        let w1 = Linear::new(vec![1.0; 4], None, 2, 2);
+        let w2 = Linear::new(vec![1.0; 4], None, 2, 2);
+        let w3 = Linear::new(vec![1.0; 4], None, 2, 2);
+        let ff = FeedForward::new(w1, w2, w3, 2);
+
+        let x = vec![1.0, 0.0];
+        let output = ff.forward(&x, 1);
+        assert_eq!(output.len(), 2);
+    }
+
+    #[test]
+    fn transformer_layer_forward() {
+        let embed_dim = 4;
+        let head_dim = 2;
+        let num_heads = 2;
+        let num_kv_heads = 2;
+        let intermediate_dim = 8;
+
+        let wq = Linear::new(vec![1.0; embed_dim * embed_dim], None, embed_dim, embed_dim);
+        let wk = Linear::new(vec![1.0; embed_dim * embed_dim], None, embed_dim, embed_dim);
+        let wv = Linear::new(vec![1.0; embed_dim * embed_dim], None, embed_dim, embed_dim);
+        let wo = Linear::new(vec![1.0; embed_dim * embed_dim], None, embed_dim, embed_dim);
+        let attention = Attention::new(wq, wk, wv, wo, head_dim, num_heads, num_kv_heads);
+
+        let w1 = Linear::new(vec![1.0; embed_dim * intermediate_dim], None, embed_dim, intermediate_dim);
+        let w2 = Linear::new(vec![1.0; intermediate_dim * embed_dim], None, intermediate_dim, embed_dim);
+        let w3 = Linear::new(vec![1.0; embed_dim * intermediate_dim], None, embed_dim, intermediate_dim);
+        let feed_forward = FeedForward::new(w1, w2, w3, intermediate_dim);
+
+        let norm_weight = vec![1.0; embed_dim];
+        let attention_norm = RmsNorm::new(norm_weight.clone(), 1e-5);
+        let ffn_norm = RmsNorm::new(norm_weight, 1e-5);
+
+        let layer = TransformerLayer::new(attention, feed_forward, attention_norm, ffn_norm);
+
+        let x = vec![1.0; embed_dim];
+        let output = layer.forward(&x, 1, 1, 0);
+        assert_eq!(output.len(), embed_dim);
+    }
+}
