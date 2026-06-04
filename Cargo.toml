@@ -1,0 +1,91 @@
+[workspace]
+members = [
+    "llm-runner",
+    "llm-plug-in",
+    "safetensors",
+    "gguf",
+    "gguf-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["CrabJar Contributors"]
+description = "LLM inference stack: runner, plug-in protocol, safetensors, GGUF parser"
+
+[workspace.dependencies]
+# ML inference
+candle-core = { version = "0.10.2", package = "candle-core" }
+candle-nn = { version = "0.10.2" }
+candle-transformers = { version = "0.10.2" }
+candle-datasets = { version = "0.10.2" }
+
+# Tokenization
+tokenizers = { version = "0.22.0", default-features = false }
+tiktoken-rs = "0.11.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Database
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# UUID / time
+uuid = { version = "1.23.0", features = ["v4"] }
+chrono = { version = "0.4.38", default-features = false, features = ["serde", "now"] }
+
+# Tracing
+tracing = "0.1"
+tracing-appender = "0.2"
+
+# Device backend
+cudarc = { version = "0.19.4", features = ["std", "cublas", "cublaslt", "curand", "driver", "nvrtc", "f16", "f8", "cuda-12050", "dynamic-linking"], default-features = false }
+intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
+gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
+half = { version = "2.7.1", features = ["num-traits", "use-intrinsics", "rand_distr"] }
+float8 = { version = "0.7.0", features = ["num-traits", "rand_distr"] }
+libc = "0.2.186"
+libm = "0.2.15"
+num-traits = { version = "0.2.19", default-features = false, features = ["libm"] }
+num_cpus = "1.15.0"
+rayon = "1.10.0"
+
+# Asset loading
+hf-hub = "0.4.1"
+zip = { version = "8.6.0", default-features = false }
+memmap2 = { version = "0.9.3", features = ["stable_deref_trait"] }
+safetensors = { version = "0.7.0", default-features = false }
+
+# Regex
+regex = { version = "1.12.3", default-features = false, features = ["perf", "unicode"] }
+
+# Async
+tokio = { version = "1.51.1", features = ["full"] }
+
+# Testing
+tempfile = "3.24.0"
+criterion = { version = "0.8", default-features = false }
+rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }
+rand_distr = { version = "0.6.0", default-features = false }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utility
+path-absolutize = "3.1"
+sha2 = "0.10"
+hex = "0.4"
+byteorder = { version = "1.4.3", default-features = false }
+
+[profile.profiling]
+inherits = "release"
+debug = 2

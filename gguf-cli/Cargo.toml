@@ -1,0 +1,22 @@
+[package]
+name = "crabjar-gguf-cli"
+publish = false
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["CrabJar Contributors"]
+description = "CLI tool to inspect GGUF model files: header, metadata, tensor list, quantization info"
+
+[[bin]]
+name = "gguf-inspect"
+path = "src/main.rs"
+
+[dependencies]
+crabjar-gguf = { path = "../gguf" }
+clap.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

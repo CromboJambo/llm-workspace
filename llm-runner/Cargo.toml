@@ -1,0 +1,53 @@
+[package]
+name = "crabjar-llm-runner"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "LLM inference engine: tensor computation, model loading, tokenizer, device backend, external runner bridge"
+
+[dependencies]
+candle-core.workspace = true
+candle-nn.workspace = true
+candle-transformers.workspace = true
+candle-datasets.workspace = true
+tokenizers.workspace = true
+tiktoken-rs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+crabjar-llm-plug-in = { path = "../llm-plug-in" }
+crabjar-safetensors = { path = "../safetensors" }
+crabjar-gguf = { path = "../gguf" }
+cudarc.workspace = true
+intel-mkl-src.workspace = true
+gemm.workspace = true
+half.workspace = true
+float8.workspace = true
+libc.workspace = true
+libm.workspace = true
+num-traits.workspace = true
+num_cpus.workspace = true
+rayon.workspace = true
+cuda-device = { path = "/home/crombo/reference_materials/cuda-oxide/crates/cuda-device" }
+cuda-host = { path = "/home/crombo/reference_materials/cuda-oxide/crates/cuda-host" }
+cuda-core = { path = "/home/crombo/reference_materials/cuda-oxide/crates/cuda-core" }
+hf-hub.workspace = true
+zip.workspace = true
+memmap2.workspace = true
+safetensors.workspace = true
+regex = { version = "1.12.3", default-features = false, features = ["perf", "unicode"] }
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+criterion.workspace = true
+rand.workspace = true
+rand_distr.workspace = true

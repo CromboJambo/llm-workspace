@@ -1,0 +1,747 @@
+//! Model struct with per-layer KV cache allocation and inference loop.
+//!
+//! Manages the full model forward pass: prefill (batched) and decode
+//! (auto-regressive single-token) modes.
+//!
+//! ## Architecture
+//!
+//! ```text
+//! Model
+//!   ├── config: ModelConfig (num_layers, num_heads, head_dim, max_seq)
+//!   ├── engine: InferenceEngine (GEMM + attention kernels)
+//!   ├── kv_caches: Vec<Kvcache> (one per transformer layer)
+//!   ├── seq_len: usize (current sequence length)
+//!   └── prefill() / decode() → inference loop
+//! ```
+//!
+//! ## Inference Loop
+//!
+//! 1. **Prefill**: Process full prompt batch, compute attention, append KV to cache
+//! 2. **Decode**: Auto-regressive loop — generate one token at a time
+//!    - Extract last token's query
+//!    - Append new KV pair
+//!    - Compute attention over full cache (box_y=1 for decode)
+//!    - Sample next token from output logits
+
+use crate::error::RunnerError;
+use crate::inference_engine::InferenceEngine;
+use crate::kernel::attention::{AttentionArch, AttentionConfig};
+use crate::kernel::kvcache::Kvcache;
+use crate::kernel::DeviceBuffer;
+use half::f16;
+
+/// Configuration for a transformer model.
+#[derive(Debug, Clone)]
+pub struct ModelConfig {
+    /// Number of transformer layers.
+    pub num_layers: usize,
+    /// Number of attention heads (may differ from encoder/decoder heads in GQA).
+    pub num_heads: usize,
+    /// Dimension per attention head.
+    pub head_dim: usize,
+    /// Maximum sequence length (context window).
+    pub max_seq: usize,
+    /// Number of attention heads per group (for GQA, <= num_heads).
+    pub num_kv_heads: usize,
+    /// Whether to use TMA for attention data movement.
+    pub use_tma: bool,
+    /// Target attention architecture.
+    pub attention_arch: AttentionArch,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            num_layers: 32,
+            num_heads: 8,
+            head_dim: 64,
+            max_seq: 2048,
+            num_kv_heads: 8,
+            use_tma: true,
+            attention_arch: AttentionArch::default(),
+        }
+    }
+}
+
+impl ModelConfig {
+    pub fn with_num_layers(mut self, num_layers: usize) -> Self {
+        self.num_layers = num_layers;
+        self
+    }
+
+    pub fn with_num_heads(mut self, num_heads: usize) -> Self {
+        self.num_heads = num_heads;
+        self
+    }
+
+    pub fn with_head_dim(mut self, head_dim: usize) -> Self {
+        self.head_dim = head_dim;
+        self
+    }
+
+    pub fn with_max_seq(mut self, max_seq: usize) -> Self {
+        self.max_seq = max_seq;
+        self
+    }
+
+    pub fn with_num_kv_heads(mut self, num_kv_heads: usize) -> Self {
+        self.num_kv_heads = num_kv_heads;
+        self
+    }
+
+    pub fn with_tma(mut self, use_tma: bool) -> Self {
+        self.use_tma = use_tma;
+        self
+    }
+
+    pub fn with_attention_arch(mut self, arch: AttentionArch) -> Self {
+        self.attention_arch = arch;
+        self
+    }
+
+    /// Build the attention configuration for this model.
+    pub fn attention_config(&self) -> AttentionConfig {
+        AttentionConfig::default()
+            .with_num_heads(self.num_heads)
+            .with_head_dim(self.head_dim)
+            .with_max_seq(self.max_seq)
+            .with_arch(self.attention_arch)
+            .with_tma(self.use_tma)
+    }
+}
+
+/// Model with per-layer KV cache allocation and inference loop.
+///
+/// Manages the full transformer forward pass including:
+/// - Per-layer KV cache allocation
+/// - Prefill mode: process full prompt batch
+/// - Decode mode: auto-regressive single-token generation
+pub struct Model {
+    /// Model configuration.
+    pub config: ModelConfig,
+    /// Inference engine with GEMM and attention kernels.
+    pub engine: InferenceEngine,
+    /// Per-layer KV caches (one pair per layer: key_cache and value_cache).
+    pub kv_caches: Vec<(Kvcache, Kvcache)>,
+    /// Current sequence length (total tokens processed).
+    pub seq_len: usize,
+}
+
+impl Model {
+    /// Create a new model with per-layer KV cache allocation.
+    ///
+    /// `config` — model configuration (num_layers, num_heads, head_dim, max_seq).
+    /// `engine` — inference engine with GEMM and attention kernels.
+    /// `on_device` — whether KV caches are allocated on device.
+    pub fn new(config: ModelConfig, engine: InferenceEngine, on_device: bool) -> Self {
+        let num_layers = config.num_layers;
+        let num_heads = config.num_heads;
+        let head_dim = config.head_dim;
+        let max_seq = config.max_seq;
+
+        let kv_caches = (0..num_layers)
+            .map(|_| {
+                let key_cache = Kvcache::new(num_heads, head_dim, max_seq, on_device);
+                let value_cache = Kvcache::new(num_heads, head_dim, max_seq, on_device);
+                (key_cache, value_cache)
+            })
+            .collect();
+
+        Self {
+            config,
+            engine,
+            kv_caches,
+            seq_len: 0,
+        }
+    }
+
+    /// Create a model with a specific GEMM kernel.
+    pub fn with_gemm(config: ModelConfig, gemm: Box<dyn crate::kernel::GemmKernel>, on_device: bool) -> Self {
+        let engine = InferenceEngine::with_gemm(
+            candle_core::Device::Cpu,
+            candle_core::DType::F32,
+            gemm,
+        );
+        Self::new(config, engine, on_device)
+    }
+
+    /// Reset the model state: clear KV caches and sequence length.
+    pub fn reset(&mut self) {
+        self.seq_len = 0;
+        for (key_cache, value_cache) in &mut self.kv_caches {
+            key_cache.clear();
+            value_cache.clear();
+        }
+    }
+
+    /// Get the current sequence length.
+    pub fn current_seq_len(&self) -> usize {
+        self.seq_len
+    }
+
+    /// Check if the model has capacity for more tokens.
+    pub fn has_capacity(&self) -> bool {
+        self.seq_len < self.config.max_seq
+    }
+
+    /// Get the attention configuration for this model.
+    pub fn attention_config(&self) -> AttentionConfig {
+        self.config.attention_config()
+    }
+
+    /// Process a batch of tokens in prefill mode.
+    ///
+    /// `query` — [batch_size x (num_heads * head_dim)] f16 query tensor.
+    ///   Each row represents the query for one position in the batch.
+    ///
+    /// Returns per-layer output tensors [batch_size x (num_heads * head_dim)] f32.
+    /// The last layer's output is typically passed through the LM head for logits.
+    pub fn prefill(&mut self, query: DeviceBuffer<f16>) -> Result<Vec<DeviceBuffer<f32>>, RunnerError> {
+        let num_heads = self.config.num_heads;
+        let head_dim = self.config.head_dim;
+        let out_dim = num_heads * head_dim;
+        let batch_size = query.len().checked_div(out_dim).unwrap_or(0);
+
+        if batch_size == 0 {
+            return Ok(vec![]);
+        }
+
+        let config = self.attention_config();
+        let mut outputs = Vec::with_capacity(self.kv_caches.len());
+
+        for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
+            // Compute attention for this layer
+            let output = if key_cache.seq_len() == 0 {
+                // First prefill step: no KV cache yet, use query as output (identity projection)
+                DeviceBuffer::from_host(
+                    query.as_slice().unwrap_or(&[])
+                        .iter()
+                        .map(|&x| x.to_f32())
+                        .collect()
+                )
+            } else {
+                self.engine.attention(
+                    &query,
+                    key_cache,
+                    value_cache,
+                    None,
+                    &config,
+                )?
+            };
+
+            // Append the last row of output as new KV for this layer
+            // In a real model, this would come from the Q/K projection and V projection weights
+            let last_row_size = out_dim;
+            let last_row: Vec<f16> = if let Some(slice) = output.as_slice() {
+                let start = (batch_size - 1) * last_row_size;
+                let end = start + last_row_size;
+                if end <= slice.len() {
+                    slice[start..end]
+                        .iter()
+                        .map(|&x| f16::from_f32(x))
+                        .collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+
+            outputs.push(output);
+
+            if !last_row.is_empty() {
+                let value = last_row.clone();
+                key_cache.append(&last_row, &value).map_err(|e| {
+                    RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}"))
+                })?;
+            }
+        }
+
+        self.seq_len += batch_size;
+        Ok(outputs)
+    }
+
+    /// Generate a single token in decode mode.
+    ///
+    /// `query` — [1 x (num_heads * head_dim)] f16 query tensor for the new position.
+    ///
+    /// Returns the output tensor [1 x (num_heads * head_dim)] f32.
+    pub fn decode(&mut self, query: DeviceBuffer<f16>) -> Result<DeviceBuffer<f32>, RunnerError> {
+        let num_heads = self.config.num_heads;
+        let head_dim = self.config.head_dim;
+        let out_dim = num_heads * head_dim;
+
+        let config = self.attention_config();
+        let mut last_output = DeviceBuffer::from_host(vec![0.0f32; out_dim]);
+
+        for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
+            // Compute attention for this layer
+            let output = if key_cache.seq_len() == 0 {
+                DeviceBuffer::from_host(
+                    query.as_slice().unwrap_or(&[])
+                        .iter()
+                        .map(|&x| x.to_f32())
+                        .collect()
+                )
+            } else {
+                self.engine.attention(
+                    &query,
+                    key_cache,
+                    value_cache,
+                    None,
+                    &config,
+                )?
+            };
+
+            last_output = output;
+
+            // Append the last row as new KV for this layer
+            // In a real model, this would come from the Q/K projection and V projection weights
+            if let Some(slice) = last_output.as_slice() {
+                let key: Vec<f16> = slice.iter()
+                    .map(|&x| f16::from_f32(x))
+                    .collect();
+                let value: Vec<f16> = key.clone();
+                key_cache.append(&key, &value).map_err(|e| {
+                    RunnerError::Tensor(format!("Layer {} KV append failed: {e}", layer_idx))
+                })?;
+            }
+        }
+
+        self.seq_len += 1;
+        Ok(last_output)
+    }
+
+    /// Run a full prefill → decode loop.
+    ///
+    /// `prefill_query` — [prefill_len x (num_heads * head_dim)] f16 for the prompt.
+    /// `decode_steps` — number of auto-regressive tokens to generate.
+    ///
+    /// Returns the sequence of decode outputs (one per generated token).
+    pub fn run(
+        &mut self,
+        prefill_query: DeviceBuffer<f16>,
+        decode_steps: usize,
+    ) -> Result<Vec<DeviceBuffer<f32>>, RunnerError> {
+        if !self.has_capacity() {
+            return Err(RunnerError::Tensor(format!(
+                "sequence length {} exceeds max_seq {}",
+                self.seq_len, self.config.max_seq
+            )));
+        }
+
+        // Prefill phase
+        let _prefill_outputs = self.prefill(prefill_query)?;
+
+        let mut decode_outputs = Vec::with_capacity(decode_steps);
+
+        // Decode phase: auto-regressive token generation
+        for step in 0..decode_steps {
+            if !self.has_capacity() {
+                return Err(RunnerError::Tensor(format!(
+                    "decode step {} exceeded max_seq {}",
+                    step, self.config.max_seq
+                )));
+            }
+
+            // In a real model, the decode query would come from the last token embedding
+            // For now, use a zero query (will be replaced with actual token embedding)
+            let num_heads = self.config.num_heads;
+            let head_dim = self.config.head_dim;
+            let decode_query = DeviceBuffer::from_host(vec![f16::ZERO; num_heads * head_dim]);
+
+            let output = self.decode(decode_query)?;
+            decode_outputs.push(output);
+        }
+
+        Ok(decode_outputs)
+    }
+
+    /// Get KV cache info for a specific layer.
+    pub fn kv_cache_info(&self, layer_idx: usize) -> Option<(usize, usize, usize)> {
+        if layer_idx >= self.kv_caches.len() {
+            return None;
+        }
+        let (key_cache, _value_cache) = &self.kv_caches[layer_idx];
+        Some((
+            key_cache.num_heads(),
+            key_cache.head_dim(),
+            key_cache.seq_len(),
+        ))
+    }
+
+    /// Get total KV cache elements across all layers.
+    pub fn total_kv_elements(&self) -> usize {
+        self.kv_caches.iter()
+            .map(|(k, v)| k.total_elements() + v.total_elements())
+            .sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inference_engine::InferenceEngine;
+    use candle_core::{DType, Device};
+
+    // ── ModelConfig ────────────────────────────────────────────────────
+
+    #[test]
+    fn model_config_default() {
+        let config = ModelConfig::default();
+        assert_eq!(config.num_layers, 32);
+        assert_eq!(config.num_heads, 8);
+        assert_eq!(config.head_dim, 64);
+        assert_eq!(config.max_seq, 2048);
+        assert_eq!(config.num_kv_heads, 8);
+        assert!(config.use_tma);
+        assert_eq!(config.attention_arch, AttentionArch::Tcgen05);
+    }
+
+    #[test]
+    fn model_config_builder_chain() {
+        let config = ModelConfig::default()
+            .with_num_layers(16)
+            .with_num_heads(12)
+            .with_head_dim(128)
+            .with_max_seq(4096)
+            .with_num_kv_heads(4)
+            .with_tma(false)
+            .with_attention_arch(AttentionArch::Wgmma);
+
+        assert_eq!(config.num_layers, 16);
+        assert_eq!(config.num_heads, 12);
+        assert_eq!(config.head_dim, 128);
+        assert_eq!(config.max_seq, 4096);
+        assert_eq!(config.num_kv_heads, 4);
+        assert!(!config.use_tma);
+        assert_eq!(config.attention_arch, AttentionArch::Wgmma);
+    }
+
+    #[test]
+    fn model_config_attention_config() {
+        let config = ModelConfig::default()
+            .with_num_heads(16)
+            .with_head_dim(128)
+            .with_max_seq(2048)
+            .with_attention_arch(AttentionArch::Wgmma);
+
+        let ac = config.attention_config();
+        assert_eq!(ac.num_heads, 16);
+        assert_eq!(ac.head_dim, 128);
+        assert_eq!(ac.max_seq, 2048);
+        assert_eq!(ac.arch, AttentionArch::Wgmma);
+    }
+
+    #[test]
+    fn model_config_clone() {
+        let config = ModelConfig::default().with_num_layers(8);
+        let cloned = config.clone();
+        assert_eq!(config.num_layers, cloned.num_layers);
+        assert_eq!(config.num_heads, cloned.num_heads);
+    }
+
+    // ── Model ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn model_new() {
+        let config = ModelConfig::default().with_num_layers(4);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let model = Model::new(config, engine, false);
+
+        assert_eq!(model.config.num_layers, 4);
+        assert_eq!(model.kv_caches.len(), 4);
+        assert_eq!(model.seq_len, 0);
+        assert!(model.has_capacity());
+    }
+
+    #[test]
+    fn model_new_zero_layers() {
+        let config = ModelConfig::default().with_num_layers(0);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let model = Model::new(config, engine, false);
+
+        assert_eq!(model.kv_caches.len(), 0);
+        assert!(model.has_capacity());
+    }
+
+    #[test]
+    fn model_reset() {
+        let config = ModelConfig::default().with_num_layers(2);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        // Use prefill to grow the sequence
+        let key = vec![f16::from_f32(1.0); model.config.num_heads * model.config.head_dim];
+        let query = DeviceBuffer::from_host(key);
+        for _ in 0..5 {
+            let _ = model.prefill(query.clone());
+        }
+
+        assert_eq!(model.current_seq_len(), 5);
+
+        model.reset();
+        assert_eq!(model.current_seq_len(), 0);
+        for (k, v) in &model.kv_caches {
+            assert_eq!(k.seq_len(), 0);
+            assert_eq!(v.seq_len(), 0);
+        }
+    }
+
+    #[test]
+    fn model_current_seq_len() {
+        let config = ModelConfig::default().with_num_layers(1);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        assert_eq!(model.current_seq_len(), 0);
+        model.seq_len = 42;
+        assert_eq!(model.current_seq_len(), 42);
+    }
+
+    #[test]
+    fn model_has_capacity() {
+        let config = ModelConfig::default().with_num_layers(1).with_max_seq(10);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        assert!(model.has_capacity());
+        model.seq_len = 10;
+        assert!(!model.has_capacity());
+    }
+
+    #[test]
+    fn model_attention_config() {
+        let config = ModelConfig::default()
+            .with_num_heads(16)
+            .with_head_dim(64)
+            .with_max_seq(512)
+            .with_attention_arch(AttentionArch::Wgmma);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let model = Model::new(config, engine, false);
+
+        let ac = model.attention_config();
+        assert_eq!(ac.num_heads, 16);
+        assert_eq!(ac.head_dim, 64);
+        assert_eq!(ac.max_seq, 512);
+        assert_eq!(ac.arch, AttentionArch::Wgmma);
+    }
+
+    #[test]
+    fn model_prefill_empty_query() {
+        let config = ModelConfig::default().with_num_layers(2);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let query = DeviceBuffer::from_host(vec![]);
+        let result = model.prefill(query);
+        assert!(result.is_ok());
+        // Empty query → batch_size=0 → no outputs
+        assert_eq!(result.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn model_prefill_single_head() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(1)
+            .with_head_dim(8)
+            .with_max_seq(16);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 1 * 8]);
+        let result = model.prefill(query);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+        assert_eq!(model.seq_len, 1);
+    }
+
+    #[test]
+    fn model_prefill_multi_batch() {
+        let config = ModelConfig::default()
+            .with_num_layers(2)
+            .with_num_heads(4)
+            .with_head_dim(8)
+            .with_max_seq(32);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 3 * 4 * 8]);
+        let result = model.prefill(query);
+        assert!(result.is_ok());
+        let outputs = result.unwrap();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(model.seq_len, 3);
+    }
+
+    #[test]
+    fn model_decode_single() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(2)
+            .with_head_dim(8)
+            .with_max_seq(16);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 2 * 8]);
+        let result = model.decode(query);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.len(), 2 * 8);
+        assert_eq!(model.seq_len, 1);
+    }
+
+    #[test]
+    fn model_decode_exceeds_max_seq() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(2)
+            .with_head_dim(8)
+            .with_max_seq(2);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        // Fill up to max_seq with prefill
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 2 * 8]);
+        model.prefill(query).unwrap();
+        assert_eq!(model.seq_len, 1);
+
+        // Try to decode past max_seq
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 2 * 8]);
+        // This should still work since seq_len=1 < max_seq=2
+        let result = model.decode(query);
+        assert!(result.is_ok());
+        assert_eq!(model.seq_len, 2);
+
+        // Now should be at capacity
+        assert!(!model.has_capacity());
+    }
+
+    #[test]
+    fn model_run_prefill_and_decode() {
+        let config = ModelConfig::default()
+            .with_num_layers(2)
+            .with_num_heads(2)
+            .with_head_dim(8)
+            .with_max_seq(64);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let prefill_query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 2 * 2 * 8]);
+        let result = model.run(prefill_query, 3);
+        assert!(result.is_ok());
+        let outputs = result.unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(model.seq_len, 2 + 3);
+    }
+
+    #[test]
+    fn model_run_exceeds_max_seq() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(2)
+            .with_head_dim(8)
+            .with_max_seq(4);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let prefill_query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 3 * 2 * 8]);
+        let result = model.run(prefill_query, 5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn model_kv_cache_info() {
+        let config = ModelConfig::default().with_num_layers(3);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let model = Model::new(config, engine, false);
+
+        let info = model.kv_cache_info(0);
+        assert!(info.is_some());
+        let (heads, dim, seq) = info.unwrap();
+        assert_eq!(heads, 8);
+        assert_eq!(dim, 64);
+        assert_eq!(seq, 0);
+
+        let oob = model.kv_cache_info(3);
+        assert!(oob.is_none());
+    }
+
+    #[test]
+    fn model_total_kv_elements() {
+        let config = ModelConfig::default().with_num_layers(2);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let model = Model::new(config, engine, false);
+
+        let total = model.total_kv_elements();
+        // Each Kvcache: num_heads × head_dim × 2 × max_seq
+        let per_cache = 8 * 64 * 2 * 2048;
+        // Total = num_layers × 2 caches × per_cache
+        let expected = 2 * 2 * per_cache;
+        assert_eq!(total, expected);
+    }
+
+    #[test]
+    fn model_clone_config() {
+        let config = ModelConfig::default();
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let model = Model::new(config.clone(), engine, false);
+        let _ = model;
+        // config is still usable after model creation
+        assert_eq!(config.num_layers, 32);
+    }
+
+    #[test]
+    fn model_prefill_updates_kv_cache() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(2)
+            .with_head_dim(4)
+            .with_max_seq(16);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 1 * 2 * 4]);
+        model.prefill(query).unwrap();
+
+        // KV cache should have 1 entry
+        let info = model.kv_cache_info(0).unwrap();
+        assert_eq!(info.2, 1); // seq_len = 1
+    }
+
+    #[test]
+    fn model_decode_updates_kv_cache() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(2)
+            .with_head_dim(4)
+            .with_max_seq(16);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 2 * 4]);
+        model.decode(query).unwrap();
+
+        let info = model.kv_cache_info(0).unwrap();
+        assert_eq!(info.2, 1); // seq_len = 1
+    }
+
+    #[test]
+    fn model_run_zero_decode_steps() {
+        let config = ModelConfig::default()
+            .with_num_layers(1)
+            .with_num_heads(2)
+            .with_head_dim(4)
+            .with_max_seq(16);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        let prefill_query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 1 * 2 * 4]);
+        let result = model.run(prefill_query, 0);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 0);
+        assert_eq!(model.seq_len, 1);
+    }
+}

@@ -1,0 +1,573 @@
+//! KV cache for LLM inference.
+//!
+//! Stores key and value tensors per layer with dynamic sequence management.
+//!
+//! Layout: `[num_heads * head_dim, max_seq]` contiguous per layer.
+//! The sequence dimension is contiguous for efficient TMA transfers
+//! during attention computation.
+//!
+//! For a model with `num_heads` heads and `head_dim` per head:
+//! - Each head's KV slice is `head_dim` elements
+//! - All heads are packed: `head_dim * 0, head_dim * 1, ..., head_dim * (heads-1)`
+//! - Sequence dimension: positions 0..seq_len
+
+use crate::kernel::device_buf::DeviceBuffer;
+use crate::kernel::tma_descriptor::TmaDescriptor;
+use half::f16;
+
+/// Per-layer KV cache allocation.
+///
+/// Stores K and V tensors in a single contiguous device buffer.
+/// Layout: `[num_heads * head_dim * 2, max_seq]` — K and V are interleaved.
+/// K occupies `[num_heads * head_dim, :]`, V occupies `[num_heads * head_dim * 2, :]`.
+#[derive(Debug)]
+pub struct Kvcache {
+    /// Device buffer for K and V (interleaved).
+    buffer: DeviceBuffer<f16>,
+    /// Number of heads (all layers use the same head count).
+    num_heads: usize,
+    /// Dimension per head.
+    head_dim: usize,
+    /// Maximum sequence length allocated.
+    max_seq: usize,
+    /// Current sequence length (used entries).
+    seq_len: usize,
+    /// Whether the buffer is on device (true) or host (false).
+    is_device: bool,
+}
+
+impl Kvcache {
+    /// Create a new KV cache with the given dimensions.
+    ///
+    /// `num_heads` — number of attention heads per layer.
+    /// `head_dim` — dimension of each head.
+    /// `max_seq` — maximum sequence length to allocate.
+    /// `on_device` — whether to allocate on device (Device variant) or host (Host variant).
+    ///
+    /// Total elements: `num_heads * head_dim * 2 * max_seq`.
+    pub fn new(num_heads: usize, head_dim: usize, max_seq: usize, on_device: bool) -> Self {
+        let total = num_heads * head_dim * 2 * max_seq;
+        Self {
+            buffer: DeviceBuffer::zeros(total),
+            num_heads,
+            head_dim,
+            max_seq,
+            seq_len: 0,
+            is_device: on_device,
+        }
+    }
+
+    /// Create a device-side KV cache from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure `ptr_addr` points to a valid buffer of at least
+    /// `num_heads * head_dim * 2 * max_seq` f16 elements.
+    pub unsafe fn from_device(
+        ptr_addr: u64,
+        num_heads: usize,
+        head_dim: usize,
+        max_seq: usize,
+    ) -> Self {
+        let total = num_heads * head_dim * 2 * max_seq;
+        Self {
+            buffer: unsafe { DeviceBuffer::from_device(ptr_addr, total) },
+            num_heads,
+            head_dim,
+            max_seq,
+            seq_len: 0,
+            is_device: true,
+        }
+    }
+
+    /// Number of attention heads.
+    pub fn num_heads(&self) -> usize {
+        self.num_heads
+    }
+
+    /// Dimension per attention head.
+    pub fn head_dim(&self) -> usize {
+        self.head_dim
+    }
+
+    /// Maximum sequence length.
+    pub fn max_seq(&self) -> usize {
+        self.max_seq
+    }
+
+    /// Current sequence length (number of valid entries).
+    pub fn seq_len(&self) -> usize {
+        self.seq_len
+    }
+
+    /// Whether the cache has been populated.
+    pub fn is_empty(&self) -> bool {
+        self.seq_len == 0
+    }
+
+    /// Whether this cache is on device memory.
+    pub fn is_device(&self) -> bool {
+        self.is_device
+    }
+
+    /// Total number of elements in the buffer.
+    pub fn total_elements(&self) -> usize {
+        self.num_heads * self.head_dim * 2 * self.max_seq
+    }
+
+    /// Get the current sequence length.
+    pub fn len(&self) -> usize {
+        self.seq_len
+    }
+
+    /// Reset the sequence length to zero (clear cache).
+    pub fn clear(&mut self) {
+        self.seq_len = 0;
+    }
+
+    /// Append a new key vector and value vector at position `seq_len`.
+    ///
+    /// `key` and `value` must each have `num_heads * head_dim` elements.
+    ///
+    /// Returns `KvError::SeqLenExceeded` if `seq_len >= max_seq`.
+    pub fn append(
+        &mut self,
+        key: &[f16],
+        value: &[f16],
+    ) -> Result<(), KvError> {
+        if self.seq_len >= self.max_seq {
+            return Err(KvError::SeqLenExceeded {
+                current: self.seq_len,
+                max: self.max_seq,
+            });
+        }
+
+        let head_stride = self.num_heads * self.head_dim;
+        let pos = self.seq_len;
+
+        // Write K slice: K occupies [0 .. head_stride * max_seq]
+        // K row at pos: [head_stride * pos .. head_stride * (pos+1))
+        if let Some(slice) = self.buffer.as_mut_slice() {
+            let k_start = head_stride * pos;
+            slice[k_start..(head_stride + k_start)].copy_from_slice(key);
+            // Write V slice: V occupies [head_stride * max_seq .. head_stride * 2 * max_seq]
+            // V row at pos: [head_stride * max_seq + head_stride * pos .. head_stride * max_seq + head_stride * (pos+1))
+            let v_start = head_stride * self.max_seq + head_stride * pos;
+            slice[v_start..(head_stride + v_start)].copy_from_slice(value);
+        }
+
+        self.seq_len += 1;
+        Ok(())
+    }
+
+    /// Append a batch of key/value vectors at positions `start..start+batch`.
+    ///
+    /// Each entry in `keys` and `values` must have `num_heads * head_dim` elements.
+    pub fn append_batch(
+        &mut self,
+        keys: &[&[f16]],
+        values: &[&[f16]],
+        start: usize,
+    ) -> Result<(), KvError> {
+        let batch = keys.len();
+        if start + batch > self.max_seq {
+            return Err(KvError::SeqLenExceeded {
+                current: start + batch,
+                max: self.max_seq,
+            });
+        }
+
+        let head_stride = self.num_heads * self.head_dim;
+
+        if let Some(slice) = self.buffer.as_mut_slice() {
+            for b in 0..batch {
+                let pos = start + b;
+                let k_start = head_stride * pos;
+                let v_start = head_stride * self.max_seq + head_stride * pos;
+                slice[k_start..(head_stride + k_start)].copy_from_slice(keys[b]);
+                slice[v_start..(head_stride + v_start)].copy_from_slice(values[b]);
+            }
+        }
+
+        if start + batch > self.seq_len {
+            self.seq_len = start + batch;
+        }
+        Ok(())
+    }
+
+    /// Resize the cache to a larger `max_seq`.
+    ///
+    /// Copies existing data to the new buffer. Returns `Err` if shrinking.
+    pub fn resize(&mut self, new_max_seq: usize) -> Result<(), KvError> {
+        if new_max_seq <= self.max_seq {
+            return Err(KvError::ResizeFailed {
+                reason: "cannot shrink KV cache".to_string(),
+            });
+        }
+
+        let new_total = self.num_heads * self.head_dim * 2 * new_max_seq;
+        let mut new_buf = DeviceBuffer::zeros(new_total);
+
+        if let Some(src) = self.buffer.as_slice()
+            && let Some(dst) = new_buf.as_mut_slice()
+        {
+            let copy_len = self.total_elements();
+            if copy_len <= dst.len() && copy_len <= src.len() {
+                dst[..copy_len].copy_from_slice(&src[..copy_len]);
+            }
+        }
+
+        self.buffer = new_buf;
+        self.max_seq = new_max_seq;
+        Ok(())
+    }
+
+    /// Get a TMA descriptor for loading a KV slice into SMEM.
+    ///
+    /// Returns a descriptor configured for a TMA global cache read
+    /// of the K or V tensor for a single attention head at sequence position `pos`.
+    ///
+    /// `is_key` — true for K tensor, false for V tensor.
+    /// `head_idx` — which head to load (0..num_heads).
+    /// `box_y` — number of sequence positions to load (1 for decode, >1 for prefill).
+    pub fn tma_descriptor(
+        &self,
+        _gmem_addr: u64,
+        is_key: bool,
+        head_idx: usize,
+        box_y: u16,
+    ) -> Result<TmaDescriptor, KvError> {
+        if head_idx >= self.num_heads {
+            return Err(KvError::HeadIndexOutOfBounds {
+                head_idx,
+                num_heads: self.num_heads,
+            });
+        }
+
+        if box_y == 0 || box_y as usize > self.seq_len {
+            return Err(KvError::BoxYOutOfBounds {
+                box_y: box_y as usize,
+                seq_len: self.seq_len,
+            });
+        }
+
+        let head_stride = self.num_heads * self.head_dim;
+        let head_offset = head_idx * self.head_dim;
+
+        // Address offset within the buffer for this head's K or V.
+        // K occupies [0 .. head_stride * max_seq], V occupies [head_stride * max_seq .. head_stride * 2 * max_seq].
+        // The offset is in element units (f16), converted to byte offset for TMA.
+        let byte_offset = if is_key {
+            (head_stride * head_offset) as u64 * 2
+        } else {
+            (head_stride * self.max_seq + head_stride * head_offset) as u64 * 2
+        };
+
+        // Box X = head_dim (elements per row), box Y = box_y (rows)
+        // GMEM stride = head_stride (skip to next head's data)
+        // SMEM stride = head_dim (contiguous in SMEM)
+        let desc = TmaDescriptor::new()
+            .with_gmem_addr(byte_offset)
+            .with_box(
+                self.head_dim as u16,              // box X
+                (self.head_dim as u16).min(255),   // gmem_x_stride (8-bit field, saturates at 255)
+                self.head_dim as u16,              // smem_x_stride
+                box_y,                             // box Y
+                head_stride as u16,                // gmem_y_stride
+                self.head_dim as u16,              // smem_y_stride
+            )
+            .with_element_info(1)   // f16 = 2 bytes
+            .with_descriptor_type(1)   // global cache read
+            .with_smem_config(0)
+            .with_cache_hint(0);
+
+        Ok(desc)
+    }
+
+    /// Get the device pointer for this cache.
+    ///
+    /// Returns `None` if the cache is on host.
+    pub fn device_ptr(&self) -> Option<u64> {
+        self.buffer.device_ptr()
+    }
+
+    /// Get the underlying buffer.
+    pub fn buffer(&self) -> &DeviceBuffer<f16> {
+        &self.buffer
+    }
+
+    /// Get a mutable reference to the underlying buffer.
+    pub fn buffer_mut(&mut self) -> &mut DeviceBuffer<f16> {
+        &mut self.buffer
+    }
+}
+
+/// A slice of the KV cache for a single head at a specific sequence range.
+///
+/// Used to pass TMA configuration to attention kernels.
+#[derive(Debug, Clone, Copy)]
+pub struct KvcacheSlice {
+    /// Base device pointer for the entire K+V buffer.
+    pub gmem_addr: u64,
+    /// Number of heads in the cache.
+    pub num_heads: usize,
+    /// Dimension per head.
+    pub head_dim: usize,
+    /// Maximum sequence length (needed for V base calculation).
+    pub max_seq: usize,
+    /// Head index (0..num_heads).
+    pub head_idx: usize,
+    /// Sequence start position.
+    pub seq_start: usize,
+    /// Number of sequence positions (box Y).
+    pub seq_len: usize,
+    /// Whether this is the K tensor (true) or V tensor (false).
+    pub is_key: bool,
+}
+
+impl KvcacheSlice {
+    /// Create a new KV cache slice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        gmem_addr: u64,
+        num_heads: usize,
+        head_dim: usize,
+        max_seq: usize,
+        head_idx: usize,
+        seq_start: usize,
+        seq_len: usize,
+        is_key: bool,
+    ) -> Self {
+        Self {
+            gmem_addr,
+            num_heads,
+            head_dim,
+            max_seq,
+            head_idx,
+            seq_start,
+            seq_len,
+            is_key,
+        }
+    }
+
+    /// Get the base address for this slice's K or V tensor.
+    pub fn base_addr(&self) -> u64 {
+        let head_stride = self.num_heads * self.head_dim;
+        let head_offset = self.head_idx * self.head_dim;
+        if self.is_key {
+            self.gmem_addr + (head_stride * head_offset) as u64 * 2
+        } else {
+            self.gmem_addr + (head_stride * self.max_seq + head_stride * head_offset) as u64 * 2
+        }
+    }
+
+    /// Build a TMA descriptor for this slice.
+    pub fn to_tma_descriptor(&self) -> TmaDescriptor {
+        let head_stride = self.num_heads * self.head_dim;
+        let head_offset = self.head_idx * self.head_dim;
+        // Byte offset within the buffer for this head's K or V
+        let byte_offset = if self.is_key {
+            (head_stride * head_offset) as u64 * 2
+        } else {
+            (head_stride * self.max_seq + head_stride * head_offset) as u64 * 2
+        };
+        TmaDescriptor::new()
+            .with_gmem_addr(byte_offset)
+            .with_box(
+                self.head_dim as u16,
+                (self.head_dim as u16).min(255),
+                self.head_dim as u16,
+                self.seq_len as u16,
+                head_stride as u16,
+                self.head_dim as u16,
+            )
+            .with_element_info(1)
+            .with_descriptor_type(1)
+            .with_smem_config(0)
+            .with_cache_hint(0)
+    }
+}
+
+/// KV cache errors.
+#[derive(Debug, thiserror::Error)]
+pub enum KvError {
+    #[error("sequence length exceeded: current={current}, max={max}")]
+    SeqLenExceeded { current: usize, max: usize },
+
+    #[error("head index out of bounds: head_idx={head_idx}, num_heads={num_heads}")]
+    HeadIndexOutOfBounds { head_idx: usize, num_heads: usize },
+
+    #[error("box_y out of bounds: box_y={box_y}, seq_len={seq_len}")]
+    BoxYOutOfBounds { box_y: usize, seq_len: usize },
+
+    #[error("resize failed: {reason}")]
+    ResizeFailed { reason: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kvcache_new() {
+        let cache = Kvcache::new(8, 64, 2048, false);
+        assert_eq!(cache.num_heads(), 8);
+        assert_eq!(cache.head_dim(), 64);
+        assert_eq!(cache.max_seq(), 2048);
+        assert_eq!(cache.seq_len(), 0);
+        assert!(!cache.is_device());
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn kvcache_total_elements() {
+        let cache = Kvcache::new(8, 64, 100, false);
+        assert_eq!(cache.total_elements(), 8 * 64 * 2 * 100);
+    }
+
+    #[test]
+    fn kvcache_append_single() {
+        let mut cache = Kvcache::new(8, 64, 2048, false);
+        let key = vec![f16::from_f32(1.0); 8 * 64];
+        let value = vec![f16::from_f32(2.0); 8 * 64];
+
+        let result = cache.append(&key, &value);
+        assert!(result.is_ok());
+        assert_eq!(cache.seq_len(), 1);
+    }
+
+    #[test]
+    fn kvcache_append_batch() {
+        let mut cache = Kvcache::new(8, 64, 2048, false);
+        let keys: Vec<Vec<f16>> = (0..5).map(|_| vec![f16::from_f32(1.0); 8 * 64]).collect();
+        let values: Vec<Vec<f16>> = (0..5).map(|_| vec![f16::from_f32(2.0); 8 * 64]).collect();
+        let key_refs: Vec<&[f16]> = keys.iter().map(|k| k.as_slice()).collect();
+        let value_refs: Vec<&[f16]> = values.iter().map(|v| v.as_slice()).collect();
+
+        let result = cache.append_batch(&key_refs, &value_refs, 0);
+        assert!(result.is_ok());
+        assert_eq!(cache.seq_len(), 5);
+    }
+
+    #[test]
+    fn kvcache_append_exceeds_max() {
+        let mut cache = Kvcache::new(8, 64, 10, false);
+        for i in 0..11 {
+            let key = vec![f16::from_f32(1.0); 8 * 64];
+            let value = vec![f16::from_f32(2.0); 8 * 64];
+            let result = cache.append(&key, &value);
+            if i == 10 {
+                assert!(result.is_err());
+            }
+        }
+        assert_eq!(cache.seq_len(), 10);
+    }
+
+    #[test]
+    fn kvcache_append_verify_data() {
+        let mut cache = Kvcache::new(2, 4, 10, false);
+        let key = vec![f16::from_f32(1.0); 8];
+        let value = vec![f16::from_f32(2.0); 8];
+
+        cache.append(&key, &value).unwrap();
+
+        let buf = cache.buffer();
+        if let Some(slice) = buf.as_slice() {
+            // K[0] at offset 0 (head_stride * pos = 8 * 0 = 0)
+            for i in 0..8 {
+                assert_eq!(slice[i].to_f32(), 1.0);
+            }
+            // V[0] at offset head_stride * max_seq + head_stride * pos = 8 * 10 + 0 = 80
+            let v_start = 8 * 10;
+            for i in 0..8 {
+                assert_eq!(slice[v_start + i].to_f32(), 2.0);
+            }
+        }
+    }
+
+    #[test]
+    fn kvcache_resize() {
+        let mut cache = Kvcache::new(8, 64, 100, false);
+        let result = cache.resize(200);
+        assert!(result.is_ok());
+        assert_eq!(cache.max_seq(), 200);
+    }
+
+    #[test]
+    fn kvcache_resize_shrink_fails() {
+        let mut cache = Kvcache::new(8, 64, 100, false);
+        let result = cache.resize(50);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn kvcache_tma_descriptor() {
+        let mut cache = Kvcache::new(8, 64, 2048, true);
+        let key = vec![f16::from_f32(1.0); 8 * 64];
+        let value = vec![f16::from_f32(2.0); 8 * 64];
+        cache.append(&key, &value).unwrap();
+        let desc = cache.tma_descriptor(0x1000, true, 0, 1);
+        assert!(desc.is_ok());
+    }
+
+    #[test]
+    fn kvcache_tma_descriptor_head_oob() {
+        let cache = Kvcache::new(8, 64, 2048, true);
+        let desc = cache.tma_descriptor(0x1000, true, 8, 1);
+        assert!(desc.is_err());
+    }
+
+    #[test]
+    fn kvcache_tma_descriptor_boxy_oob() {
+        let cache = Kvcache::new(8, 64, 2048, true);
+        let desc = cache.tma_descriptor(0x1000, true, 0, 2049);
+        assert!(desc.is_err());
+    }
+
+    #[test]
+    fn kvcache_device_ptr() {
+        let cache = Kvcache::new(8, 64, 100, false);
+        assert!(cache.device_ptr().is_none());
+    }
+
+    #[test]
+    fn kvcache_slice_new() {
+        let slice = KvcacheSlice::new(0x1000, 8, 64, 2048, 0, 0, 1, true);
+        assert_eq!(slice.gmem_addr, 0x1000);
+        assert_eq!(slice.num_heads, 8);
+        assert_eq!(slice.head_dim, 64);
+        assert_eq!(slice.max_seq, 2048);
+        assert_eq!(slice.head_idx, 0);
+        assert_eq!(slice.seq_start, 0);
+        assert_eq!(slice.seq_len, 1);
+        assert!(slice.is_key);
+    }
+
+    #[test]
+    fn kvcache_slice_base_addr_key() {
+        let slice = KvcacheSlice::new(0x1000, 8, 64, 2048, 2, 0, 1, true);
+        let head_stride = 8 * 64;
+        let head_offset = 2 * 64;
+        let expected = 0x1000 + (head_stride * head_offset) as u64 * 2;
+        assert_eq!(slice.base_addr(), expected);
+    }
+
+    #[test]
+    fn kvcache_slice_base_addr_value() {
+        let slice = KvcacheSlice::new(0x1000, 8, 64, 2048, 2, 0, 1, false);
+        let head_stride = 8 * 64;
+        let head_offset = 2 * 64;
+        let expected = 0x1000 + (head_stride * 2048 + head_stride * head_offset) as u64 * 2;
+        assert_eq!(slice.base_addr(), expected);
+    }
+
+    #[test]
+    fn kvcache_slice_to_tma_descriptor() {
+        let slice = KvcacheSlice::new(0x1000, 8, 64, 2048, 0, 0, 1, true);
+        let desc = slice.to_tma_descriptor();
+        // gmem_addr returns the byte offset within the buffer (lower 32 bits)
+        assert_eq!(desc.gmem_addr(), 0u64); // head_idx=0, is_key=true → offset 0
+        // descriptor type = 1 at word 3 [31:24]
+        assert_eq!((desc.0[3] >> 24) & 0xFF, 1u32);
+    }
+}
