@@ -45,6 +45,7 @@ memmap2.workspace = true
 safetensors.workspace = true
 regex = { version = "1.12.3", default-features = false, features = ["perf", "unicode"] }
 tokio.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

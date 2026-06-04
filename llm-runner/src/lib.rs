@@ -25,6 +25,7 @@ pub mod plug_in;
 pub mod registry;
 pub mod runner;
 pub mod tokenizer;
+pub mod transformer;
 
 pub use device::DeviceBackend;
 pub use error::{Result, RunnerError};
@@ -39,6 +40,7 @@ pub use plug_in::PlugInProtocol;
 pub use registry::{DiscoveredModel, ModelDiscovery, ModelEntry, ModelFormat, Registry};
 pub use runner::RunnerBridge;
 pub use tokenizer::Tokenizer;
+pub use transformer::{LlamaModel, SamplingConfig, sample, argmax, load_tokenizer_from_gguf, GgufTokenizerConfig};
 
 #[cfg(test)]
 mod tests {

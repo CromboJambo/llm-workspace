@@ -418,8 +418,8 @@ mod tests {
 
         buf.extend_from_slice(b"GGUF");
         buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
         buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
+        buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
 
         // KV: general.architecture = "llama"
         let key = "general.architecture";
@@ -466,8 +466,8 @@ mod tests {
 
         buf.extend_from_slice(b"GGUF");
         buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&1u64.to_le_bytes());
-        buf.extend_from_slice(&2u64.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
+        buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
 
         let key = "general.architecture";
         buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
@@ -659,8 +659,8 @@ mod tests {
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
         buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&0u64.to_le_bytes()); // no tensors
         buf.extend_from_slice(&0u64.to_le_bytes()); // no KV
+        buf.extend_from_slice(&0u64.to_le_bytes()); // no tensors
         buf.extend_from_slice(&32u64.to_le_bytes()); // alignment
 
         std::fs::write(&path, &buf).unwrap();
