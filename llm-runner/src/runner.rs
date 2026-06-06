@@ -3,7 +3,6 @@
 //! Implements HTTP transport for remote LM Studio inference.
 //! Routes requests to local GPU or remote endpoint based on device selection.
 
-use crate::device::DeviceSelection;
 use crate::error::RunnerError;
 use crabjar_llm_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
 use tracing::debug;
@@ -132,7 +131,7 @@ impl RunnerBridge {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let tokens = vec![]; // LM Studio doesn't return token IDs in basic response
+        let tokens: Vec<String> = vec![]; // LM Studio doesn't return token IDs in basic response
 
         Ok(InferenceResponse::new(
             request.provenance_id.clone(),
