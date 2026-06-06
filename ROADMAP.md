@@ -15,7 +15,7 @@
 - [x] Wire tokenizer to GGUF vocab or fast tokenizer
 - [x] Wire token sampling to model (temp, top-p, top-k) — `sample()` exists in `transformer/sampling.rs`, wired into `LlamaModel::generate()`
 - [x] Implement LM head (final linear layer for logits)
-- [ ] Connect `Model::run()` to actual weight data end-to-end — GPU-focused `Model` in `model.rs` has `prefill()`/`decode()` but doesn't use `LlamaModel` weights
+- [x] Connect `Model::run()` to actual weight data end-to-end — added `CpuModel` that bridges `LlamaModel` weights into the prefill/decode loop; `Model` remains GPU-focused for future kernel work
 
 ### Phase 2: GPU Acceleration (~3-4 weeks)
 
