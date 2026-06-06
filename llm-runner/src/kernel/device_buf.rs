@@ -6,12 +6,31 @@
 //! Device buffers support TMA descriptor attachment for Blackwell async GMEM→SMEM copies.
 
 use crate::kernel::tma_descriptor::TmaDescriptor;
+use std::sync::Arc;
+
+/// Error type for device buffer operations.
+#[derive(Debug, thiserror::Error)]
+pub enum DeviceBufferError {
+    #[error("CUDA context not available")]
+    NoContext,
+
+    #[error("CUDA allocation failed: {0}")]
+    Allocation(String),
+
+    #[error("CUDA transfer failed: {0}")]
+    Transfer(String),
+
+    #[error("buffer size mismatch: expected {expected}, got {got}")]
+    SizeMismatch { expected: usize, got: usize },
+}
 
 #[derive(Debug, Clone)]
 pub enum DeviceBuffer<T> {
     Host(Vec<T>),
     Device(u64, usize), // ptr_addr, len_elements
     DeviceTma(u64, usize, TmaDescriptor), // ptr_addr, len_elements, tma_descriptor
+    /// Real cuda-oxide backed device buffer (Phase 2 wiring).
+    Cuda(Arc<cuda_core::DeviceBuffer<T>>),
 }
 
 impl<T: Default + Clone> DeviceBuffer<T> {
@@ -98,6 +117,7 @@ impl<T> DeviceBuffer<T> {
     pub fn device_ptr(&self) -> Option<u64> {
         match self {
             Self::Device(ptr, _) | Self::DeviceTma(ptr, _, _) => Some(*ptr),
+            Self::Cuda(buf) => Some(buf.cu_deviceptr().0),
             Self::Host(..) => None,
         }
     }
@@ -106,6 +126,61 @@ impl<T> DeviceBuffer<T> {
     pub fn tma_descriptor(&self) -> Option<TmaDescriptor> {
         match self {
             Self::DeviceTma(_, _, desc) => Some(*desc),
+            _ => None,
+        }
+    }
+
+    /// Check if this buffer is on the device (not host).
+    pub fn is_device(&self) -> bool {
+        matches!(self, Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..))
+    }
+
+    /// Allocate device memory and copy data from host.
+    ///
+    /// Requires a live CUDA context. Returns `DeviceBufferError::NoContext` if CUDA is unavailable.
+    pub fn from_host_device(
+        stream: &cuda_core::CudaStream,
+        data: &[T],
+    ) -> Result<Self, DeviceBufferError>
+    where
+        T: Clone + Default,
+    {
+        let buf = cuda_core::DeviceBuffer::from_host(stream, data)
+            .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
+        Ok(Self::Cuda(Arc::new(buf)))
+    }
+
+    /// Allocate zero-initialized device memory.
+    pub fn zeros_device(
+        stream: &cuda_core::CudaStream,
+        len: usize,
+    ) -> Result<Self, DeviceBufferError>
+    where
+        T: Clone + Default,
+    {
+        let buf = cuda_core::DeviceBuffer::zeroed(stream, len)
+            .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
+        Ok(Self::Cuda(Arc::new(buf)))
+    }
+
+    /// Copy device buffer contents back to host.
+    pub fn to_host_from_device(&self, stream: &cuda_core::CudaStream) -> Result<Vec<T>, DeviceBufferError>
+    where
+        T: Clone,
+    {
+        match self {
+            Self::Cuda(buf) => buf
+                .to_host_vec(stream)
+                .map_err(|e| DeviceBufferError::Transfer(e.to_string())),
+            Self::Host(v) => Ok(v.clone()),
+            Self::Device(..) | Self::DeviceTma(..) => Ok(vec![]), // Can't read from raw ptr
+        }
+    }
+
+    /// Get the underlying cuda-oxide buffer if this is a Cuda variant.
+    pub fn as_cuda(&self) -> Option<&Arc<cuda_core::DeviceBuffer<T>>> {
+        match self {
+            Self::Cuda(buf) => Some(buf),
             _ => None,
         }
     }
