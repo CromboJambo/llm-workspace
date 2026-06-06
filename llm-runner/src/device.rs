@@ -1,5 +1,5 @@
-use crate::error::RunnerError;
 use crate::device_discovery::LocalDevice;
+use crate::error::RunnerError;
 use crate::remote_discovery::RemoteDevice;
 use candle_core::Device;
 use serde::{Deserialize, Serialize};
@@ -32,16 +32,17 @@ impl DeviceBackend {
                 self.device = Device::Cpu;
             }
             "mkl" => {
-                self.device = Device::Cpu; // MKL requires intel-mkl-src setup
+                self.device = Device::Cpu;
             }
             "accelerate" => {
-                self.device = Device::Cpu; // accelerate-src for macOS not available on linux
+                self.device = Device::Cpu;
             }
             _ => {
                 self.device = Device::Cpu;
             }
         }
-        debug!(preference = %self.preference, device = %self.info().unwrap_or_default(), "Device backend: selected");
+        let info = self.info().unwrap_or_default();
+        debug!(preference = %self.preference, device = %info, "Device backend: selected");
         Ok(())
     }
 
@@ -57,8 +58,8 @@ impl DeviceBackend {
     pub fn is_available(&self) -> Result<bool, RunnerError> {
         Ok(match &self.device {
             Device::Cpu => true,
-            Device::Cuda(_) => false,  // cuda check requires runtime
-            Device::Metal(_) => false, // metal requires macOS
+            Device::Cuda(_) => false,
+            Device::Metal(_) => false,
         })
     }
 }
@@ -124,10 +125,8 @@ impl DeviceSelector {
 
     /// Select device for a model of the given size (in bytes).
     pub async fn select_for_model(&mut self, model_bytes: u64) -> DeviceSelection {
-        // Refresh device list
         self.refresh().await;
 
-        // Try each priority in order
         for device_type in &self.priority {
             match device_type {
                 DeviceType::LocalGpu(ordinal) => {
@@ -140,7 +139,11 @@ impl DeviceSelector {
                             device_type: device_type.clone(),
                             selected: LocalDevice::clone(device),
                             remote: None,
-                            reason: format!("Priority: {} ({} GiB free)", device.name, device.free_vram / 1024 / 1024 / 1024),
+                            reason: format!(
+                                "Priority: {} ({} GiB free)",
+                                device.name,
+                                device.free_vram / 1024 / 1024 / 1024
+                            ),
                         };
                     }
                 }
@@ -154,7 +157,10 @@ impl DeviceSelector {
                             device_type: device_type.clone(),
                             selected: LocalDevice::cpu_fallback(),
                             remote: Some(remote.clone()),
-                            reason: format!("Priority: {} (latency: {}ms)", remote.name, remote.latency_ms),
+                            reason: format!(
+                                "Priority: {} (latency: {}ms)",
+                                remote.name, remote.latency_ms
+                            ),
                         };
                     }
                 }
@@ -169,7 +175,6 @@ impl DeviceSelector {
             }
         }
 
-        // No device found in priority list, try any available GPU
         if let Some(best) = crate::device_discovery::select_best_gpu(model_bytes) {
             return DeviceSelection {
                 device_type: DeviceType::LocalGpu(best.ordinal),
@@ -179,7 +184,6 @@ impl DeviceSelector {
             };
         }
 
-        // Final fallback: CPU
         DeviceSelection {
             device_type: DeviceType::Cpu,
             selected: LocalDevice::cpu_fallback(),
@@ -196,8 +200,8 @@ impl DeviceSelector {
             devices.push(DeviceInfo {
                 name: local.name.clone(),
                 device_type: "local_gpu".to_string(),
-                vram_total: local.total_vram,
-                vram_free: local.free_vram,
+                vram_total: Some(local.total_vram),
+                vram_free: Some(local.free_vram),
                 available: local.available,
                 ordinal: Some(local.ordinal),
                 endpoint: None,
@@ -231,7 +235,6 @@ impl DeviceSelector {
 
     /// Get device selection for a model (without refreshing).
     pub async fn quick_select(&self, model_bytes: u64) -> DeviceSelection {
-        // Try priority list first
         for device_type in &self.priority {
             match device_type {
                 DeviceType::LocalGpu(ordinal) => {
@@ -244,7 +247,11 @@ impl DeviceSelector {
                             device_type: device_type.clone(),
                             selected: LocalDevice::clone(device),
                             remote: None,
-                            reason: format!("Priority: {} ({} GiB free)", device.name, device.free_vram / 1024 / 1024 / 1024),
+                            reason: format!(
+                                "Priority: {} ({} GiB free)",
+                                device.name,
+                                device.free_vram / 1024 / 1024 / 1024
+                            ),
                         };
                     }
                 }
@@ -258,7 +265,10 @@ impl DeviceSelector {
                             device_type: device_type.clone(),
                             selected: LocalDevice::cpu_fallback(),
                             remote: Some(remote.clone()),
-                            reason: format!("Priority: {} (latency: {}ms)", remote.name, remote.latency_ms),
+                            reason: format!(
+                                "Priority: {} (latency: {}ms)",
+                                remote.name, remote.latency_ms
+                            ),
                         };
                     }
                 }
@@ -273,7 +283,6 @@ impl DeviceSelector {
             }
         }
 
-        // Fallback to best GPU
         if let Some(best) = crate::device_discovery::select_best_gpu(model_bytes) {
             return DeviceSelection {
                 device_type: DeviceType::LocalGpu(best.ordinal),
@@ -353,7 +362,6 @@ mod tests {
     #[test]
     fn device_selector_new_creates_default() {
         let selector = DeviceSelector::new();
-        // Should have at least CPU in priority
         assert!(selector.priority.contains(&DeviceType::Cpu)
             || !selector.priority.is_empty());
     }
@@ -383,55 +391,5 @@ mod tests {
         let cpu = DeviceType::Cpu;
         let json = serde_json::to_string(&cpu).unwrap();
         assert!(json.contains("Cpu"));
-    }
-}
-
-impl DeviceBackend {
-    pub fn new(preference: impl Into<String>) -> Self {
-        Self {
-            preference: preference.into(),
-            device: Device::Cpu,
-        }
-    }
-
-    /// Select device based on preference.
-    pub fn select(&mut self) -> Result<(), RunnerError> {
-        match self.preference.as_str() {
-            "cuda" => {
-                self.device = Device::cuda_if_available(0)
-                    .map_err(|e: candle_core::Error| RunnerError::Device(e.to_string()))?
-            }
-            "cpu" => {
-                self.device = Device::Cpu;
-            }
-            "mkl" => {
-                self.device = Device::Cpu; // MKL requires intel-mkl-src setup
-            }
-            "accelerate" => {
-                self.device = Device::Cpu; // accelerate-src for macOS not available on linux
-            }
-            _ => {
-                self.device = Device::Cpu;
-            }
-        }
-        debug!(preference = %self.preference, device = %self.info().unwrap_or_default(), "Device backend: selected");
-        Ok(())
-    }
-
-    /// Get device info.
-    pub fn info(&self) -> Result<String, RunnerError> {
-        Ok(match &self.device {
-            Device::Cpu => "cpu".to_string(),
-            Device::Cuda(ordinal) => format!("cuda:{ordinal:?}"),
-            Device::Metal(_) => "metal".to_string(),
-        })
-    }
-
-    pub fn is_available(&self) -> Result<bool, RunnerError> {
-        Ok(match self.device {
-            Device::Cpu => true,
-            Device::Cuda(_) => false,  // cuda check requires runtime
-            Device::Metal(_) => false, // metal requires macOS
-        })
     }
 }
