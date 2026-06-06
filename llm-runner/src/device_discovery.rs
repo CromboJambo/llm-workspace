@@ -1,10 +1,16 @@
 //! Local GPU device discovery.
 //!
-//! Enumerates available CUDA GPUs with VRAM, compute capability, and health status.
+//! Enumerates available CUDA GPUs with VRAM info.
 //! Uses cudarc driver API for device enumeration.
+//!
+//! TODO: Phase 2 — implement full GPU kernel path with tcgen05/WGMMA
+//! TODO: Add compute capability detection via cuDeviceGetAttribute
+//! TODO: Add persistence mode detection via cuDeviceGetAttribute
+//! TODO: Add ECC error detection via cuDeviceGetEccStatus
 
 use serde::{Deserialize, Serialize};
 use tracing::debug;
+use std::os::raw::c_int;
 
 /// A discovered local GPU device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,13 +44,8 @@ impl LocalDevice {
     ///
     /// Conservative: reserves 2GiB for CUDA context and kernels.
     pub fn max_model_bytes(&self) -> u64 {
-        // Reserve 2GiB for CUDA context, kernels, KV cache overhead
         let reserve = 2 * 1024 * 1024 * 1024u64;
-        if self.free_vram > reserve {
-            self.free_vram - reserve
-        } else {
-            0
-        }
+        self.free_vram.saturating_sub(reserve)
     }
 
     /// Whether this device can hold a model of the given size.
@@ -59,14 +60,14 @@ impl LocalDevice {
 pub fn discover_local_devices() -> Vec<LocalDevice> {
     let mut devices = Vec::new();
 
-    // Try to enumerate CUDA devices via cudarc
-    match initialize_cuda() {
+    match init_cuda() {
         Ok(_) => {
             if let Ok(count) = get_device_count() {
                 for ordinal in 0..count {
                     if let Some(device) = get_device_info(ordinal) {
+                        let name = device.name.clone();
                         devices.push(device);
-                        debug!(ordinal, name = %device.name, "Discovered local CUDA device");
+                        debug!(ordinal, name = %name, "Discovered local CUDA device");
                     }
                 }
             }
@@ -76,7 +77,6 @@ pub fn discover_local_devices() -> Vec<LocalDevice> {
         }
     }
 
-    // Always include CPU as fallback
     devices.push(LocalDevice {
         ordinal: u32::MAX,
         name: "CPU (fallback)".to_string(),
@@ -92,72 +92,52 @@ pub fn discover_local_devices() -> Vec<LocalDevice> {
 }
 
 /// Initialize CUDA driver API.
-fn initialize_cuda() -> Result<(), String> {
-    // cudarc driver API init
-    // We use the raw driver API through cudarc
-    unsafe {
-        cudarc::driver::result::init()
-            .map_err(|e| format!("CUDA init failed: {e}"))
-    }
+fn init_cuda() -> Result<(), String> {
+    cudarc::driver::result::init()
+        .map_err(|e| format!("CUDA init failed: {e}"))
 }
 
 /// Get the number of CUDA devices.
-fn get_device_count() -> Result<u32, String> {
-    unsafe {
-        cudarc::driver::result::device::get_count()
-            .map(|c| c as u32)
-            .map_err(|e| format!("Device count failed: {e}"))
-    }
+fn get_device_count() -> Result<c_int, String> {
+    cudarc::driver::result::device::get_count()
+        .map_err(|e| format!("Device count failed: {e}"))
 }
 
 /// Get info for a specific CUDA device.
-fn get_device_info(ordinal: u32) -> Option<LocalDevice> {
-    use cudarc::driver::result::device::GetInfo;
+fn get_device_info(ordinal: i32) -> Option<LocalDevice> {
+    let dev = match cudarc::driver::result::device::get(ordinal) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
 
-    unsafe {
-        // Get device properties
-        let name = match cudarc::driver::result::device::get_name(ordinal) {
-            Ok(n) => n,
-            Err(_) => return None,
-        };
+    let name = match cudarc::driver::result::device::get_name(dev) {
+        Ok(n) => n,
+        Err(_) => return None,
+    };
 
-        // Get compute capability
-        let major = match cudarc::driver::result::device::get_compute_major(ordinal) {
-            Ok(m) => m,
-            Err(_) => return None,
-        };
-        let minor = match cudarc::driver::result::device::get_compute_minor(ordinal) {
-            Ok(m) => m,
-            Err(_) => return None,
-        };
+    // TODO: Phase 2 — get compute capability via cuDeviceGetAttribute
+    let compute_capability = "stubbed".to_string();
 
-        // Get memory info
-        let total = match cudarc::driver::result::memory::get_allocations(ordinal) {
-            Ok((total, free)) => {
-                let free_vram = free;
-                Some((total, free_vram))
-            }
-            Err(_) => None,
-        }?;
+    // Get memory info via cuMemGetInfo (global, not per-device in old API)
+    let (total_vram, free_vram) = match cudarc::driver::result::mem_get_info() {
+        Ok((total, free)) => (total as u64, free as u64),
+        Err(_) => (0, 0),
+    };
 
-        let (total_vram, free_vram) = total;
-        let used_vram = total_vram.saturating_sub(free_vram);
+    let used_vram = total_vram.saturating_sub(free_vram);
 
-        // Check if device is accessible
-        let available = cudarc::driver::result::device::get_persistence_mode(ordinal)
-            .map(|_| true)
-            .unwrap_or(false);
+    // TODO: Phase 2 — check persistence mode via cuDeviceGetAttribute
+    let available = true;
 
-        Some(LocalDevice {
-            ordinal,
-            name,
-            total_vram,
-            free_vram,
-            compute_capability: format!("{major}.{minor}"),
-            available,
-            used_vram,
-        })
-    }
+    Some(LocalDevice {
+        ordinal: ordinal as u32,
+        name,
+        total_vram,
+        free_vram,
+        compute_capability,
+        available,
+        used_vram,
+    })
 }
 
 /// Get the best available local GPU for inference.
@@ -172,9 +152,7 @@ pub fn select_best_gpu(model_bytes: u64) -> Option<LocalDevice> {
         .filter(|d| d.can_hold_model(model_bytes))
         .collect();
 
-    // Return GPU with most free VRAM
-    gpus.into_iter()
-        .max_by_key(|d| d.free_vram)
+    gpus.into_iter().max_by_key(|d| d.free_vram)
 }
 
 #[cfg(test)]
@@ -206,7 +184,6 @@ mod tests {
             available: true,
             used_vram: 6_000_000_000,
         };
-        // Reserves 2GiB
         let expected = 10_000_000_000 - (2 * 1024 * 1024 * 1024);
         assert_eq!(device.max_model_bytes(), expected);
     }
@@ -222,7 +199,6 @@ mod tests {
             available: true,
             used_vram: 3_000_000_000,
         };
-        // Free VRAM < reserve, returns 0
         assert_eq!(device.max_model_bytes(), 0);
     }
 
@@ -246,7 +222,6 @@ mod tests {
     #[test]
     fn discover_local_devices_includes_cpu_fallback() {
         let devices = discover_local_devices();
-        // CPU fallback is always included
         assert!(devices.iter().any(|d| d.ordinal == u32::MAX));
     }
 }
