@@ -12,8 +12,8 @@
 - [x] Implement FFN layers with SwiGLU activation
 - [x] Implement RMSNorm (layer normalization)
 - [x] Implement RoPE positional embeddings
-- [ ] Wire tokenizer to GGUF vocab or fast tokenizer
-- [ ] Wire token sampling to model (temp, top-p, top-k) — `sample()` exists in `transformer/sampling.rs` but not wired into `LlamaModel`
+- [x] Wire tokenizer to GGUF vocab or fast tokenizer
+- [x] Wire token sampling to model (temp, top-p, top-k) — `sample()` exists in `transformer/sampling.rs`, wired into `LlamaModel::generate()`
 - [x] Implement LM head (final linear layer for logits)
 - [ ] Connect `Model::run()` to actual weight data end-to-end — GPU-focused `Model` in `model.rs` has `prefill()`/`decode()` but doesn't use `LlamaModel` weights
 
