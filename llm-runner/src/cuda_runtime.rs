@@ -3,7 +3,7 @@
 //! Wraps cuda-oxide's `CudaContext` to provide a stable interface for the inference
 //! engine's GPU path. Handles initialization, device discovery, and error propagation.
 
-use cuda_core::CudaContext;
+use cuda_core::{CudaContext, IntoResult};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -145,12 +145,12 @@ impl CudaRuntime {
 
         // Get memory info
         let (free_memory, total_memory) = unsafe {
-            let mut free = 0u64;
-            let mut total = 0u64;
+            let mut free: usize = 0;
+            let mut total: usize = 0;
             cuda_sys::cuMemGetInfo_v2(&mut free, &mut total)
                 .result()
                 .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
-            (free, total)
+            (free as u64, total as u64)
         };
 
         let device_info = CudaDeviceInfo {
@@ -230,7 +230,7 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
 
     let mut device_count = 0;
     unsafe {
-        cuda_bindings::cuDeviceGetCount(&mut device_count)
+        cuda_sys::cuDeviceGetCount(&mut device_count)
             .result()
             .map_err(|_| CudaError::NotAvailable)?;
     };
@@ -245,7 +245,7 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
         // Get device handle
         let cu_device = match unsafe {
             let mut device = std::mem::MaybeUninit::uninit();
-            cuda_bindings::cuDeviceGet(device.as_mut_ptr(), ordinal as i32)
+            cuda_sys::cuDeviceGet(device.as_mut_ptr(), ordinal as i32)
                 .result()
                 .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
             Ok(device.assume_init())
@@ -260,7 +260,7 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
         // Get device name
         let mut name_buf = [0i8; 256];
         unsafe {
-            cuda_bindings::cuDeviceGetName(
+            cuda_sys::cuDeviceGetName(
                 name_buf.as_mut_ptr(),
                 name_buf.len() as i32,
                 cu_device,
@@ -279,16 +279,16 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
         let (major, minor) = match unsafe {
             let mut m = std::mem::MaybeUninit::uninit();
             let mut n = std::mem::MaybeUninit::uninit();
-            cuda_bindings::cuDeviceGetAttribute(
+            cuda_sys::cuDeviceGetAttribute(
                 m.as_mut_ptr(),
-                cuda_bindings::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
                 cu_device,
             )
             .result()
             .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
-            cuda_bindings::cuDeviceGetAttribute(
+            cuda_sys::cuDeviceGetAttribute(
                 n.as_mut_ptr(),
-                cuda_bindings::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
                 cu_device,
             )
             .result()
@@ -304,12 +304,12 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
 
         // Get memory info
         let (free_memory, total_memory) = match unsafe {
-            let mut free = 0u64;
-            let mut total = 0u64;
-            cuda_bindings::cuMemGetInfo_v2(&mut free, &mut total)
+            let mut free: usize = 0;
+            let mut total: usize = 0;
+            cuda_sys::cuMemGetInfo_v2(&mut free, &mut total)
                 .result()
                 .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
-            Ok((free, total))
+            Ok((free as u64, total as u64))
         } {
             Ok(info) => info,
             Err(e) => {
@@ -373,7 +373,7 @@ pub fn is_available() -> bool {
 pub fn device_count() -> usize {
     match unsafe {
         let mut count = 0;
-        cuda_bindings::cuDeviceGetCount(&mut count)
+        cuda_sys::cuDeviceGetCount(&mut count)
             .result()
             .map(|_| count)
     } {
