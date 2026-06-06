@@ -8,12 +8,15 @@
 //! - `model-loader`: consumes WeightManifest JSON → loads tensors
 //! - `inference-engine`: actual tensor computation
 //! - `tokenizer`: prompt encoding
-//! - `device`: CUDA/CPU/MKL backend selection
+//! - `device`: CUDA/CPU/MKL backend selection + hybrid device selector
+//! - `device-discovery`: local GPU enumeration with VRAM info
+//! - `remote-discovery`: Tailscale LM Studio network discovery
 //! - `runner`: external runner bridge (endpoint/protocol)
 //! - `plug-in`: implements InferenceRequest/Response protocol
 //! - `model`: Model struct with per-layer KV cache, prefill/decode loop
 
 pub mod device;
+pub mod device_discovery;
 pub mod error;
 pub mod gguf_weight_loader;
 pub mod inference_engine;
@@ -22,12 +25,14 @@ pub mod model;
 pub mod model_loader;
 pub mod model_manager;
 pub mod plug_in;
+pub mod remote_discovery;
 pub mod registry;
 pub mod runner;
 pub mod tokenizer;
 pub mod transformer;
 
-pub use device::DeviceBackend;
+pub use device::{DeviceBackend, DeviceSelector, DeviceSelection, DeviceType, DeviceInfo};
+pub use device_discovery::LocalDevice;
 pub use error::{Result, RunnerError};
 pub use gguf_weight_loader::{load_gguf_tensor, load_gguf_weights, GgufWeights};
 pub use inference_engine::InferenceEngine;
@@ -37,6 +42,7 @@ pub use model::{CpuModel, Model, ModelConfig};
 pub use model_loader::ModelLoader;
 pub use model_manager::{ModelManager, ModelSpec, PreloadConfig, PreloadStats};
 pub use plug_in::PlugInProtocol;
+pub use remote_discovery::{RemoteDevice, RemoteDiscoveryConfig};
 pub use registry::{DiscoveredModel, ModelDiscovery, ModelEntry, ModelFormat, Registry};
 pub use runner::RunnerBridge;
 pub use tokenizer::Tokenizer;
