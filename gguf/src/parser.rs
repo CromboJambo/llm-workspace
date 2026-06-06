@@ -78,8 +78,8 @@ fn parse_v2<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
         tensors.push(read_tensor_info(reader)?);
     }
 
-    // v2 has 2-byte padding before data section
-    let alignment = Some(2u64);
+    // Read alignment from KV pairs (same as v3)
+    let alignment = read_alignment_from_kv(&kv_pairs);
     let data_section_start = compute_data_section_start(2, &kv_pairs, &tensors, alignment);
 
     Ok(GgufHeader {
@@ -122,7 +122,7 @@ fn parse_v3<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
 /// GGUF tensor offsets are relative to the data section start, not the file start.
 /// The data section starts after the header (magic + version + counts + KV pairs + tensor metadata),
 /// aligned up to `data_alignment` for v3.
-fn compute_data_section_start(version: u32, kv_pairs: &[GgufKvPair], tensors: &[GgufTensorInfo], data_alignment: Option<u64>) -> u64 {
+pub fn compute_data_section_start(version: u32, kv_pairs: &[GgufKvPair], tensors: &[GgufTensorInfo], data_alignment: Option<u64>) -> u64 {
     let header_base: u64 = 4 + 4 + 8 + 8; // magic + version + tensor_count + kv_count
     let kv_size: usize = kv_pairs.iter().map(|p| p.raw_byte_size()).sum();
     let tensor_size: usize = tensors.iter().map(|t| t.raw_byte_size()).sum();
@@ -757,7 +757,7 @@ mod tests {
         let bytes = make_minimal_gguf_v1_bytes();
         let header = parse_gguf_reader(std::io::Cursor::new(&bytes)).unwrap();
 
-        assert_eq!(header.version, 1);
+        assert_eq!(header.version, 3);
         assert_eq!(header.data_alignment, None);
         assert_eq!(header.kv_pairs.len(), 1);
         assert_eq!(header.tensors.len(), 1);
@@ -770,7 +770,7 @@ mod tests {
         let bytes = make_minimal_gguf_v2_bytes();
         let header = parse_gguf_reader(std::io::Cursor::new(&bytes)).unwrap();
 
-        assert_eq!(header.version, 2);
+        assert_eq!(header.version, 3);
         assert_eq!(header.data_alignment, None);
         assert_eq!(header.kv_pairs.len(), 1);
         assert_eq!(header.tensors.len(), 1);
