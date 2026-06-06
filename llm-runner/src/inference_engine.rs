@@ -1,9 +1,11 @@
+use crate::cuda_runtime::{CudaRuntime, enumerate_devices, is_available};
 use crate::error::RunnerError;
 use crate::kernel::{GemmKernel, GemmBuilder, GemmArch, GemmConfig};
 use crate::kernel::{AttentionKernel, AttentionArch, AttentionConfig, CpuAttentionKernel};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Module;
 use half::f16;
+use std::sync::Arc;
 
 /// Inference engine for tensor computation.
 ///
@@ -13,6 +15,10 @@ pub struct InferenceEngine {
     pub dtype: DType,
     gemm: Box<dyn GemmKernel>,
     attention: Box<dyn AttentionKernel>,
+    /// CUDA runtime for device memory management (None = CPU-only mode).
+    cuda_runtime: Option<Arc<CudaRuntime>>,
+    /// CUDA stream for async operations.
+    stream: Option<cuda_core::CudaStream>,
 }
 
 impl InferenceEngine {
@@ -22,13 +28,89 @@ impl InferenceEngine {
             .with_config(GemmConfig::default())
             .build();
         let attention = Box::new(CpuAttentionKernel::new());
-        Self { device, dtype, gemm, attention }
+        
+        // Try to initialize CUDA if device preference is GPU
+        let (cuda_runtime, stream) = if matches!(device, Device::Cuda(_)) || is_available() {
+            match CudaRuntime::for_default_device() {
+                Ok(rt) => {
+                    let rt = Arc::new(rt);
+                    match rt.new_stream() {
+                        Ok(stream) => (Some(rt), Some(stream)),
+                        Err(_) => (Some(rt), None),
+                    }
+                }
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        Self {
+            device,
+            dtype,
+            gemm,
+            attention,
+            cuda_runtime,
+            stream,
+        }
     }
 
     /// Create engine with a specific GEMM kernel.
     pub fn with_gemm(device: Device, dtype: DType, gemm: Box<dyn GemmKernel>) -> Self {
         let attention = Box::new(CpuAttentionKernel::new());
-        Self { device, dtype, gemm, attention }
+        
+        let (cuda_runtime, stream) = if is_available() {
+            match CudaRuntime::for_default_device() {
+                Ok(rt) => {
+                    let rt = Arc::new(rt);
+                    match rt.new_stream() {
+                        Ok(stream) => (Some(rt), Some(stream)),
+                        Err(_) => (Some(rt), None),
+                    }
+                }
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+
+        Self {
+            device,
+            dtype,
+            gemm,
+            attention,
+            cuda_runtime,
+            stream,
+        }
+    }
+
+    /// Get the CUDA stream for device operations.
+    fn get_stream(&self) -> Option<&cuda_core::CudaStream> {
+        self.stream.as_ref()
+    }
+
+    /// Check if GPU path is available.
+    pub fn gpu_available(&self) -> bool {
+        self.cuda_runtime.is_some() && self.gemm.is_available()
+    }
+
+    /// Get device info including CUDA details if available.
+    pub fn full_device_info(&self) -> Result<String, RunnerError> {
+        let base = self.device_info()?;
+        if let Some(cuda) = &self.cuda_runtime {
+            let info = cuda.device_info();
+            Ok(format!(
+                "{} | GPU: {} (sm_{}.{}) free={:.1}GiB/total={:.1}GiB",
+                base,
+                info.name,
+                info.compute_capability.0,
+                info.compute_capability.1,
+                info.free_memory as f64 / (1024.0 * 1024.0 * 1024.0),
+                info.total_memory as f64 / (1024.0 * 1024.0 * 1024.0),
+            ))
+        } else {
+            Ok(base)
+        }
     }
 
     /// Run a GEMM operation: C = alpha * A @ B + beta * C.
@@ -131,5 +213,11 @@ impl InferenceEngine {
     /// Check if the attention kernel is available on this system.
     pub fn attention_available(&self) -> bool {
         self.attention.is_available()
+    }
+
+    /// List available CUDA devices.
+    pub fn list_devices() -> Result<Vec<crate::cuda_runtime::CudaDeviceInfo>, RunnerError> {
+        enumerate_devices()
+            .map_err(|e| RunnerError::Device(e.to_string()))
     }
 }
