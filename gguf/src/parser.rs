@@ -64,6 +64,59 @@ fn parse_v1<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
     })
 }
 
+fn parse_v2<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
+    let tensor_count = reader.read_u64::<LittleEndian>()?;
+    let kv_count = reader.read_u64::<LittleEndian>()?;
+
+    let mut kv_pairs = Vec::with_capacity(kv_count as usize);
+    for _ in 0..kv_count {
+        kv_pairs.push(read_kv_pair(reader)?);
+    }
+
+    let mut tensors = Vec::with_capacity(tensor_count as usize);
+    for _ in 0..tensor_count {
+        tensors.push(read_tensor_info(reader)?);
+    }
+
+    // v2 has 2-byte padding before data section
+    let alignment = Some(2u64);
+    let data_section_start = compute_data_section_start(2, &kv_pairs, &tensors, alignment);
+
+    Ok(GgufHeader {
+        version: 3,
+        kv_pairs,
+        tensors,
+        data_alignment: alignment,
+        data_section_start,
+    })
+}
+
+fn parse_v3<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
+    let tensor_count = reader.read_u64::<LittleEndian>()?;
+    let kv_count = reader.read_u64::<LittleEndian>()?;
+
+    let mut kv_pairs = Vec::with_capacity(kv_count as usize);
+    for _ in 0..kv_count {
+        kv_pairs.push(read_kv_pair(reader)?);
+    }
+
+    let mut tensors = Vec::with_capacity(tensor_count as usize);
+    for _ in 0..tensor_count {
+        tensors.push(read_tensor_info(reader)?);
+    }
+
+    let alignment = read_alignment_from_kv(&kv_pairs);
+    let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, alignment);
+
+    Ok(GgufHeader {
+        version: 3,
+        kv_pairs,
+        tensors,
+        data_alignment: alignment,
+        data_section_start,
+    })
+}
+
 /// Compute the byte offset where the tensor data section begins.
 ///
 /// GGUF tensor offsets are relative to the data section start, not the file start.
