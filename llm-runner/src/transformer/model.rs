@@ -206,7 +206,12 @@ impl LlamaModel {
     /// `start_pos` — position in the sequence (for RoPE)
     /// Returns: logits over vocabulary [vocab_size]
     pub fn forward(&self, token: u32, start_pos: usize) -> Result<Vec<f32>> {
-        // Embed token
+        let logits = self.embed(token, start_pos)?;
+        self.apply_output_head(&logits)
+    }
+
+    /// Embed a single token ID into its embedding vector.
+    pub fn embed(&self, token: u32, _start_pos: usize) -> Result<Vec<f32>> {
         let emb = self.token_embeddings.as_ref()
             .ok_or_else(|| RunnerError::ModelLoad("missing token embeddings".to_string()))?;
 
@@ -214,19 +219,28 @@ impl LlamaModel {
         let emb_dim = emb.in_features;
         let start = token_idx * emb_dim;
         let x = emb.weight[start..start + emb_dim].to_vec();
+        Ok(x)
+    }
 
-        // Pass through transformer layers
-        let mut h = x;
+    /// Apply the output (LM head) to get logits from hidden states.
+    pub fn apply_output_head(&self, hidden: &[f32]) -> Result<Vec<f32>> {
+        let output = self.output.as_ref()
+            .ok_or_else(|| RunnerError::ModelLoad("missing output layer".to_string()))?;
+
+        let logits = output.forward(hidden, 1);
+        Ok(logits)
+    }
+
+    /// Pass hidden states through all transformer layers.
+    pub fn forward_layers(&self, hidden: &[f32], start_pos: usize) -> Result<Vec<f32>> {
+        let _embed_dim = hidden.len();
+        let mut h = hidden.to_vec();
+
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             h = layer.forward(&h, 1, 1, start_pos + layer_idx);
         }
 
-        // Apply output (LM head)
-        let output = self.output.as_ref()
-            .ok_or_else(|| RunnerError::ModelLoad("missing output layer".to_string()))?;
-
-        let logits = output.forward(&h, 1);
-        Ok(logits)
+        Ok(h)
     }
 
     /// Get the model architecture string from GGUF header.
@@ -337,98 +351,152 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+    use crabjar_gguf::{GgufKvPair, GgufTensorInfo};
 
     fn make_test_gguf_llama(path: &Path) {
-        let mut buf = Vec::new();
-
-        // Header
-        buf.extend_from_slice(b"GGUF");
-        buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&5u64.to_le_bytes()); // kv count
-        buf.extend_from_slice(&8u64.to_le_bytes()); // tensor count
-
-        // KV pairs
-        let kv_pairs = vec![
-            ("general.architecture", "llama"),
-            ("general.file_type", "F16"),
-            ("llama.context_length", "4096"),
-            ("llama.embedding_length", "64"),
-            ("llama.block_count", "2"),
-            ("llama.attention.head_count", "4"),
-            ("llama.attention.head_count_kv", "2"),
-            ("llama.feed_forward_length", "128"),
-            ("llama.rope.dimension_count", "64"),
-            ("llama.attention.layer_norm_rms_epsilon", "1e-5"),
-            ("tokenizer.ggml.tokens", "32000"),
+        // KV pairs — numeric values must use correct type tags, not String
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_str("general.file_type", "F16"),
+            kv_pair_u32("llama.context_length", 4096),
+            kv_pair_u32("llama.embedding_length", 64),
+            kv_pair_u32("llama.block_count", 2),
+            kv_pair_u32("llama.attention.head_count", 4),
+            kv_pair_u32("llama.attention.head_count_kv", 2),
+            kv_pair_u32("llama.feed_forward_length", 128),
+            kv_pair_i32("llama.rope.dimension_count", 64),
+            kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
+            kv_pair_u32("tokenizer.ggml.tokens", 32000),
         ];
 
-        for (key, value) in kv_pairs {
-            let key_bytes = key.as_bytes();
+        // Tensor metadata — compute sizes first
+        let tensors: Vec<GgufTensorInfo> = vec![
+            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "output.weight".to_string(), shape: vec![32000u64, 64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.attention.wq.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.attention.wk.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.attention.wv.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.attention.wo.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.attention_norm.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.feed_forward.w1.weight".to_string(), shape: vec![64u64, 128u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.feed_forward.w2.weight".to_string(), shape: vec![128u64, 64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.feed_forward.w3.weight".to_string(), shape: vec![64u64, 128u64], offset: 0, dtype: 1 },
+            GgufTensorInfo { name: "layers.0.ffn_norm.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+        ];
+
+        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
+
+        // Write file
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&(8u32).to_le_bytes()); // string type
-            buf.extend_from_slice(&(value.len() as u64).to_le_bytes());
-            buf.extend_from_slice(value.as_bytes());
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
         }
 
-        // Pad to data section
-        let data_start = 256u64;
-        buf.resize(data_start as usize, 0);
-
-        // Helper to write tensor metadata
-        let mut tensor_offset = 0u64;
-        let mut write_tensor = |name: &str, shape: &[u64], dtype: u32| {
-            let name_bytes = name.as_bytes();
+        // Write tensor metadata
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
-            buf.extend_from_slice(&(shape.len() as u32).to_le_bytes());
-            for dim in shape {
-                buf.extend_from_slice(&(*dim).to_le_bytes());
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
             }
-            buf.extend_from_slice(&dtype.to_le_bytes());
-            buf.extend_from_slice(&tensor_offset.to_le_bytes());
-            let elem_count: u64 = shape.iter().product();
-            let data_size = elem_count * 2; // F16 = 2 bytes
-            tensor_offset += data_size;
-            buf.resize(((data_start + tensor_offset) as usize).max(buf.len()), 0);
-        };
-
-        // tok_embeddings.weight [64] F16
-        write_tensor("tok_embeddings.weight", &[64], 1);
-
-        // output.weight [32000, 64] F16
-        write_tensor("output.weight", &[32000, 64], 1);
-
-        // attention.wq.weight [64, 64] F16
-        write_tensor("layers.0.attention.wq.weight", &[64, 64], 1);
-        // attention.wk.weight [64, 64] F16
-        write_tensor("layers.0.attention.wk.weight", &[64, 64], 1);
-        // attention.wv.weight [64, 64] F16
-        write_tensor("layers.0.attention.wv.weight", &[64, 64], 1);
-        // attention.wo.weight [64, 64] F16
-        write_tensor("layers.0.attention.wo.weight", &[64, 64], 1);
-        // attention_norm.weight [64] F16
-        write_tensor("layers.0.attention_norm.weight", &[64], 1);
-
-        // feed_forward.w1.weight [64, 128] F16
-        write_tensor("layers.0.feed_forward.w1.weight", &[64, 128], 1);
-        // feed_forward.w2.weight [128, 64] F16
-        write_tensor("layers.0.feed_forward.w2.weight", &[128, 64], 1);
-        // feed_forward.w3.weight [64, 128] F16
-        write_tensor("layers.0.feed_forward.w3.weight", &[64, 128], 1);
-        // ffn_norm.weight [64] F16
-        write_tensor("layers.0.ffn_norm.weight", &[64], 1);
-
-        // Pad tensor data with ones
-        while (buf.len() as u64) < data_start + tensor_offset {
-            buf.push(0);
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total_data = tensor_offset as usize;
-        for i in 0..total_data {
-            buf[data_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F }; // ~1.0 in f16
+
+        // Pad to data_section_start and write tensor data
+        let total_tensor_bytes: u64 = tensors.iter().map(|t| {
+            let elems: u64 = t.shape.iter().product();
+            elems * 2 // F16 = 2 bytes
+        }).sum();
+        buf.resize((data_section_start + total_tensor_bytes) as usize, 0);
+        for i in 0..total_tensor_bytes as usize {
+            buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
         }
 
         std::fs::write(path, &buf).unwrap();
+    }
+
+    fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: crabjar_gguf::GgufValueType::String,
+            value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+        }
+    }
+
+    fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: crabjar_gguf::GgufValueType::Uint32,
+            value: crabjar_gguf::GgufKvValue::Uint32(value),
+        }
+    }
+
+    fn kv_pair_f32(key: &str, value: f32) -> GgufKvPair {
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: crabjar_gguf::GgufValueType::Float32,
+            value: crabjar_gguf::GgufKvValue::Float32(value),
+        }
+    }
+
+    fn kv_pair_i32(key: &str, value: i32) -> GgufKvPair {
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: crabjar_gguf::GgufValueType::Int32,
+            value: crabjar_gguf::GgufKvValue::Int32(value),
+        }
+    }
+
+    fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
+        match value {
+            crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
+            crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
+            crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
+            crabjar_gguf::GgufKvValue::String(s) => {
+                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            crabjar_gguf::GgufKvValue::Int8Array(arr) => {
+                let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                buf.extend_from_slice(&bytes);
+            }
+            crabjar_gguf::GgufKvValue::Uint8Array(arr) => {
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                buf.extend_from_slice(arr);
+            }
+            crabjar_gguf::GgufKvValue::Array(arr) => {
+                buf.extend_from_slice(&9u32.to_le_bytes());
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                for elem in arr {
+                    write_kv_value(buf, elem);
+                }
+            }
+            crabjar_gguf::GgufKvValue::Bfloat16(v) => {
+                let raw = (*v as u32) << 16;
+                buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
+            }
+            crabjar_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+        }
     }
 
     #[test]
