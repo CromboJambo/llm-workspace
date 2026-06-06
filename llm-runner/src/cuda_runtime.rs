@@ -228,7 +228,7 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
         cuda_core::init(0).map_err(|_| CudaError::NotAvailable)?;
     };
 
-    let mut device_count = 0;
+    let mut device_count: i32 = 0;
     unsafe {
         cuda_sys::cuDeviceGetCount(&mut device_count)
             .result()
@@ -239,16 +239,16 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
         return Ok(Vec::new());
     }
 
-    let mut devices = Vec::with_capacity(device_count);
+    let mut devices = Vec::with_capacity(device_count as usize);
 
     for ordinal in 0..device_count {
         // Get device handle
         let cu_device = match unsafe {
             let mut device = std::mem::MaybeUninit::uninit();
-            cuda_sys::cuDeviceGet(device.as_mut_ptr(), ordinal as i32)
+            cuda_sys::cuDeviceGet(device.as_mut_ptr(), ordinal)
                 .result()
-                .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
-            Ok(device.assume_init())
+                .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
+            Ok::<i32, CudaError>(device.assume_init())
         } {
             Ok(d) => d,
             Err(e) => {
@@ -285,15 +285,15 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
                 cu_device,
             )
             .result()
-            .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
+            .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
             cuda_sys::cuDeviceGetAttribute(
                 n.as_mut_ptr(),
                 cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
                 cu_device,
             )
             .result()
-            .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
-            Ok((m.assume_init(), n.assume_init()))
+            .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
+            Ok::<(i32, i32), CudaError>((m.assume_init(), n.assume_init()))
         } {
             Ok(cc) => cc,
             Err(e) => {
@@ -308,8 +308,8 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
             let mut total: usize = 0;
             cuda_sys::cuMemGetInfo_v2(&mut free, &mut total)
                 .result()
-                .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
-            Ok((free as u64, total as u64))
+                .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
+            Ok::<(u64, u64), CudaError>((free as u64, total as u64))
         } {
             Ok(info) => info,
             Err(e) => {
@@ -319,7 +319,7 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
         };
 
         devices.push(CudaDeviceInfo {
-            ordinal,
+            ordinal: ordinal as usize,
             name,
             compute_capability: (major, minor),
             total_memory,
@@ -361,7 +361,7 @@ pub fn select_best_device(model_bytes: u64) -> Option<CudaDeviceInfo> {
         b_score.cmp(&a_score)
     });
 
-    candidates.first().cloned()
+    candidates.first().cloned().cloned()
 }
 
 /// Check if CUDA is available on this system.
@@ -371,13 +371,12 @@ pub fn is_available() -> bool {
 
 /// Get the number of CUDA devices.
 pub fn device_count() -> usize {
+    let mut count: i32 = 0;
     match unsafe {
-        let mut count = 0;
         cuda_sys::cuDeviceGetCount(&mut count)
             .result()
-            .map(|_| count)
     } {
-        Ok(count) => count,
+        Ok(_) => count as usize,
         Err(_) => 0,
     }
 }
