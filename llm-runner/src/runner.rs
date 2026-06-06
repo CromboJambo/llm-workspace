@@ -1,3 +1,9 @@
+//! Runner bridge for external LLM runtime.
+//!
+//! Implements HTTP transport for remote LM Studio inference.
+//! Routes requests to local GPU or remote endpoint based on device selection.
+
+use crate::device::DeviceSelection;
 use crate::error::RunnerError;
 use crabjar_llm_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
 use tracing::debug;
@@ -35,6 +41,110 @@ impl RunnerBridge {
         ))
     }
 
+    /// Send inference request to a remote LM Studio endpoint.
+    pub async fn send_remote_request(
+        &self,
+        request: InferenceRequest,
+        endpoint: &str,
+    ) -> Result<InferenceResponse, RunnerError> {
+        let url = format!("{}/v1/completions", endpoint);
+
+        // Build LM Studio compatible request
+        let lm_studio_request = serde_json::json!({
+            "model": request.model_name,
+            "prompt": request.prompt,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "stream": false,
+        });
+
+        debug!(url = %url, model = %request.model_name, "Sending remote inference request");
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            reqwest::Client::new()
+                .post(&url)
+                .json(&lm_studio_request)
+                .header("Content-Type", "application/json")
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => {
+                if response.status().is_success() {
+                    let body = response
+                        .text()
+                        .await
+                        .map_err(|e| RunnerError::Internal(format!("Failed to read response: {e}")))?;
+
+                    // Parse LM Studio response format
+                    match self.parse_lm_studio_response(&body, &request) {
+                        Ok(resp) => {
+                            debug!(
+                                endpoint = %endpoint,
+                                tokens = resp.tokens.len(),
+                                "Remote inference successful"
+                            );
+                            Ok(resp)
+                        }
+                        Err(e) => {
+                            debug!(
+                                error = %e,
+                                endpoint = %endpoint,
+                                "Failed to parse remote response"
+                            );
+                            Err(e)
+                        }
+                    }
+                } else {
+                    let status = response.status();
+                    let body = response
+                        .text()
+                        .await
+                        .unwrap_or_default();
+                    Err(RunnerError::Internal(format!(
+                        "Remote inference failed ({}): {}",
+                        status, body
+                    )))
+                }
+            }
+            Ok(Err(e)) => Err(RunnerError::Internal(format!(
+                "Remote request failed: {e}"
+            ))),
+            Err(_) => Err(RunnerError::Internal(
+                "Remote request timed out".to_string(),
+            )),
+        }
+    }
+
+    /// Parse LM Studio response format.
+    fn parse_lm_studio_response(
+        &self,
+        body: &str,
+        request: &InferenceRequest,
+    ) -> Result<InferenceResponse, RunnerError> {
+        let json: serde_json::Value = serde_json::from_str(body)
+            .map_err(|e| RunnerError::Internal(format!("JSON parse error: {e}")))?;
+
+        // LM Studio returns {"text": "..."} or {"choices": [{"text": "..."}]}
+        let output = json.get("text")
+            .or_else(|| json.get("choices").and_then(|c| c.get(0).and_then(|c| c.get("text"))))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let tokens = vec![]; // LM Studio doesn't return token IDs in basic response
+
+        Ok(InferenceResponse::new(
+            request.provenance_id.clone(),
+            request.model_name.clone(),
+            output.to_string(),
+        )
+        .weight_id(request.weight_id.clone())
+        .tokens(tokens)
+        .confidence(0.8)
+        .exit_code(0))
+    }
+
     /// Receive inference response from external runner.
     pub fn receive_response(&self) -> Result<InferenceResponse, RunnerError> {
         Err(RunnerError::Internal(
@@ -58,5 +168,12 @@ impl RunnerBridge {
             self.config.endpoint,
             self.config.protocol
         ))
+    }
+
+    /// Get all available endpoints including remotes.
+    pub fn all_endpoints(&self) -> Vec<String> {
+        let mut endpoints = vec![self.endpoint.clone()];
+        endpoints.extend(self.config.remote_endpoints.clone());
+        endpoints
     }
 }
