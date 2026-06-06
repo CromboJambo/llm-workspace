@@ -75,6 +75,7 @@ pub mod tma_descriptor;
 pub use attention::{AttentionArch, AttentionConfig, AttentionError, AttentionKernel, AttentionSlice, CpuAttentionKernel};
 pub use builder::{GemmBuilder, KernelFromPtx, PtxSource};
 pub use device_buf::DeviceBuffer;
+pub use device_buf::DeviceBufferError;
 pub use gemm::{GemmArch, GemmConfig, GemmError, GemmKernel};
 pub use kvcache::{Kvcache, KvcacheSlice, KvError};
 pub use tma_bridge::HostTmaDescriptor;

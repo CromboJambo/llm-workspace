@@ -15,6 +15,7 @@
 //! - `plug-in`: implements InferenceRequest/Response protocol
 //! - `model`: Model struct with per-layer KV cache, prefill/decode loop
 
+pub mod cuda_runtime;
 pub mod device;
 pub mod device_discovery;
 pub mod error;
@@ -31,6 +32,7 @@ pub mod runner;
 pub mod tokenizer;
 pub mod transformer;
 
+pub use cuda_runtime::{CudaError, CudaDeviceInfo, CudaRuntime, enumerate_devices, select_best_device, is_available, device_count};
 pub use device::{DeviceBackend, DeviceSelector, DeviceSelection, DeviceType, DeviceInfo};
 pub use device_discovery::LocalDevice;
 pub use error::{Result, RunnerError};

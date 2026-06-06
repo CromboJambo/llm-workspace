@@ -11,7 +11,7 @@
 //! The builder supports both WGMMA (sm_120) and tcgen05 (sm_100) architectures.
 
 use super::gemm::{GemmArch, GemmConfig, GemmError, GemmKernel};
-use super::device_buf::{DeviceBuffer, DeviceBufferError};
+use super::device_buf::DeviceBuffer;
 use half::f16;
 use std::sync::Arc;
 
