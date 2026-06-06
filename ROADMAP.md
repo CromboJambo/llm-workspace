@@ -1,6 +1,6 @@
 # LLM-Workspace Roadmap
 
-## Status: ~75% — Transformer layers wired, tokenizer and sampling remain
+## Status: ~80% — Transformer layers wired, tokenizer and sampling done, hybrid device routing added
 
 ### Phase 1: CPU Inference (~2-3 weeks)
 
@@ -17,9 +17,25 @@
 - [x] Implement LM head (final linear layer for logits)
 - [x] Connect `Model::run()` to actual weight data end-to-end — added `CpuModel` that bridges `LlamaModel` weights into the prefill/decode loop; `Model` remains GPU-focused for future kernel work
 
+### Phase 1.5: Hybrid Device Routing (new)
+
+**Goal:** Multi-device inference with local GPU + remote LM Studio discovery.
+
+- [x] `device_discovery.rs` — enumerate local CUDA GPUs with VRAM info (stubbed compute cap)
+- [x] `remote_discovery.rs` — Tailscale LM Studio network discovery
+- [x] `DeviceSelector` — priority-based device routing (GPU → Remote → CPU)
+- [x] `RunnerBridge::send_remote_request()` — HTTP transport to remote LM Studio
+- [x] `RunnerConfig` — extended with `remote_endpoints` and `device_priority`
+- [ ] Wire `DeviceSelector` into inference pipeline
+- [ ] Add CLI `devices list` and `devices route` commands
+- [ ] Model size-based auto-routing (small models → GPU, large → remote)
+- [ ] Health check polling for remote devices
+
 ### Phase 2: GPU Acceleration (~3-4 weeks)
 
 **Goal:** Replace CPU kernels with tcgen05 (sm_120) GPU kernels.
+
+**Status:** Stubbed — CUDA kernel path not yet implemented. All GPU items below are TODO.
 
 - [ ] Merge tcgen05 example into llm-runner crate
 - [ ] Wire `KernelFromPtx` to actual PTX loading via `cuda-core`
@@ -74,6 +90,15 @@ llm-workspace/
 ├── cuda-oxide/              Host/device crates (added)
 └── rust-toolchain.toml      Pinned nightly (required for cuda-oxide)
 ```
+
+## Hardware Topology
+
+| Device | VRAM | Free | Role |
+|--------|------|------|------|
+| GPU0 (RTX 4070) | 16GiB | ~1.6GiB | LM Studio (~13GiB) |
+| GPU1 (RTX 5060 Ti) | 16GiB | ~3.6GiB | LM Studio (~12.6GiB) |
+| Remote 3070 Ti | 8GiB | ~8GiB | LM Studio on Tailscale |
+| Laptop (LM-Link) | unknown | unknown | LM Studio on Tailscale |
 
 ## Key Dependencies
 

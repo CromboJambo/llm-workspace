@@ -10,7 +10,7 @@ LLM inference stack: runner, plug-in protocol, safetensors, GGUF parser.
 | `gguf-cli` | CLI tool to inspect GGUF model files | Working |
 | `safetensors` | SQLite-backed weight storage, safetensors parser, GGUF-to-safetensors conversion | Working |
 | `llm-plug-in` | Weight manifest generation, inference request/response protocol, prompt templates | Working |
-| `llm-runner` | Inference engine: tensor computation, model loading, tokenizer, device backend | Partial |
+| `llm-runner` | Inference engine: tensor computation, model loading, tokenizer, device backend, hybrid routing | Partial |
 
 ## Requirements
 
@@ -52,7 +52,7 @@ Workspace includes path dependencies to cuda-oxide crates (not published):
 
 ## Current State
 
-GGUF parsing, safetensors storage, and weight loading are functional. The transformer model architecture (`LlamaModel`) is implemented: Q/K/V projections, multi-head attention (CPU), FFN with SwiGLU, RMSNorm, RoPE, LM head, and end-to-end `forward()` all wired. The GPU kernel path (tcgen05/WGMMA) is stubbed. Remaining: tokenizer wiring, sampling integration, and connecting the GPU-focused `Model::run()` loop to `LlamaModel` weights. See `ROADMAP.md` for the implementation plan.
+GGUF parsing, safetensors storage, and weight loading are functional. The transformer model architecture (`LlamaModel`) is implemented: Q/K/V projections, multi-head attention (CPU), FFN with SwiGLU, RMSNorm, RoPE, LM head, and end-to-end `forward()` all wired. GPU kernel path (tcgen05/WGMMA) is stubbed. **New: hybrid device routing** — `DeviceSelector` with priority-based routing (local GPU → remote LM Studio → CPU), `RemoteDevice` discovery via Tailscale network, and `RunnerBridge::send_remote_request()` for HTTP transport to remote LM Studio. Device discovery uses cudarc driver API with stubbed compute capability (Phase 2). Remaining: tokenizer wiring, sampling integration, GPU kernel implementation, and model size-based auto-routing. See `ROADMAP.md` for the implementation plan.
 
 ## License
 
