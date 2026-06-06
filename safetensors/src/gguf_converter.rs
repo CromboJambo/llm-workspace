@@ -284,7 +284,7 @@ fn dequantize_q2_k(data: &[u8], element_count: usize) -> Result<Vec<f32>, GgufCo
             let q2_val = ((q2[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
             let h_val = if i < 4 { h0 } else { h1 };
             
-            let q = (q2_val as i32 - 2) * (q1_val as i32 + 1);
+            let q = (q2_val - 2) * (q1_val as i32 + 1);
             result.push(d * (q as f32 / 16.0 - h_val) + d2);
         }
     }
@@ -313,9 +313,9 @@ fn dequantize_q2_k(data: &[u8], element_count: usize) -> Result<Vec<f32>, GgufCo
         for i in 0..remaining {
             let q1_val = (q1[i / 4] >> (2 * (i % 4))) & 0x03;
             let q2_val = ((q2[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
-            let h_val = if i < 4 { h0 } else { h0 };
+            let h_val = h0;
             
-            let q = (q2_val as i32 - 2) * (q1_val as i32 + 1);
+            let q = (q2_val - 2) * (q1_val as i32 + 1);
             result.push(d * (q as f32 / 16.0 - h_val) + d2);
         }
     }
@@ -811,9 +811,9 @@ fn dequantize_q8_k(data: &[u8], element_count: usize) -> Result<Vec<f32>, GgufCo
         // q8: 16 bytes (8 bits per element)
         let q8 = &data[base + 2..base + 18];
         
-        for i in 0..16usize {
-            let q = q8[i] as i8 as f32 / 128.0;
-            result.push(d * q);
+        for q in q8.iter() {
+            let q_val = *q as i8 as f32 / 128.0;
+            result.push(d * q_val);
         }
     }
     
@@ -826,9 +826,9 @@ fn dequantize_q8_k(data: &[u8], element_count: usize) -> Result<Vec<f32>, GgufCo
         
         let q8 = &data[base + 2..base + 2 + remaining];
         
-        for i in 0..remaining {
-            let q = q8[i] as i8 as f32 / 128.0;
-            result.push(d * q);
+        for q in q8.iter() {
+            let q_val = *q as i8 as f32 / 128.0;
+            result.push(d * q_val);
         }
     }
     
