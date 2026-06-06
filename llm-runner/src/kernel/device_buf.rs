@@ -24,13 +24,24 @@ pub enum DeviceBufferError {
     SizeMismatch { expected: usize, got: usize },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum DeviceBuffer<T> {
     Host(Vec<T>),
     Device(u64, usize), // ptr_addr, len_elements
     DeviceTma(u64, usize, TmaDescriptor), // ptr_addr, len_elements, tma_descriptor
     /// Real cuda-oxide backed device buffer (Phase 2 wiring).
     Cuda(Arc<cuda_core::DeviceBuffer<T>>),
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host(v) => f.debug_tuple("Host").field(v).finish(),
+            Self::Device(ptr, len) => f.debug_tuple("Device").field(ptr).field(len).finish(),
+            Self::DeviceTma(ptr, len, _desc) => f.debug_tuple("DeviceTma").field(ptr).field(len).finish(),
+            Self::Cuda(_) => f.debug_tuple("Cuda").field(&"<device-buffer>").finish(),
+        }
+    }
 }
 
 impl<T: Default + Clone> DeviceBuffer<T> {
@@ -76,7 +87,31 @@ impl<T: Default + Clone> DeviceBuffer<T> {
     {
         match self {
             Self::Host(v) => v.clone(),
+            Self::Cuda(buf) => buf.to_host_vec(&self.default_stream_or_null()).unwrap_or_default(),
             Self::Device(..) | Self::DeviceTma(..) => vec![],
+        }
+    }
+
+    /// Get a default stream for device operations (returns null stream if no CUDA context).
+    fn default_stream_or_null(&self) -> cuda_core::CudaStream {
+        // Return a null stream (stream 0) for device operations
+        unsafe {
+            let mut stream = std::mem::MaybeUninit::uninit();
+            let _ = cuda_core::sys::cuStreamCreate(
+                stream.as_mut_ptr(),
+                cuda_core::sys::CUstream_flags_enum_CU_STREAM_DEFAULT,
+            );
+            cuda_core::CudaStream {
+                cu_stream: stream.assume_init(),
+                ctx: std::sync::Arc::new(cuda_core::CudaContext {
+                    cu_device: std::ptr::null_mut(),
+                    cu_ctx: std::ptr::null_mut(),
+                    ordinal: 0,
+                    num_streams: std::sync::atomic::AtomicUsize::new(0),
+                    event_tracking: std::sync::atomic::AtomicBool::new(false),
+                    error_state: std::sync::atomic::AtomicU32::new(0),
+                }),
+            }
         }
     }
 }
@@ -117,7 +152,7 @@ impl<T> DeviceBuffer<T> {
     pub fn device_ptr(&self) -> Option<u64> {
         match self {
             Self::Device(ptr, _) | Self::DeviceTma(ptr, _, _) => Some(*ptr),
-            Self::Cuda(buf) => Some(buf.cu_deviceptr().0),
+            Self::Cuda(buf) => Some(buf.cu_deviceptr()),
             Self::Host(..) => None,
         }
     }
