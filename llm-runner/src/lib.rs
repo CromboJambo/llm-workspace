@@ -33,7 +33,7 @@ pub use gguf_weight_loader::{load_gguf_tensor, load_gguf_weights, GgufWeights};
 pub use inference_engine::InferenceEngine;
 pub use kernel::{AttentionKernel, CpuAttentionKernel, GemmKernel, GemmBuilder};
 pub use kernel::{DeviceBuffer, HostTmaDescriptor, Kvcache};
-pub use model::{Model, ModelConfig};
+pub use model::{CpuModel, Model, ModelConfig};
 pub use model_loader::ModelLoader;
 pub use model_manager::{ModelManager, ModelSpec, PreloadConfig, PreloadStats};
 pub use plug_in::PlugInProtocol;

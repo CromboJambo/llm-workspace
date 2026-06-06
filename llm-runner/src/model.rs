@@ -24,10 +24,12 @@
 //!    - Sample next token from output logits
 
 use crate::error::RunnerError;
+use crate::error::Result;
 use crate::inference_engine::InferenceEngine;
 use crate::kernel::attention::{AttentionArch, AttentionConfig};
 use crate::kernel::kvcache::Kvcache;
 use crate::kernel::DeviceBuffer;
+use crate::transformer::LlamaModel;
 use half::f16;
 
 /// Configuration for a transformer model.
@@ -196,7 +198,7 @@ impl Model {
     ///
     /// Returns per-layer output tensors [batch_size x (num_heads * head_dim)] f32.
     /// The last layer's output is typically passed through the LM head for logits.
-    pub fn prefill(&mut self, query: DeviceBuffer<f16>) -> Result<Vec<DeviceBuffer<f32>>, RunnerError> {
+    pub fn prefill(&mut self, query: DeviceBuffer<f16>) -> Result<Vec<DeviceBuffer<f32>>> {
         let num_heads = self.config.num_heads;
         let head_dim = self.config.head_dim;
         let out_dim = num_heads * head_dim;
@@ -266,7 +268,7 @@ impl Model {
     /// `query` — [1 x (num_heads * head_dim)] f16 query tensor for the new position.
     ///
     /// Returns the output tensor [1 x (num_heads * head_dim)] f32.
-    pub fn decode(&mut self, query: DeviceBuffer<f16>) -> Result<DeviceBuffer<f32>, RunnerError> {
+    pub fn decode(&mut self, query: DeviceBuffer<f16>) -> Result<DeviceBuffer<f32>> {
         let num_heads = self.config.num_heads;
         let head_dim = self.config.head_dim;
         let out_dim = num_heads * head_dim;
@@ -322,7 +324,7 @@ impl Model {
         &mut self,
         prefill_query: DeviceBuffer<f16>,
         decode_steps: usize,
-    ) -> Result<Vec<DeviceBuffer<f32>>, RunnerError> {
+    ) -> Result<Vec<DeviceBuffer<f32>>> {
         if !self.has_capacity() {
             return Err(RunnerError::Tensor(format!(
                 "sequence length {} exceeds max_seq {}",
@@ -375,6 +377,236 @@ impl Model {
         self.kv_caches.iter()
             .map(|(k, v)| k.total_elements() + v.total_elements())
             .sum()
+    }
+}
+
+/// CPU model that bridges `LlamaModel` weights into the `Model` inference loop.
+///
+/// This struct wraps `LlamaModel` and provides the same inference interface as the GPU-focused `Model`,
+/// but uses CPU tensor operations from the transformer module. It serves as the bridge between
+/// GGUF/safetensors weight loading and the prefill/decode loop.
+pub struct CpuModel {
+    /// The loaded Llama-style model with weights.
+    pub llama_model: LlamaModel,
+    /// Model configuration derived from loaded weights.
+    pub config: ModelConfig,
+    /// Per-layer KV caches (one pair per layer).
+    pub kv_caches: Vec<(Kvcache, Kvcache)>,
+    /// Current sequence length.
+    pub seq_len: usize,
+}
+
+impl CpuModel {
+    /// Create a `CpuModel` from a GGUF file.
+    pub fn load_gguf(path: &std::path::Path) -> Result<Self> {
+        let llama_model = LlamaModel::load_gguf(path)
+            .map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
+        Self::from_llama_model(llama_model)
+    }
+
+    /// Create a `CpuModel` from an already-loaded `LlamaModel`.
+    pub fn from_llama_model(llama_model: LlamaModel) -> Result<Self> {
+        let config = &llama_model.config;
+
+        let model_config = ModelConfig {
+            num_layers: config.num_layers,
+            num_heads: config.num_heads,
+            head_dim: config.head_dim,
+            max_seq: config.max_seq_len,
+            num_kv_heads: config.num_kv_heads,
+            use_tma: false,
+            attention_arch: AttentionArch::Tcgen05,
+        };
+
+        let kv_caches = (0..config.num_layers)
+            .map(|_| {
+                let key_cache = Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
+                let value_cache = Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
+                (key_cache, value_cache)
+            })
+            .collect();
+
+        Ok(Self {
+            llama_model,
+            config: model_config,
+            kv_caches,
+            seq_len: 0,
+        })
+    }
+
+    /// Embed a single token ID into its embedding vector.
+    pub fn embed(&self, token: u32) -> Result<Vec<f32>> {
+        self.llama_model.embed(token, self.seq_len)
+    }
+
+    /// Pass hidden states through all transformer layers.
+    pub fn forward_layers(&self, hidden: &[f32], start_pos: usize) -> Result<Vec<f32>> {
+        self.llama_model.forward_layers(hidden, start_pos)
+    }
+
+    /// Apply the output (LM head) to get logits.
+    pub fn apply_output_head(&self, hidden: &[f32]) -> Result<Vec<f32>> {
+        self.llama_model.apply_output_head(hidden)
+    }
+
+    /// Reset the model state: clear KV caches and sequence length.
+    pub fn reset(&mut self) {
+        self.seq_len = 0;
+        for (key_cache, value_cache) in &mut self.kv_caches {
+            key_cache.clear();
+            value_cache.clear();
+        }
+    }
+
+    /// Get the current sequence length.
+    pub fn current_seq_len(&self) -> usize {
+        self.seq_len
+    }
+
+    /// Check if the model has capacity for more tokens.
+    pub fn has_capacity(&self) -> bool {
+        self.seq_len < self.config.max_seq
+    }
+
+    /// Process a batch of tokens in prefill mode using CPU paths.
+    ///
+    /// `prompt_tokens` — input token IDs for the prompt
+    /// Returns: per-layer output tensors (one Vec<f32 per layer)
+    pub fn prefill(&mut self, prompt_tokens: &[u32]) -> Result<Vec<Vec<f32>>> {
+        if prompt_tokens.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut outputs = Vec::with_capacity(self.kv_caches.len());
+
+        for (layer_idx, (key_cache, _value_cache)) in self.kv_caches.iter_mut().enumerate() {
+            // For each position in the prompt, compute the forward pass
+            let mut layer_outputs = Vec::new();
+            for (pos, &token) in prompt_tokens.iter().enumerate() {
+                let hidden = self.llama_model.embed(token, self.seq_len + pos)?;
+                let hidden = self.llama_model.forward_layers(&hidden, self.seq_len + pos)?;
+
+                // Store the last hidden state as KV for this layer
+                let last_hidden = &hidden;
+                let embed_dim = last_hidden.len();
+
+                // Extract key/value from hidden state (simplified: use last embed_dim elements)
+                let key: Vec<f16> = last_hidden[embed_dim - (self.config.head_dim * self.config.num_heads)..]
+                    .iter()
+                    .map(|&x| f16::from_f32(x))
+                    .collect();
+                let value = key.clone();
+
+                key_cache.append(&key, &value).map_err(|e| {
+                    RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}"))
+                })?;
+
+                layer_outputs.push(hidden);
+            }
+
+            // Use the last position's output as the layer output
+            if let Some(last_output) = layer_outputs.pop() {
+                outputs.push(last_output);
+            }
+        }
+
+        self.seq_len += prompt_tokens.len();
+        Ok(outputs)
+    }
+
+    /// Generate a single token in decode mode using CPU paths.
+    ///
+    /// `token` — the current token ID to process
+    /// Returns: logits over vocabulary
+    pub fn decode(&mut self, token: u32) -> Result<Vec<f32>> {
+        let hidden = self.llama_model.embed(token, self.seq_len)?;
+        let hidden = self.llama_model.forward_layers(&hidden, self.seq_len)?;
+
+        // Store KV for this layer
+        let embed_dim = hidden.len();
+        let key: Vec<f16> = hidden[embed_dim - (self.config.head_dim * self.config.num_heads)..]
+            .iter()
+            .map(|&x| f16::from_f32(x))
+            .collect();
+        let value = key.clone();
+
+        if let Some((key_cache, _value_cache)) = self.kv_caches.last_mut() {
+            key_cache.append(&key, &value).map_err(|e| {
+                RunnerError::Tensor(format!("KV append failed: {e}"))
+            })?;
+        }
+
+        self.seq_len += 1;
+
+        // Apply output head to get logits
+        self.apply_output_head(&hidden)
+    }
+
+    /// Run a full prefill → decode loop on CPU.
+    ///
+    /// `prompt_tokens` — input token IDs for the prompt
+    /// `decode_steps` — number of auto-regressive tokens to generate
+    /// `sampling_config` — sampling parameters
+    /// `rng` — random number generator
+    /// `stop_tokens` — token IDs that stop generation
+    ///
+    /// Returns: generated token IDs
+    pub fn run(
+        &mut self,
+        prompt_tokens: &[u32],
+        decode_steps: usize,
+        sampling_config: &crate::transformer::SamplingConfig,
+        rng: &mut rand::rngs::StdRng,
+        stop_tokens: &[u32],
+    ) -> Result<Vec<u32>> {
+        if !self.has_capacity() {
+            return Err(RunnerError::Tensor(format!(
+                "sequence length {} exceeds max_seq {}",
+                self.seq_len, self.config.max_seq
+            )));
+        }
+
+        // Prefill phase
+        let _prefill_outputs = self.prefill(prompt_tokens)?;
+
+        let mut generated = Vec::new();
+
+        // Decode phase: auto-regressive token generation
+        for step in 0..decode_steps {
+            if !self.has_capacity() {
+                return Err(RunnerError::Tensor(format!(
+                    "decode step {} exceeded max_seq {}",
+                    step, self.config.max_seq
+                )));
+            }
+
+            // Get the last token from prompt + generated
+            let current_tokens: Vec<u32> = prompt_tokens.iter().cloned()
+                .chain(generated.iter().cloned())
+                .collect();
+            let last_token = current_tokens.last().copied().ok_or_else(|| {
+                RunnerError::Tensor("no tokens to decode".to_string())
+            })?;
+
+            // Decode one step
+            let logits = self.decode(last_token)?;
+
+            // Sample next token
+            let next_token = if sampling_config.temperature == 0.0 {
+                crate::transformer::argmax(&logits)
+            } else {
+                crate::transformer::sample(&logits, sampling_config, rng)
+            };
+
+            // Check for stop tokens
+            if stop_tokens.contains(&next_token) {
+                break;
+            }
+
+            generated.push(next_token);
+        }
+
+        Ok(generated)
     }
 }
 
