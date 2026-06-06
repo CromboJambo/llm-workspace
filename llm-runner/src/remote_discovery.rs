@@ -76,14 +76,13 @@ impl RemoteDevice {
         .await
         {
             Ok(Ok(response)) => {
-                if response.status().is_success() {
-                    if let Ok(json) = response.json::<serde_json::Value>().await {
-                        if let Some(total) = json.get("totalMemory").and_then(|v| v.as_u64()) {
-                            self.vram_total = Some(total);
-                        }
-                        if let Some(free) = json.get("freeMemory").and_then(|v| v.as_u64()) {
-                            self.vram_free = Some(free);
-                        }
+                if response.status().is_success()
+                    && let Ok(json) = response.json::<serde_json::Value>().await {
+                    if let Some(total) = json.get("totalMemory").and_then(|v| v.as_u64()) {
+                        self.vram_total = Some(total);
+                    }
+                    if let Some(free) = json.get("freeMemory").and_then(|v| v.as_u64()) {
+                        self.vram_free = Some(free);
                     }
                 }
             }
@@ -127,10 +126,9 @@ impl RemoteDiscoveryConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
-        if let Ok(ports) = std::env::var("LLM_LM_STUDIO_PORT") {
-            if let Ok(port) = ports.trim().parse::<u16>() {
-                config.lm_studio_port = port;
-            }
+        if let Ok(ports) = std::env::var("LLM_LM_STUDIO_PORT")
+            && let Ok(port) = ports.trim().parse::<u16>() {
+            config.lm_studio_port = port;
         }
 
         if let Ok(endpoints) = std::env::var("LLM_REMOTE_ENDPOINTS") {
@@ -274,11 +272,13 @@ mod tests {
 
     #[test]
     fn remote_discovery_config_from_env() {
-        std::env::set_var("LLM_LM_STUDIO_PORT", "8080");
-        std::env::set_var(
-            "LLM_REMOTE_ENDPOINTS",
-            "100.123.45.67; 100.99.99.99:9000",
-        );
+        unsafe {
+            std::env::set_var("LLM_LM_STUDIO_PORT", "8080");
+            std::env::set_var(
+                "LLM_REMOTE_ENDPOINTS",
+                "100.123.45.67; 100.99.99.99:9000",
+            );
+        }
 
         let config = RemoteDiscoveryConfig::from_env();
         assert_eq!(config.lm_studio_port, 8080);
@@ -286,8 +286,10 @@ mod tests {
         assert!(config.endpoints[0].contains("100.123.45.67"));
         assert!(config.endpoints[1].contains("100.99.99.99"));
 
-        std::env::remove_var("LLM_LM_STUDIO_PORT");
-        std::env::remove_var("LLM_REMOTE_ENDPOINTS");
+        unsafe {
+            std::env::remove_var("LLM_LM_STUDIO_PORT");
+            std::env::remove_var("LLM_REMOTE_ENDPOINTS");
+        }
     }
 
     #[test]
