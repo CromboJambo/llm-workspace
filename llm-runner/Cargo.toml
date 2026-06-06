@@ -46,6 +46,7 @@ safetensors.workspace = true
 regex = { version = "1.12.3", default-features = false, features = ["perf", "unicode"] }
 tokio.workspace = true
 rand.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
