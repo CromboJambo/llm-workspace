@@ -162,6 +162,10 @@ pub struct RunnerConfig {
     pub max_tokens_default: u32,
     pub temperature_default: f64,
     pub configured_at: i64,
+    /// Additional remote endpoints for hybrid inference.
+    pub remote_endpoints: Vec<String>,
+    /// Device priority list (e.g., ["cuda:0", "cuda:1", "remote", "cpu"]).
+    pub device_priority: Vec<String>,
 }
 
 impl Default for RunnerConfig {
@@ -179,6 +183,8 @@ impl Default for RunnerConfig {
             max_tokens_default: 1024,
             temperature_default: 0.7,
             configured_at: chrono::Utc::now().timestamp(),
+            remote_endpoints: Vec::new(),
+            device_priority: Vec::new(),
         }
     }
 }
@@ -211,6 +217,21 @@ impl RunnerConfig {
 
     pub fn with_dtype(mut self, dtype: impl Into<String>) -> Self {
         self.dtype_preference = dtype.into();
+        self
+    }
+
+    pub fn with_remote_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.remote_endpoints.push(endpoint.into());
+        self
+    }
+
+    pub fn with_remote_endpoints(mut self, endpoints: Vec<String>) -> Self {
+        self.remote_endpoints = endpoints;
+        self
+    }
+
+    pub fn with_device_priority(mut self, priority: Vec<String>) -> Self {
+        self.device_priority = priority;
         self
     }
 }
