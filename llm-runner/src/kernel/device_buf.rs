@@ -60,6 +60,7 @@ impl<T: Default + Clone> DeviceBuffer<T> {
         match self {
             Self::Host(v) => v.len(),
             Self::Device(_, len) | Self::DeviceTma(_, len, _) => *len,
+            Self::Cuda(buf) => buf.len(),
         }
     }
 

@@ -18,7 +18,7 @@ pub struct InferenceEngine {
     /// CUDA runtime for device memory management (None = CPU-only mode).
     cuda_runtime: Option<Arc<CudaRuntime>>,
     /// CUDA stream for async operations.
-    stream: Option<cuda_core::CudaStream>,
+    stream: Option<Arc<cuda_core::CudaStream>>,
 }
 
 impl InferenceEngine {
@@ -85,7 +85,7 @@ impl InferenceEngine {
     }
 
     /// Get the CUDA stream for device operations.
-    fn get_stream(&self) -> Option<&cuda_core::CudaStream> {
+    fn get_stream(&self) -> Option<&Arc<cuda_core::CudaStream>> {
         self.stream.as_ref()
     }
 
