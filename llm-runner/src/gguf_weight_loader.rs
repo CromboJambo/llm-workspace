@@ -341,64 +341,58 @@ mod tests {
         // KV count
         buf.extend_from_slice(&3u64.to_le_bytes());
 
-        // KV: general.architecture = "llama"
-        let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes());
-        buf.extend_from_slice(&(5u64).to_le_bytes());
-        buf.extend_from_slice(b"llama");
+        // KV pairs
+        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_str("general.file_type", "Q4_0"),
+            kv_pair_u32("general.alignment", 32),
+        ];
 
-        // KV: general.file_type = "Q4_0"
-        let key = "general.file_type";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes());
-        buf.extend_from_slice(&(4u64).to_le_bytes());
-        buf.extend_from_slice(b"Q4_0");
+        // Tensor metadata
+        let tensors: Vec<crabjar_gguf::GgufTensorInfo> = vec![
+            crabjar_gguf::GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![8u64], offset: 0, dtype: 1 },
+            crabjar_gguf::GgufTensorInfo { name: "output.weight".to_string(), shape: vec![4u64, 8u64], offset: 32, dtype: 2 },
+        ];
 
-        // KV: general.alignment = 32
-        let key = "general.alignment";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(4u32).to_le_bytes());
-        buf.extend_from_slice(&32u32.to_le_bytes());
+        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, Some(32));
 
-        // Tensor 1: tok_embeddings.weight (shape [8], dtype F16, offset 0)
-        let name = "tok_embeddings.weight";
-        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        buf.extend_from_slice(name.as_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        buf.extend_from_slice(&8u64.to_le_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes()); // F16
-        buf.extend_from_slice(&0u64.to_le_bytes()); // offset
+        // Write file
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
 
-        // Tensor 2: output.weight (shape [4, 8], dtype Q4_0, offset after F16 tensor)
-        let name = "output.weight";
-        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        buf.extend_from_slice(name.as_bytes());
-        buf.extend_from_slice(&2u32.to_le_bytes());
-        buf.extend_from_slice(&4u64.to_le_bytes());
-        buf.extend_from_slice(&8u64.to_le_bytes());
-        buf.extend_from_slice(&2u32.to_le_bytes()); // Q4_0
-        // offset = 32 bytes (F16: 8 elements * 2 bytes)
-        buf.extend_from_slice(&32u64.to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
 
-        // Pad to data_section_start (256) and write tensor data
-        let data_section_start = 256u64;
-        let _current = buf.len() as u64;
-        buf.resize(data_section_start as usize, 0);
+        // Write tensor metadata
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+
+        // Pad to data_section_start and write tensor data
+        let total_tensor_bytes: u64 = tensors[0].shape.iter().product::<u64>() * 2 + tensors[1].shape.iter().product::<u64>() / 16 * 18;
+        buf.resize((data_section_start + total_tensor_bytes) as usize, 0);
 
         // F16 tensor data: 8 elements of 1.0
         let f16_ones: Vec<u8> = (0..8)
             .flat_map(|_| pack_f16(1.0f32))
             .collect();
-        buf.extend_from_slice(&f16_ones);
-
-        // Pad to Q4_0 offset (256 + 32 = 288)
-        while (buf.len() as u64) < 288 {
-            buf.push(0);
-        }
+        buf[data_section_start as usize..data_section_start as usize + 16].copy_from_slice(&f16_ones);
 
         // Q4_0 tensor data: 32 elements, 1 block (scale=1.0)
         let mut q4_block = Vec::with_capacity(18);
@@ -408,7 +402,8 @@ mod tests {
             let hi = ((i + 1) as u8 % 16) as u8;
             q4_block.push((hi << 4) | lo);
         }
-        buf.extend_from_slice(&q4_block);
+        let q4_start = data_section_start + 16;
+        buf[q4_start as usize..q4_start as usize + 18].copy_from_slice(&q4_block);
 
         std::fs::write(path, &buf).unwrap();
     }
@@ -418,37 +413,43 @@ mod tests {
 
         buf.extend_from_slice(b"GGUF");
         buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
         buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
 
-        // KV: general.architecture = "llama"
-        let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes());
-        buf.extend_from_slice(&(5u64).to_le_bytes());
-        buf.extend_from_slice(b"llama");
+        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_u32("general.alignment", 32),
+        ];
 
-        // KV: general.alignment = 32
-        let key = "general.alignment";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(4u32).to_le_bytes());
-        buf.extend_from_slice(&32u32.to_le_bytes());
+        let tensor_info = crabjar_gguf::GgufTensorInfo {
+            name: "test.weight".to_string(),
+            shape: vec![4u64],
+            offset: 0,
+            dtype: 0u32,
+        };
 
-        // Tensor: test.weight (shape [4], dtype F32, offset 0)
-        let name = "test.weight";
-        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        buf.extend_from_slice(name.as_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        buf.extend_from_slice(&4u64.to_le_bytes());
-        buf.extend_from_slice(&0u32.to_le_bytes()); // F32
-        buf.extend_from_slice(&0u64.to_le_bytes()); // offset
+        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], Some(32));
 
-        // Pad to data_section_start (computed by parser: header_base + kv_size + tensor_size, aligned to 32)
-        // header_base=24, kv_size=46+37=83, tensor_size=43 → 150 → align to 32 = 160
-        let data_section_start: u64 = 160;
-        buf.resize(data_section_start as usize, 0);
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+
+        // Write tensor metadata
+        let name_bytes = tensor_info.name.as_bytes();
+        buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&(tensor_info.shape.len() as u32).to_le_bytes());
+        for dim in &tensor_info.shape {
+            buf.extend_from_slice(&dim.to_le_bytes());
+        }
+        buf.extend_from_slice(&tensor_info.dtype.to_le_bytes());
+        buf.extend_from_slice(&tensor_info.offset.to_le_bytes());
+
+        buf.resize((data_section_start + 16) as usize, 0);
 
         // F32 tensor data: [1.0, 2.0, 3.0, 4.0]
         let f32_vals: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
@@ -456,7 +457,7 @@ mod tests {
             .into_iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        buf.extend_from_slice(&f32_data);
+        buf[data_section_start as usize..data_section_start as usize + 16].copy_from_slice(&f32_data);
 
         std::fs::write(path, &buf).unwrap();
     }
@@ -466,35 +467,43 @@ mod tests {
 
         buf.extend_from_slice(b"GGUF");
         buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
         buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
+        buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
 
-        let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes());
-        buf.extend_from_slice(&(5u64).to_le_bytes());
-        buf.extend_from_slice(b"llama");
+        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_u32("general.alignment", 32),
+        ];
 
-        let key = "general.alignment";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(4u32).to_le_bytes());
-        buf.extend_from_slice(&32u32.to_le_bytes());
+        let tensor_info = crabjar_gguf::GgufTensorInfo {
+            name: "q4_tensor".to_string(),
+            shape: vec![32u64],
+            offset: 0,
+            dtype: 2u32,
+        };
 
-        // Tensor: q4_tensor (shape [32], dtype Q4_0, offset 0)
-        let name = "q4_tensor";
-        buf.extend_from_slice(&(name.len() as u64).to_le_bytes());
-        buf.extend_from_slice(name.as_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        buf.extend_from_slice(&32u64.to_le_bytes());
-        buf.extend_from_slice(&2u32.to_le_bytes()); // Q4_0
-        buf.extend_from_slice(&0u64.to_le_bytes());
+        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], Some(32));
 
-        // Pad to data_section_start (computed by parser: header_base + kv_size + tensor_size, aligned to 32)
-        // Same KV/tensor layout as f32 test → 160
-        let data_section_start: u64 = 160;
-        buf.resize(data_section_start as usize, 0);
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+
+        // Write tensor metadata
+        let name_bytes = tensor_info.name.as_bytes();
+        buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&(tensor_info.shape.len() as u32).to_le_bytes());
+        for dim in &tensor_info.shape {
+            buf.extend_from_slice(&dim.to_le_bytes());
+        }
+        buf.extend_from_slice(&tensor_info.dtype.to_le_bytes());
+        buf.extend_from_slice(&tensor_info.offset.to_le_bytes());
+
+        buf.resize((data_section_start + 18) as usize, 0);
 
         // Q4_0 tensor data: 32 elements, 1 block (scale=1.0)
         let mut q4_block = Vec::with_capacity(18);
@@ -504,9 +513,65 @@ mod tests {
             let hi = ((i + 1) % 16) as u8;
             q4_block.push((hi << 4) | lo);
         }
-        buf.extend_from_slice(&q4_block);
+        buf[data_section_start as usize..data_section_start as usize + 18].copy_from_slice(&q4_block);
 
         std::fs::write(path, &buf).unwrap();
+    }
+
+    fn kv_pair_str(key: &str, value: &str) -> crabjar_gguf::GgufKvPair {
+        crabjar_gguf::GgufKvPair {
+            key: key.to_string(),
+            value_type: crabjar_gguf::GgufValueType::String,
+            value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+        }
+    }
+
+    fn kv_pair_u32(key: &str, value: u32) -> crabjar_gguf::GgufKvPair {
+        crabjar_gguf::GgufKvPair {
+            key: key.to_string(),
+            value_type: crabjar_gguf::GgufValueType::Uint32,
+            value: crabjar_gguf::GgufKvValue::Uint32(value),
+        }
+    }
+
+    fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
+        match value {
+            crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
+            crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
+            crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
+            crabjar_gguf::GgufKvValue::String(s) => {
+                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            crabjar_gguf::GgufKvValue::Int8Array(arr) => {
+                let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                buf.extend_from_slice(&bytes);
+            }
+            crabjar_gguf::GgufKvValue::Uint8Array(arr) => {
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                buf.extend_from_slice(arr);
+            }
+            crabjar_gguf::GgufKvValue::Array(arr) => {
+                buf.extend_from_slice(&9u32.to_le_bytes());
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                for elem in arr {
+                    write_kv_value(buf, elem);
+                }
+            }
+            crabjar_gguf::GgufKvValue::Bfloat16(v) => {
+                let raw = (*v as u32) << 16;
+                buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
+            }
+            crabjar_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+        }
     }
 
     fn pack_f16(v: f32) -> [u8; 2] {
