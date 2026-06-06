@@ -161,7 +161,7 @@ pub struct KernelFromPtx {
     function: Option<cuda_core::CudaFunction>,
     /// CUDA context/stream for this kernel.
     ctx: Option<Arc<cuda_core::CudaContext>>,
-    stream: Option<cuda_core::CudaStream>,
+    stream: Option<Arc<cuda_core::CudaStream>>,
     /// Whether GPU path is available.
     gpu_available: bool,
 }
@@ -178,6 +178,8 @@ impl KernelFromPtx {
             Err(_) => (None, None, None, None), // GPU unavailable
         };
 
+        let gpu_available = module.is_some();
+
         Ok(Self {
             source,
             config,
@@ -185,12 +187,12 @@ impl KernelFromPtx {
             function,
             ctx,
             stream,
-            gpu_available: module.is_some(),
+            gpu_available,
         })
     }
 
     /// Try to load PTX into a CUDA context.
-    fn try_load_gpu(source: &PtxSource) -> Result<(Arc<cuda_core::CudaContext>, Arc<cuda_core::CudaModule>, cuda_core::CudaFunction, cuda_core::CudaStream), GemmError> {
+    fn try_load_gpu(source: &PtxSource) -> Result<(Arc<cuda_core::CudaContext>, Arc<cuda_core::CudaModule>, cuda_core::CudaFunction, Arc<cuda_core::CudaStream>), GemmError> {
         // Initialize CUDA
         unsafe {
             cuda_core::init(0).map_err(|_| GemmError::LaunchFailed("CUDA init failed".into()))?;
@@ -268,7 +270,7 @@ impl GemmKernel for KernelFromPtx {
 
         // If GPU is available, launch the kernel
         if self.gpu_available {
-            if let (Some(ctx), Some(module), Some(func), Some(stream)) = 
+            if let (Some(ctx), Some(_module), Some(func), Some(stream)) = 
                 (&self.ctx, &self.module, &self.function, &self.stream) {
                 
                 // Bind context to thread
@@ -285,7 +287,7 @@ impl GemmKernel for KernelFromPtx {
                                 expected: a_expected, got: 0
                             })?
                         ).map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
-                        buf
+                        Arc::new(buf)
                     }
                 };
 
@@ -297,11 +299,11 @@ impl GemmKernel for KernelFromPtx {
                                 expected: b_expected, got: 0
                             })?
                         ).map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
-                        buf
+                        Arc::new(buf)
                     }
                 };
 
-                let dev_c = match c {
+                let mut dev_c = match c {
                     DeviceBuffer::Cuda(buf) => buf.clone(),
                     _ => {
                         let buf = cuda_core::DeviceBuffer::from_host(stream,
@@ -309,7 +311,7 @@ impl GemmKernel for KernelFromPtx {
                                 expected: c_expected, got: 0
                             })?
                         ).map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
-                        buf
+                        Arc::new(buf)
                     }
                 };
 
@@ -317,15 +319,20 @@ impl GemmKernel for KernelFromPtx {
                 let (grid_x, grid_y, block_size) = self.get_launch_config(m, n);
 
                 // Build kernel parameters (pointers to buffers)
+                // Note: alpha/beta are passed as scalar values, not pointers
+                let m_val = m as u32;
+                let n_val = n as u32;
+                let k_val = k as u32;
+                
                 let mut kernel_params: Vec<*mut std::ffi::c_void> = vec![
-                    alpha as *mut f32 as *mut std::ffi::c_void,
+                    &alpha as *const f32 as *mut std::ffi::c_void,
                     &dev_a as *const _ as *mut std::ffi::c_void,
                     &dev_b as *const _ as *mut std::ffi::c_void,
-                    beta as *mut f32 as *mut std::ffi::c_void,
+                    &beta as *const f32 as *mut std::ffi::c_void,
                     &mut dev_c as *mut _ as *mut std::ffi::c_void,
-                    m as *mut usize as *mut std::ffi::c_void,
-                    n as *mut usize as *mut std::ffi::c_void,
-                    k as *mut usize as *mut std::ffi::c_void,
+                    &m_val as *const u32 as *mut std::ffi::c_void,
+                    &n_val as *const u32 as *mut std::ffi::c_void,
+                    &k_val as *const u32 as *mut std::ffi::c_void,
                 ];
 
                 // Launch kernel
