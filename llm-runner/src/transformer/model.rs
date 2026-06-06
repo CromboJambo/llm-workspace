@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use crabjar_gguf::types::GgufHeader;
+use tracing::debug;
 
 use crate::error::{Result, RunnerError};
 use crate::gguf_weight_loader::{load_gguf_weights, GgufWeights};
@@ -13,6 +14,8 @@ use crate::transformer::layer::{Attention, FeedForward, TransformerLayer};
 use crate::transformer::linear::Linear;
 use crate::transformer::rms_norm::RmsNorm;
 use crate::transformer::rope::RopeConfig;
+use crate::transformer::tokenizer::{load_tokenizer_from_gguf, GgufTokenizerConfig};
+use crate::transformer::GgufTokenizer;
 
 /// Llama-style model configuration.
 #[derive(Debug, Clone)]
@@ -70,13 +73,28 @@ pub struct LlamaModel {
     pub output: Option<Linear>,
     pub layers: Vec<TransformerLayer>,
     pub vocab_size: u32,
+    pub tokenizer: Option<GgufTokenizer>,
+    pub tokenizer_config: Option<GgufTokenizerConfig>,
 }
 
 impl LlamaModel {
     /// Load a Llama-style model from a GGUF file.
     pub fn load_gguf(path: &Path) -> Result<Self> {
+        let _header = crabjar_gguf::parser::parse_gguf(path)
+            .map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
         let weights = load_gguf_weights(path).map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
-        Self::from_gguf_weights(weights)
+        let mut model = Self::from_gguf_weights(weights)?;
+
+        // Load tokenizer from GGUF file
+        if let Ok((tokenizer_config, tokenizer)) = load_tokenizer_from_gguf(path) {
+            model.tokenizer_config = Some(tokenizer_config);
+            model.tokenizer = Some(tokenizer);
+            debug!(path = %path.display(), "Loaded model with tokenizer");
+        } else {
+            debug!(path = %path.display(), "No tokenizer found in GGUF file");
+        }
+
+        Ok(model)
     }
 
     /// Build a model from already-loaded GGUF weights.
@@ -118,6 +136,8 @@ impl LlamaModel {
             output,
             layers,
             vocab_size,
+            tokenizer: None,
+            tokenizer_config: None,
         })
     }
 
@@ -217,6 +237,72 @@ impl LlamaModel {
     /// Check if this model supports the given architecture.
     pub fn is_supported_architecture(arch: &str) -> bool {
         matches!(arch, "llama" | "mistral" | "mixtral" | "gemma" | "phi3" | "qwen2" | "qwen3" | "starcoder2")
+    }
+
+    /// Sample a token from logits using the configured sampling strategy.
+    pub fn sample_from_logits(logits: &[f32], config: &crate::transformer::SamplingConfig, rng: &mut rand::rngs::StdRng) -> u32 {
+        crate::transformer::sample(logits, config, rng)
+    }
+
+    /// Greedy decode: argmax over logits.
+    pub fn argmax_from_logits(logits: &[f32]) -> u32 {
+        crate::transformer::argmax(logits)
+    }
+
+    /// Generate tokens autoregressively.
+    ///
+    /// `prompt` — input token IDs
+    /// `max_tokens` — maximum tokens to generate
+    /// `sampling_config` — sampling parameters (temperature, top-p, top-k)
+    /// `rng` — random number generator
+    /// `stop_tokens` — token IDs that stop generation
+    ///
+    /// Returns: generated token IDs (excluding prompt)
+    pub fn generate(
+        &self,
+        prompt: &[u32],
+        max_tokens: usize,
+        sampling_config: &crate::transformer::SamplingConfig,
+        rng: &mut rand::rngs::StdRng,
+        stop_tokens: &[u32],
+    ) -> Result<Vec<u32>> {
+        let mut generated = Vec::new();
+
+        // Process prompt: for each token, run forward and update position
+        let mut context = prompt.to_vec();
+        let mut pos = 0;
+
+        // Use the last token for each forward pass (autoregressive)
+        for _ in 0..max_tokens {
+            let last_token = *context.last().ok_or_else(|| {
+                RunnerError::ModelLoad("empty context".to_string())
+            })?;
+
+            // Get logits for the last token
+            let logits = self.forward(last_token, pos)?;
+
+            // Sample next token
+            let next_token = if sampling_config.temperature == 0.0 {
+                Self::argmax_from_logits(&logits)
+            } else {
+                Self::sample_from_logits(&logits, sampling_config, rng)
+            };
+
+            // Check for stop tokens
+            if stop_tokens.contains(&next_token) {
+                break;
+            }
+
+            generated.push(next_token);
+            context.push(next_token);
+            pos += 1;
+
+            if pos >= self.config.max_seq_len {
+                break;
+            }
+        }
+
+        Ok(generated)
     }
 }
 

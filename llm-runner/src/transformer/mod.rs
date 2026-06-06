@@ -27,3 +27,4 @@ pub mod tokenizer;
 pub use model::LlamaModel;
 pub use sampling::{sample, argmax, SamplingConfig};
 pub use tokenizer::{load_tokenizer_from_gguf, GgufTokenizerConfig};
+pub use tokenizers::tokenizer::Tokenizer as GgufTokenizer;

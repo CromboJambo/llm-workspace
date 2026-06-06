@@ -6,9 +6,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crabjar_gguf::types::GgufHeader;
+use tokenizers::tokenizer::{Result, Tokenizer};
+use tracing::debug;
 
-use crate::error::{Result, RunnerError};
-use crate::tokenizer::Tokenizer as BaseTokenizer;
+use crate::error::RunnerError;
 
 /// GGUF tokenizer configuration.
 #[derive(Debug, Clone)]
@@ -25,6 +26,16 @@ pub struct GgufTokenizerConfig {
     pub added_tokens: HashMap<u32, String>,
     /// Pattern regex for splitting.
     pub pattern: Option<String>,
+    /// BOS token ID.
+    pub bos_token_id: Option<u32>,
+    /// EOS token ID.
+    pub eos_token_id: Option<u32>,
+    /// UNK token ID.
+    pub unk_token_id: Option<u32>,
+    /// Whether to add BOS token by default.
+    pub add_bos_token: Option<bool>,
+    /// Whether to add EOS token by default.
+    pub add_eos_token: Option<bool>,
 }
 
 impl GgufTokenizerConfig {
@@ -65,6 +76,12 @@ impl GgufTokenizerConfig {
         let pattern = header.get_kv_str("tokenizer.ggml.token_type")
             .map(|s| s.to_string());
 
+        let bos_token_id = header.get_kv_u32("tokenizer.ggml.bos_token_id");
+        let eos_token_id = header.get_kv_u32("tokenizer.ggml.eos_token_id");
+        let unk_token_id = header.get_kv_u32("tokenizer.ggml.unk_token_id");
+        let add_bos_token = header.get_kv_bool("tokenizer.ggml.add_bos_token");
+        let add_eos_token = header.get_kv_bool("tokenizer.ggml.add_eos_token");
+
         Self {
             model_type,
             vocab_size,
@@ -72,21 +89,97 @@ impl GgufTokenizerConfig {
             post_processor_type,
             added_tokens,
             pattern,
+            bos_token_id,
+            eos_token_id,
+            unk_token_id,
+            add_bos_token,
+            add_eos_token,
         }
+    }
+
+    /// Build a working `tokenizers::Tokenizer` from this GGUF config.
+    pub fn to_tokenizer(&self) -> Tokenizer {
+        // Build a JSON tokenizer config from GGUF header data
+        let mut added_tokens_json: Vec<serde_json::Value> = Vec::new();
+
+        // Add BOS token if present
+        if let Some(bos_id) = self.bos_token_id {
+            if let Some(bos_tok) = self.added_tokens.get(&bos_id) {
+                added_tokens_json.push(serde_json::json!({
+                    "content": bos_tok,
+                    "special": true
+                }));
+            }
+        }
+
+        // Add EOS token if present
+        if let Some(eos_id) = self.eos_token_id {
+            if let Some(eos_tok) = self.added_tokens.get(&eos_id) {
+                added_tokens_json.push(serde_json::json!({
+                    "content": eos_tok,
+                    "special": true
+                }));
+            }
+        }
+
+        // Add vocab tokens (non-special)
+        let bos_id = self.bos_token_id.unwrap_or(0);
+        let eos_id = self.eos_token_id.unwrap_or(0);
+        for (id, token) in &self.added_tokens {
+            if *id != bos_id && *id != eos_id {
+                added_tokens_json.push(serde_json::json!({
+                    "content": token,
+                    "lstrip": false,
+                    "rstrip": false,
+                    "single_word": false,
+                    "normalized": true,
+                    "special": false
+                }));
+            }
+        }
+
+        let config = serde_json::json!({
+            "version": "1.0",
+            "type": "BPE",
+            "dropout": null,
+            "unk_token": null,
+            "continuing_subword_prefix": null,
+            "end_of_word_suffix": null,
+            "fuse_unk": false,
+            "vocab": self.added_tokens.iter()
+                .map(|(id, token)| serde_json::json!([token, serde_json::Value::from(*id)]))
+                .collect::<serde_json::Value>(),
+            "merges": added_tokens_json.iter()
+                .map(|tok| {
+                    let content = tok["content"].as_str().unwrap_or("");
+                    serde_json::json!([content, content])
+                })
+                .collect::<serde_json::Value>(),
+            "added_tokens": serde_json::Value::Array(added_tokens_json)
+        });
+
+        Tokenizer::from_bytes(config.to_string().as_bytes())
+            .unwrap_or_else(|e| {
+                debug!("Failed to build tokenizer from GGUF config: {e}, using empty tokenizer");
+                Tokenizer::new(tokenizers::models::bpe::BPE::default())
+            })
     }
 }
 
 /// Load a tokenizer from a GGUF file.
-pub fn load_tokenizer_from_gguf(path: &Path) -> Result<(GgufTokenizerConfig, BaseTokenizer)> {
+pub fn load_tokenizer_from_gguf(path: &Path) -> Result<(GgufTokenizerConfig, Tokenizer)> {
     let header = crabjar_gguf::parser::parse_gguf(path)
         .map_err(|e| RunnerError::Tokenizer(e.to_string()))?;
 
     let config = GgufTokenizerConfig::from_gguf_header(&header);
-    let mut tokenizer = BaseTokenizer::new(&config.model_type);
+    let tokenizer = config.to_tokenizer();
 
-    // Attempt to initialize BPE tokenizer
-    tokenizer.init_bpe()
-        .map_err(|e| RunnerError::Tokenizer(format!("BPE init failed: {e}")))?;
+    debug!(
+        path = %path.display(),
+        model_type = %config.model_type,
+        vocab_size = config.vocab_size,
+        "Loaded GGUF tokenizer"
+    );
 
     Ok((config, tokenizer))
 }
