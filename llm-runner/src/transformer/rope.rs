@@ -61,8 +61,7 @@ impl RopeConfig {
         for pos in 0..seq_len {
             let actual_pos = start_pos + pos;
             for head in 0..num_heads {
-                for i in 0..dim_half {
-                    let freq = theta[i];
+                for (i, &freq) in theta.iter().enumerate() {
                     let angle = actual_pos as f32 * freq;
                     let cos = angle.cos();
                     let sin = angle.sin();
@@ -105,8 +104,7 @@ pub fn apply_rope_f16(
     for pos in 0..seq_len {
         let actual_pos = start_pos + pos;
         for head in 0..num_heads {
-            for i in 0..dim_half {
-                let freq = theta[i];
+            for (i, &freq) in theta.iter().enumerate() {
                 let angle = actual_pos as f32 * freq;
                 let cos = angle.cos();
                 let sin = angle.sin();
@@ -194,5 +192,57 @@ mod tests {
 
         let new_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((orig_norm - new_norm).abs() < 1e-4);
+    }
+
+    #[test]
+    fn apply_rope_f16_identity_at_zero() {
+        let mut q = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
+        let mut k = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
+        let orig_q = q.clone();
+
+        apply_rope_f16(&mut q, &mut k, 4, 1, 1, 0, 10000.0);
+
+        // At position 0: cos(0)=1, sin(0)=0 → identity
+        for i in 0..4 {
+            assert!((q[i].to_f32() - orig_q[i].to_f32()).abs() < 1e-5);
+            assert!((k[i].to_f32() - orig_q[i].to_f32()).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn apply_rope_f16_preserves_norm() {
+        let mut q = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
+        let mut k = vec![f16::from_f32(0.5), f16::from_f32(1.5), f16::from_f32(2.5), f16::from_f32(3.5)];
+        let orig_norm = q.iter().map(|x| x.to_f32() * x.to_f32()).sum::<f32>().sqrt();
+
+        apply_rope_f16(&mut q, &mut k, 4, 1, 1, 1, 10000.0);
+
+        let new_norm = q.iter().map(|x| x.to_f32() * x.to_f32()).sum::<f32>().sqrt();
+        assert!((orig_norm - new_norm).abs() < 1e-3);
+    }
+
+    #[test]
+    fn apply_rope_f16_multi_head() {
+        let mut q = vec![
+            f16::from_f32(1.0), f16::from_f32(0.0),
+            f16::from_f32(0.0), f16::from_f32(1.0),
+            f16::from_f32(1.0), f16::from_f32(0.0),
+            f16::from_f32(0.0), f16::from_f32(1.0),
+        ];
+        let mut k = q.clone();
+        apply_rope_f16(&mut q, &mut k, 4, 2, 1, 1, 10000.0);
+        // Should produce non-trivial rotation (not all zeros)
+        let norm: f32 = q.iter().map(|x| x.to_f32() * x.to_f32()).sum::<f32>().sqrt();
+        assert!(norm > 0.0);
+    }
+
+    #[test]
+    fn rope_config_new_defaults() {
+        let config = RopeConfig::new(64, 10000.0, 2048);
+        assert_eq!(config.head_dim, 64);
+        assert_eq!(config.base, 10000.0);
+        assert_eq!(config.max_position_embeddings, 2048);
+        assert!(config.scaling_factor.is_none());
+        assert!(config.scaling_type.is_none());
     }
 }

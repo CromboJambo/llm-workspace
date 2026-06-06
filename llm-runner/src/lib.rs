@@ -627,4 +627,28 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("cuda unavailable"));
     }
+
+    // ── Tokenizer init_bpe ─────────────────────────────────────────────
+
+    #[test]
+    fn tokenizer_init_bpe_gpt2_succeeds() {
+        let mut tokenizer = Tokenizer::new("gpt2");
+        let result = tokenizer.init_bpe();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn tokenizer_init_bpe_unknown_model_fails() {
+        let mut tokenizer = Tokenizer::new("unknown-model-xyz");
+        let result = tokenizer.init_bpe();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tokenizer_encode_decode_without_init_fails() {
+        let tokenizer = Tokenizer::new("gpt2");
+        assert!(tokenizer.encode("hello").is_err());
+        assert!(tokenizer.decode(&[1, 2, 3]).is_err());
+        assert!(tokenizer.token_count("hello").is_err());
+    }
 }

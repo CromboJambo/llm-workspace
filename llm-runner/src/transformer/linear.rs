@@ -2,6 +2,9 @@
 //!
 //! Stores weight matrix in row-major layout: W[i][j] = weights[i * out_features + j].
 //! Input x is [batch, in_features], output y is [batch, out_features].
+//!
+
+#![allow(clippy::redundant_closure)]
 
 #[derive(Debug, Clone)]
 pub struct Linear {

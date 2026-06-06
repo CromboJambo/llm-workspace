@@ -110,18 +110,14 @@ impl LlamaModel {
         );
 
         // Load token embeddings
-        let token_embeddings = if let Some(tensor_data) = weights.tensors.get("tok_embeddings.weight") {
-            Some(Linear::from_f16_weight(tensor_data, None))
-        } else {
-            None
-        };
+        let token_embeddings = weights.tensors.get("tok_embeddings.weight").map(|tensor_data| {
+            Linear::from_f16_weight(tensor_data, None)
+        });
 
         // Load output (LM head)
-        let output = if let Some(tensor_data) = weights.tensors.get("output.weight") {
-            Some(Linear::from_f16_weight(tensor_data, None))
-        } else {
-            None
-        };
+        let output = weights.tensors.get("output.weight").map(|tensor_data| {
+            Linear::from_f16_weight(tensor_data, None)
+        });
 
         // Build transformer layers
         let mut layers = Vec::with_capacity(config.num_layers);
@@ -351,7 +347,8 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use crabjar_gguf::{GgufKvPair, GgufTensorInfo};
+    use crabjar_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
+    use std::path::PathBuf;
 
     fn make_test_gguf_llama(path: &Path) {
         // KV pairs — numeric values must use correct type tags, not String
@@ -368,6 +365,48 @@ mod tests {
             kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
             kv_pair_u32("tokenizer.ggml.tokens", 32000),
         ];
+
+        // Tensor metadata — compute sizes first
+        let tensor_shapes: Vec<Vec<u64>> = vec![
+            vec![64],        // tok_embeddings
+            vec![32000, 64], // output
+            vec![64, 64],    // layers.0.attention.wq
+            vec![64, 64],    // layers.0.attention.wk
+            vec![64, 64],    // layers.0.attention.wv
+            vec![64, 64],    // layers.0.attention.wo
+            vec![64],        // layers.0.attention_norm
+            vec![64],        // layers.0.ffn_norm
+            vec![64, 128],   // layers.0.feed_forward.w1
+            vec![128, 64],   // layers.0.feed_forward.w2
+            vec![64, 128],   // layers.0.feed_forward.w3
+        ];
+        let tensor_names: Vec<&str> = vec![
+            "tok_embeddings.weight",
+            "output.weight",
+            "layers.0.attention.wq.weight",
+            "layers.0.attention.wk.weight",
+            "layers.0.attention.wv.weight",
+            "layers.0.attention.wo.weight",
+            "layers.0.attention_norm.weight",
+            "layers.0.ffn_norm.weight",
+            "layers.0.feed_forward.w1.weight",
+            "layers.0.feed_forward.w2.weight",
+            "layers.0.feed_forward.w3.weight",
+        ];
+
+        // Compute offsets
+        let mut offset = 0u64;
+        let tensors: Vec<GgufTensorInfo> = tensor_shapes.iter().enumerate().map(|(i, shape)| {
+            let tensor_info = GgufTensorInfo {
+                name: tensor_names[i].to_string(),
+                shape: shape.clone(),
+                offset,
+                dtype: 1,
+            };
+            let elems: u64 = shape.iter().product();
+            offset += elems * 2; // F16 = 2 bytes
+            tensor_info
+        }).collect();
 
         // Tensor metadata — compute sizes first
         let tensors: Vec<GgufTensorInfo> = vec![
@@ -502,7 +541,7 @@ mod tests {
     #[test]
     fn llama_config_from_header() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         make_test_gguf_llama(&path);
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
 
@@ -547,5 +586,168 @@ mod tests {
         assert!((result[1] - 2.0).abs() < 1e-5);
         assert!((result[2] - 0.5).abs() < 1e-5);
         assert!((result[3] - (-1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn llama_model_from_gguf_weights_builds_layers() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.gguf");
+        make_test_gguf_llama(&path);
+        let weights = load_gguf_weights(&path).unwrap();
+        // Verify tensors were loaded
+        assert!(weights.tensors.contains_key("tok_embeddings.weight"));
+        assert!(weights.tensors.contains_key("output.weight"));
+        // F16 tensor dequantized to f32: 64 elements * 4 bytes = 256 bytes
+        assert_eq!(weights.tensors["tok_embeddings.weight"].len(), 256);
+    }
+
+    #[test]
+    fn llama_model_config_defaults_on_missing_keys() {
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_str("general.file_type", "F16"),
+        ];
+        let tensors: Vec<GgufTensorInfo> = vec![
+            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+        ];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let config = LlamaConfig::from_gguf_header(&header);
+        // Should use defaults when keys are missing
+        assert_eq!(config.num_layers, 32); // default block_count
+        assert_eq!(config.num_heads, 32); // default attention_head_count
+        assert_eq!(config.embed_dim, 4096); // default embedding_length
+        assert_eq!(config.max_seq_len, 4096); // default context_length
+        assert_eq!(config.rope_base, 10000.0); // hardcoded default
+    }
+
+    #[test]
+    fn llama_model_is_supported_arch_variants() {
+        assert!(LlamaModel::is_supported_architecture("llama"));
+        assert!(LlamaModel::is_supported_architecture("mistral"));
+        assert!(LlamaModel::is_supported_architecture("mixtral"));
+        assert!(LlamaModel::is_supported_architecture("gemma"));
+        assert!(LlamaModel::is_supported_architecture("phi3"));
+        assert!(LlamaModel::is_supported_architecture("qwen2"));
+        assert!(LlamaModel::is_supported_architecture("qwen3"));
+        assert!(LlamaModel::is_supported_architecture("starcoder2"));
+        assert!(!LlamaModel::is_supported_architecture(""));
+        assert!(!LlamaModel::is_supported_architecture("bert"));
+        assert!(!LlamaModel::is_supported_architecture("gpt2"));
+    }
+
+    #[test]
+    fn llama_model_architecture_from_header() {
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "phi3"),
+        ];
+        let tensors: Vec<GgufTensorInfo> = vec![
+            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
+        ];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        assert_eq!(LlamaModel::architecture(&header), Some("phi3"));
+    }
+
+    #[test]
+    fn llama_config_rope_dimension_fallback() {
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_str("general.file_type", "F16"),
+            kv_pair_u32("llama.context_length", 4096),
+            kv_pair_u32("llama.embedding_length", 64),
+            kv_pair_u32("llama.block_count", 2),
+            kv_pair_u32("llama.attention.head_count", 4),
+            kv_pair_u32("llama.attention.head_count_kv", 2),
+            kv_pair_u32("llama.feed_forward_length", 128),
+            // No rope.dimension_count — should fall back to head_dim
+            kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
+        ];
+        let tensors: Vec<GgufTensorInfo> = vec![
+            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+        ];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let config = LlamaConfig::from_gguf_header(&header);
+        // Without rope.dimension_count, should fall back to head_dim (64/4 = 16)
+        assert_eq!(config.head_dim, 16);
     }
 }

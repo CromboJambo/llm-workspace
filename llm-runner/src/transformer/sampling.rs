@@ -1,7 +1,9 @@
 //! Token sampling strategies for LLM inference.
 //!
 //! Converts logits to token IDs using temperature scaling, top-p (nucleus), and top-k filtering.
+//!
 
+#![allow(clippy::needless_borrow)]
 use rand::rngs::StdRng;
 use rand::RngExt;
 

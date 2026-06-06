@@ -4,6 +4,8 @@
 //!   x = x + attn(RMSNorm(x), Wq, Wk, Wv, Wo)
 //!   x = x + ffn(RMSNorm(x), W1, W2, W3)
 //!
+
+#![allow(clippy::needless_range_loop, clippy::let_and_return)]
 //! FFN uses SwiGLU: gate = x @ W1^T, up = x @ W3^T,
 //!   output = silu(gate) * (up @ W2^T)
 

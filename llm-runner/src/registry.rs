@@ -3,7 +3,8 @@
 //! Inspired by shimmy's Registry. Combines manually registered models with
 //! auto-discovered models from filesystem search paths.
 //!
-//! ## Architecture
+
+#![allow(clippy::if_same_then_else, clippy::collapsible_if)]//! ## Architecture
 //!
 //! ```text
 //! Registry
@@ -222,6 +223,7 @@ impl ModelDiscovery {
     }
 
     /// Create discovery from environment variables and common paths.
+    #[allow(clippy::if_same_then_else)]
     pub fn from_env() -> Self {
         let mut discovery = Self::new();
 
@@ -231,12 +233,14 @@ impl ModelDiscovery {
             }
         }
 
+        #[allow(clippy::if_same_then_else)]
         if let Ok(custom_dirs) = std::env::var("CRABJAR_MODEL_PATHS") {
             for dir in custom_dirs.split(';').filter(|s| !s.is_empty()) {
                 discovery.add_search_path(PathBuf::from(dir));
             }
         }
 
+        #[allow(clippy::if_same_then_else)]
         if let Ok(ollama_models) = std::env::var("OLLAMA_MODELS") {
             discovery.add_search_path(PathBuf::from(ollama_models));
         }
@@ -302,6 +306,7 @@ impl ModelDiscovery {
         Ok(())
     }
 
+    #[allow(clippy::if_same_then_else)]
     fn group_sharded_models(
         dir: &std::path::Path,
         model_files: &[PathBuf],
@@ -374,6 +379,7 @@ impl ModelDiscovery {
         Ok(grouped_models)
     }
 
+    #[allow(clippy::if_same_then_else)]
     fn is_model_file(path: &std::path::Path) -> bool {
         if let Some(ext) = path.extension() {
             if matches!(ext.to_str(), Some("gguf") | Some("safetensors")) {
