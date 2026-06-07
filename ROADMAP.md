@@ -26,7 +26,7 @@
 - [x] `DeviceSelector` — priority-based device routing (GPU → Remote → CPU)
 - [x] `RunnerBridge::send_remote_request()` — HTTP transport to remote LM Studio
 - [x] `RunnerConfig` — extended with `remote_endpoints` and `device_priority`
-- [ ] Wire `DeviceSelector` into inference pipeline
+- [x] Wire `DeviceSelector` into inference pipeline
 - [ ] Add CLI `devices list` and `devices route` commands
 - [ ] Model size-based auto-routing (small models → GPU, large → remote)
 - [ ] Health check polling for remote devices
@@ -35,15 +35,16 @@
 
 **Goal:** Replace CPU kernels with tcgen05 (sm_120) GPU kernels.
 
-**Status:** Stubbed — CUDA kernel path not yet implemented. All GPU items below are TODO.
+**Status:** CUDA runtime wired, PTX loading functional, GPU path available when CUDA present.
 
-- [ ] Merge tcgen05 example into llm-runner crate
-- [ ] Wire `KernelFromPtx` to actual PTX loading via `cuda-core`
-- [ ] Implement real tcgen05 WGMMA matmul kernel
+- [x] CUDA context management (`cuda_runtime.rs`) — `CudaRuntime`, device enumeration, compute capability detection
+- [x] `DeviceBuffer` extended with `Cuda` variant — real cuda-core DeviceBuffer integration
+- [x] `KernelFromPtx` wired to load PTX via `cuda-core` — `load_module_from_ptx_src`, kernel lookup, launch
+- [x] `InferenceEngine` updated with CUDA runtime — `gpu_available()`, `full_device_info()`, `list_devices()`
+- [ ] Implement real tcgen05 WGMMA matmul kernel (replace stub in `KernelFromPtx.matmul`)
 - [ ] Implement GPU attention kernel with TMA descriptor binding
-- [ ] Implement device memory allocation (`cuMemAlloc`/`cuMemFree`)
-- [ ] Implement H2D/D2H async memory transfers (`cuMemcpyHtoDAsync`)
-- [ ] Add CUDA context management (`cuCtxCreate`/`cuCtxSetCurrent`)
+- [ ] Implement device memory allocation (`cuMemAlloc`/`cuMemFree`) via cuda-core `memory` module
+- [ ] Implement H2D/D2H async memory transfers (`cuMemcpyHtoDAsync`) via cuda-core `memory` module
 - [ ] Add CUDA error handling and CPU fallback logic
 - [ ] Implement WGMMA for sm_120 (RTX 5060 Ti / 5090)
 - [ ] Add fp8 support (cuda-device `f8` feature already in workspace)
@@ -114,11 +115,3 @@ llm-workspace/
 - Bare `nightly` toolchain was corrupted (rustc out of sync with rustlib) — pinned to `nightly-2026-05-06` initially, now reinstalled and working
 - All LLVM libraries had missing execute permissions — fixed on all toolchains
 - K-family dequantization tests are marked `#[ignore]` — code exists but unverified against real models
-
-Thought: 3.0s
-The user asked me to add a roadmap to the project. I've created a ROADMAP.md file. The user didn't ask me to commit it, so I should just stop here.
-Done. ROADMAP.md created at /home/crombo/projects/llm-workspace/ROADMAP.md with 4 phases:
-1. CPU Inference — wire weights to Model, implement transformer layers, RoPE, tokenizer, sampling
-2. GPU Acceleration — merge tcgen05 example, wire cuda-core, implement H2D/D2H transfers, GPU attention
-3. Production Readiness — runner bridge, K-family dequantization, model routing, lazy loading
-4. Advanced Kernels — WGMMA sm_100, FlashAttention-2, speculative decoding, tensor parallelism
