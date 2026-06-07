@@ -3,6 +3,7 @@
 //! Implements HTTP transport for remote LM Studio inference.
 //! Routes requests to local GPU or remote endpoint based on device selection.
 
+use crate::device::{DeviceSelection, DeviceSelector};
 use crate::error::RunnerError;
 use crabjar_llm_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
 use tracing::debug;
@@ -175,4 +176,132 @@ impl RunnerBridge {
         endpoints.extend(self.config.remote_endpoints.clone());
         endpoints
     }
+}
+
+/// Routes inference requests to the best available device.
+///
+/// Combines `DeviceSelector` (device discovery + priority routing) with
+/// `RunnerBridge` (remote LM Studio HTTP transport) into a single execution
+/// pipeline.
+pub struct DeviceRouter {
+    selector: DeviceSelector,
+    bridge: RunnerBridge,
+}
+
+impl DeviceRouter {
+    /// Create a new router with default device selection and runner config.
+    pub fn new(config: RunnerConfig) -> Self {
+        Self {
+            selector: DeviceSelector::new(),
+            bridge: RunnerBridge::new(config),
+        }
+    }
+
+    /// Create a router with explicit device priority.
+    pub fn with_priority(config: RunnerConfig, priority: Vec<crate::device::DeviceType>) -> Self {
+        Self {
+            selector: DeviceSelector::with_priority(priority),
+            bridge: RunnerBridge::new(config),
+        }
+    }
+
+    /// Route an inference request to the best available device.
+    ///
+    /// `model_bytes` — estimated model size in bytes (used for VRAM fit check).
+    /// Returns the device selection and execution result.
+    pub async fn route(
+        &mut self,
+        request: InferenceRequest,
+        model_bytes: u64,
+    ) -> Result<RouteResult, RunnerError> {
+        let selection = self.selector.select_for_model(model_bytes).await;
+
+        debug!(
+            device_type = ?selection.device_type,
+            reason = %selection.reason,
+            model_bytes = model_bytes,
+            "Device router: selected device"
+        );
+
+        if let Some(remote) = &selection.remote {
+            debug!(
+                endpoint = %remote.endpoint,
+                latency_ms = remote.latency_ms,
+                "Routing to remote LM Studio"
+            );
+            let response = self.bridge.send_remote_request(request, &remote.endpoint).await?;
+            Ok(RouteResult {
+                selection,
+                response: Some(response),
+            })
+        } else {
+            debug!(
+                device = ?selection.selected,
+                "Routing to local device (CPU/fallback)"
+            );
+            // Local execution: return selection so caller can use InferenceEngine
+            Ok(RouteResult {
+                selection,
+                response: None,
+            })
+        }
+    }
+
+    /// Fast route without refreshing device discovery.
+    pub async fn quick_route(
+        &self,
+        request: InferenceRequest,
+        model_bytes: u64,
+    ) -> Result<RouteResult, RunnerError> {
+        let selection = self.selector.quick_select(model_bytes).await;
+
+        debug!(
+            device_type = ?selection.device_type,
+            reason = %selection.reason,
+            "Device router: quick-selected device"
+        );
+
+        if let Some(remote) = &selection.remote {
+            debug!(endpoint = %remote.endpoint, "Quick-routing to remote LM Studio");
+            let response = self.bridge.send_remote_request(request, &remote.endpoint).await?;
+            Ok(RouteResult {
+                selection,
+                response: Some(response),
+            })
+        } else {
+            Ok(RouteResult {
+                selection,
+                response: None,
+            })
+        }
+    }
+
+    /// List all available devices with current status.
+    pub fn list_devices(&self) -> Vec<crate::device::DeviceInfo> {
+        self.selector.list_available()
+    }
+
+    /// Get the current device selection priority.
+    pub fn priority(&self) -> &[crate::device::DeviceType] {
+        &self.selector.priority
+    }
+
+    /// Get the runner bridge endpoint info.
+    pub fn config_info(&self) -> Result<String, RunnerError> {
+        self.bridge.config_info()
+    }
+}
+
+impl Default for DeviceRouter {
+    fn default() -> Self {
+        Self::new(RunnerConfig::default())
+    }
+}
+
+/// Result of routing an inference request.
+pub struct RouteResult {
+    /// The device selection that was made.
+    pub selection: DeviceSelection,
+    /// Remote response if routed to remote LM Studio, None for local.
+    pub response: Option<InferenceResponse>,
 }
