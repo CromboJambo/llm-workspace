@@ -46,7 +46,7 @@ pub use model_manager::{ModelManager, ModelSpec, PreloadConfig, PreloadStats};
 pub use plug_in::PlugInProtocol;
 pub use remote_discovery::{RemoteDevice, RemoteDiscoveryConfig};
 pub use registry::{DiscoveredModel, ModelDiscovery, ModelEntry, ModelFormat, Registry};
-pub use runner::RunnerBridge;
+pub use runner::{DeviceRouter, RouteResult, RunnerBridge};
 pub use tokenizer::Tokenizer;
 pub use transformer::{LlamaModel, SamplingConfig, sample, argmax, load_tokenizer_from_gguf, GgufTokenizerConfig};
 
