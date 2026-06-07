@@ -6,3 +6,4 @@ target/flycheck0/
 target/release/
 target/.future-incompat-report.json
 tarpaulin-report.html
+Cargo.lock
