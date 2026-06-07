@@ -473,7 +473,15 @@ mod tests {
     fn kernel_from_ptx_arch() {
         let ptx = PtxSource::new("ptx".into(), GemmArch::Wgmma, String::from("wgmma"));
         let config = GemmConfig::default();
-        let kernel = KernelFromPtx { source: ptx, config };
+        let kernel = KernelFromPtx {
+            source: ptx,
+            config,
+            module: None,
+            function: None,
+            ctx: None,
+            stream: None,
+            gpu_available: false,
+        };
         assert_eq!(kernel.arch(), GemmArch::Wgmma);
     }
 }
