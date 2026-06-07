@@ -1,7 +1,7 @@
 //! Local GPU device discovery.
 //!
-//! Enumerates available CUDA GPUs with VRAM info.
-//! Uses cudarc driver API for device enumeration.
+//! Enumerates available CUDA GPUs with per-device VRAM info via NVML.
+//! Falls back to CUDA driver API if NVML is unavailable.
 //!
 //! TODO: Phase 2 — implement full GPU kernel path with tcgen05/WGMMA
 //! TODO: Add compute capability detection via cuDeviceGetAttribute
@@ -118,10 +118,16 @@ fn get_device_info(ordinal: i32) -> Option<LocalDevice> {
     // TODO: Phase 2 — get compute capability via cuDeviceGetAttribute
     let compute_capability = "stubbed".to_string();
 
-    // Get memory info via cuMemGetInfo (global, not per-device in old API)
-    let (total_vram, free_vram) = match cudarc::driver::result::mem_get_info() {
-        Ok((total, free)) => (total as u64, free as u64),
-        Err(_) => (0, 0),
+    // Use NVML for per-device VRAM info (cuMemGetInfo is global, not per-device).
+    let (total_vram, free_vram) = match get_nvml_memory(ordinal) {
+        Some((total, free)) => (total, free),
+        None => {
+            debug!(ordinal, "NVML unavailable, using global cuMemGetInfo as fallback");
+            match cudarc::driver::result::mem_get_info() {
+                Ok((total, free)) => (total as u64, free as u64),
+                Err(_) => (0, 0),
+            }
+        }
     };
 
     let used_vram = total_vram.saturating_sub(free_vram);
@@ -138,6 +144,30 @@ fn get_device_info(ordinal: i32) -> Option<LocalDevice> {
         available,
         used_vram,
     })
+}
+
+/// Get per-device VRAM info from NVML.
+///
+/// Returns (total_bytes, free_bytes) or None if NVML is unavailable.
+fn get_nvml_memory(ordinal: i32) -> Option<(u64, u64)> {
+    use nvml_wrapper::Nvml;
+
+    let nvml = match Nvml::init() {
+        Ok(n) => n,
+        Err(_) => return None,
+    };
+
+    // Get device by index (ordinal)
+    let dev = match nvml.device_by_index(ordinal as u32) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+
+    // Get memory info for this device
+    match dev.memory_info() {
+        Ok(mem_info) => Some((mem_info.total, mem_info.free)),
+        Err(_) => None,
+    }
 }
 
 /// Get the best available local GPU for inference.
