@@ -141,7 +141,7 @@ impl CudaRuntime {
             .result()
             .map_err(|_| CudaError::DeviceUnavailable { ordinal })?;
         }
-        let (major, minor) = (major.assume_init(), minor.assume_init());
+        let (major, minor) = unsafe { (major.assume_init(), minor.assume_init()) };
 
         // Get memory info
         let (free_memory, total_memory) = unsafe {
@@ -155,7 +155,7 @@ impl CudaRuntime {
 
         let device_info = CudaDeviceInfo {
             ordinal,
-            name,
+            name: name.clone(),
             compute_capability: (major, minor),
             total_memory,
             free_memory,
@@ -276,46 +276,44 @@ pub fn enumerate_devices() -> Result<Vec<CudaDeviceInfo>, CudaError> {
             .collect();
 
         // Get compute capability
-        let (major, minor) = match unsafe {
+        let (major, minor) = {
             let mut m = std::mem::MaybeUninit::uninit();
             let mut n = std::mem::MaybeUninit::uninit();
-            cuda_sys::cuDeviceGetAttribute(
-                m.as_mut_ptr(),
-                cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
-                cu_device,
-            )
-            .result()
-            .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
-            cuda_sys::cuDeviceGetAttribute(
-                n.as_mut_ptr(),
-                cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-                cu_device,
-            )
-            .result()
-            .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
-            Ok::<(i32, i32), CudaError>((m.assume_init(), n.assume_init()))
-        } {
-            Ok(cc) => cc,
-            Err(e) => {
-                warn!(ordinal, "CUDA compute capability query failed: {e}");
-                continue;
+            unsafe {
+                cuda_sys::cuDeviceGetAttribute(
+                    m.as_mut_ptr(),
+                    cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                    cu_device,
+                )
+                .result()
+                .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
+                cuda_sys::cuDeviceGetAttribute(
+                    n.as_mut_ptr(),
+                    cuda_sys::CUdevice_attribute_enum_CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                    cu_device,
+                )
+                .result()
+                .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
+                (m.assume_init(), n.assume_init())
             }
         };
 
         // Get memory info
-        let (free_memory, total_memory) = match unsafe {
+        let (free_memory, total_memory) = unsafe {
             let mut free: usize = 0;
             let mut total: usize = 0;
             cuda_sys::cuMemGetInfo_v2(&mut free, &mut total)
                 .result()
                 .map_err(|_| CudaError::DeviceUnavailable { ordinal: ordinal as usize })?;
-            Ok::<(u64, u64), CudaError>((free as u64, total as u64))
-        } {
-            Ok(info) => info,
-            Err(e) => {
-                warn!(ordinal, "CUDA memory info query failed: {e}");
-                continue;
-            }
+            (free as u64, total as u64)
+        };
+
+        let _device_info = CudaDeviceInfo {
+            ordinal: ordinal as usize,
+            name: name.clone(),
+            compute_capability: (major, minor),
+            total_memory,
+            free_memory,
         };
 
         devices.push(CudaDeviceInfo {
