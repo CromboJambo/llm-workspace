@@ -50,6 +50,9 @@ pub use runner::{DeviceRouter, RouteResult, RunnerBridge};
 pub use tokenizer::Tokenizer;
 pub use transformer::{LlamaModel, SamplingConfig, sample, argmax, load_tokenizer_from_gguf, GgufTokenizerConfig};
 
+// ── llama.rs: High-level API over llama.cpp ──
+pub mod llama;
+
 #[cfg(test)]
 mod tests {
     use super::*;
