@@ -16,7 +16,10 @@ authors = ["CrabJar Contributors"]
 description = "LLM inference stack: runner, plug-in protocol, safetensors, GGUF parser"
 
 [workspace.dependencies]
-# ML inference
+# LLM inference (FFI path)
+llama-cpp-2 = "0.1.146"
+
+# ML inference (pure-Rust path)
 candle-core = { version = "0.10.2", package = "candle-core" }
 candle-nn = { version = "0.10.2" }
 candle-transformers = { version = "0.10.2" }
