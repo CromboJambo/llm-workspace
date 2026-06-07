@@ -71,13 +71,14 @@ impl<T: Default + Clone> DeviceBuffer<T> {
     pub fn as_slice(&self) -> Option<&[T]> {
         match self {
             Self::Host(v) => Some(v.as_slice()),
-            Self::Device(..) | Self::DeviceTma(..) => None,
+            Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => None,
         }
     }
 
     pub fn as_mut_slice(&mut self) -> Option<&mut [T]> {
         match self {
             Self::Host(v) => Some(v.as_mut_slice()),
+            Self::Cuda(_) => None, // Can't get mutable ref to device buffer
             Self::Device(..) | Self::DeviceTma(..) => None,
         }
     }
@@ -88,31 +89,7 @@ impl<T: Default + Clone> DeviceBuffer<T> {
     {
         match self {
             Self::Host(v) => v.clone(),
-            Self::Cuda(buf) => buf.to_host_vec(&self.default_stream_or_null()).unwrap_or_default(),
-            Self::Device(..) | Self::DeviceTma(..) => vec![],
-        }
-    }
-
-    /// Get a default stream for device operations (returns null stream if no CUDA context).
-    fn default_stream_or_null(&self) -> cuda_core::CudaStream {
-        // Return a null stream (stream 0) for device operations
-        unsafe {
-            let mut stream = std::mem::MaybeUninit::uninit();
-            let _ = cuda_core::sys::cuStreamCreate(
-                stream.as_mut_ptr(),
-                cuda_core::sys::CUstream_flags_enum_CU_STREAM_DEFAULT,
-            );
-            cuda_core::CudaStream {
-                cu_stream: stream.assume_init(),
-                ctx: std::sync::Arc::new(cuda_core::CudaContext {
-                    cu_device: std::ptr::null_mut(),
-                    cu_ctx: std::ptr::null_mut(),
-                    ordinal: 0,
-                    num_streams: std::sync::atomic::AtomicUsize::new(0),
-                    event_tracking: std::sync::atomic::AtomicBool::new(false),
-                    error_state: std::sync::atomic::AtomicU32::new(0),
-                }),
-            }
+            Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => vec![],
         }
     }
 }
