@@ -32,7 +32,8 @@ pub mod sampler;
 pub mod model;
 pub mod context;
 
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use llama_cpp_2::{
@@ -43,7 +44,6 @@ use llama_cpp_2::{
     token::LlamaToken,
     sampling::LlamaSampler,
     json_schema_to_grammar,
-    gguf::GgufReader,
 };
 
 use anyhow::Result;
@@ -150,13 +150,13 @@ impl LlamaRunnerBuilder {
     /// Build the runner. This loads the model and creates the context.
     pub fn build(self) -> Result<LlamaRunner> {
         // Initialize the llama.cpp backend (CPU/GPU)
-        llama_backend::init();
+        let backend = llama_backend::LlamaBackend::init()?;
         info!("llama.cpp backend initialized");
 
         // Load the model
         let model_params = LlamaModelParams::default()
             .with_n_gpu_layers(self.n_gpu_layers);
-        let model = LlamaModel::load_from_file(&model_params, &self.model_path)?;
+        let model = LlamaModel::load_from_file(&backend, &model_params, &self.model_path)?;
         info!(
             "Loaded model: {} params={} n_embd={} n_layer={} n_head={} n_head_kv={} n_ctx_train={}",
             self.model_path,
@@ -175,9 +175,9 @@ impl LlamaRunnerBuilder {
             .with_n_batch(self.n_batch)
             .with_n_ubatch(self.n_ubatch)
             .with_n_threads(self.n_threads)
-            .with_kv_cache_type(self.kv_cache_type);
+            .with_kv_cache_type(self.kv_cache_type.into());
 
-        let context = model.new_context(&ctx_params)?;
+        let context = model.new_context(ctx_params)?;
         info!(
             "Context created: n_ctx={} n_batch={} n_ubatch={}",
             context.n_ctx(),
@@ -187,7 +187,7 @@ impl LlamaRunnerBuilder {
 
         Ok(LlamaRunner {
             model,
-            context: Arc::new(context),
+            context: Rc::new(RefCell::new(context)),
         })
     }
 }
@@ -195,7 +195,7 @@ impl LlamaRunnerBuilder {
 /// High-level llama.cpp runner. Wraps model loading, context management, and inference.
 pub struct LlamaRunner {
     model: LlamaModel,
-    context: Arc<LlamaContext<'static>>,
+    context: Rc<RefCell<LlamaContext<'static>>>,
 }
 
 impl LlamaRunner {
@@ -206,6 +206,7 @@ impl LlamaRunner {
 
     /// Get model information.
     pub fn model_info(&self) -> ModelInfo {
+        let rope = self.model.rope_type();
         ModelInfo {
             n_params: self.model.n_params(),
             n_embd: self.model.n_embd(),
@@ -214,7 +215,7 @@ impl LlamaRunner {
             n_head_kv: self.model.n_head_kv(),
             n_ctx_train: self.model.n_ctx_train(),
             n_vocab: self.model.n_vocab(),
-            rope_type: format!("{:?}", self.model.rope_type()),
+            rope_type: format!("{:?}", rope),
             is_hybrid: self.model.is_hybrid(),
             is_recurrent: self.model.is_recurrent(),
             vocab_type: format!("{:?}", self.model.vocab_type()),
@@ -260,19 +261,20 @@ impl LlamaRunner {
 
     /// Run inference on a batch of tokens.
     pub fn decode(&self, batch: &LlamaBatch) -> Result<()> {
-        self.context.decode(batch)?;
+        let mut ctx = self.context.borrow_mut();
+        ctx.decode(batch)?;
         Ok(())
     }
 
     /// Get logits for the entire batch.
     pub fn get_logits(&self) -> Vec<f32> {
-        self.context.get_logits()
+        self.context.borrow().get_logits().to_vec()
     }
 
     /// Get logits for a specific sequence.
     pub fn get_logits_ith(&self, i: i32) -> Result<Vec<f32>> {
-        let logits = self.context.get_logits_ith(i)?;
-        Ok(logits)
+        let logits = self.context.borrow().get_logits_ith(i);
+        Ok(logits.to_vec())
     }
 
     /// Run a full generation loop: encode prompt, prefill, then decode token by token.
@@ -299,8 +301,9 @@ impl LlamaRunner {
 
         // Sample first token
         let mut tokens: Vec<LlamaToken> = vec![];
-        let logits = self.get_logits_ith((prompt_len - 1) as i32)?;
-        let token = sampler.accept(&mut logits, self.context.token_data_array(prompt_len - 1))?;
+        let mut ctx = self.context.borrow_mut();
+        let logits = ctx.get_logits_ith((prompt_len - 1) as i32);
+        let token = sampler.sample(&ctx, (prompt_len - 1) as i32);
         tokens.push(token);
 
         info!("First token sampled: {:?}", token);
@@ -319,7 +322,11 @@ impl LlamaRunner {
 
             // Sample next token
             let logits = self.get_logits_ith(pos as i32)?;
-            token = sampler.accept(&mut logits, self.context.token_data_array(pos))?;
+            let ctx = self.context.borrow();
+            let next_token = sampler.sample(&ctx, pos as i32);
+            drop(ctx);
+
+            token = next_token;
             tokens.push(token);
             gen_count += 1;
 
@@ -339,7 +346,9 @@ impl LlamaRunner {
             .collect();
 
         // Get timings
-        let timings = self.context.timings();
+        let mut ctx = self.context.borrow_mut();
+        let timings = ctx.timings();
+        drop(ctx);
 
         info!(
             "Generation complete: {} tokens in {:.2}ms ({:.2} tok/s)",
@@ -381,39 +390,41 @@ impl LlamaRunner {
         self.decode(&batch)?;
 
         // Get embeddings from the last token of the sequence
-        let emb = self.context.embeddings_ith(tokens.len() - 1)?;
+        let emb = self.context.borrow().embeddings_ith(tokens.len() - 1)?;
         Ok(emb)
     }
 
     /// Clear the KV cache.
     pub fn clear_kv_cache(&self) -> Result<()> {
-        self.context.clear_kv_cache()?;
+        let mut ctx = self.context.borrow_mut();
+        ctx.clear_kv_cache()?;
         Ok(())
     }
 
     /// Reset the model's timings.
     pub fn reset_timings(&self) {
-        self.context.reset_timings();
+        let mut ctx = self.context.borrow_mut();
+        ctx.reset_timings();
     }
 
     /// Print memory breakdown.
     pub fn print_memory_breakdown(&self) {
-        self.context.print_memory_breakdown();
+        self.context.borrow().print_memory_breakdown();
     }
 
     /// Get the context's KV cache size.
     pub fn n_ctx(&self) -> u32 {
-        self.context.n_ctx()
+        self.context.borrow().n_ctx()
     }
 
     /// Get the context's batch size.
     pub fn n_batch(&self) -> u32 {
-        self.context.n_batch()
+        self.context.borrow().n_batch()
     }
 
     /// Get the context's ubatch size.
     pub fn n_ubatch(&self) -> u32 {
-        self.context.n_ubatch()
+        self.context.borrow().n_ubatch()
     }
 
     /// Get the context's session manager.
@@ -423,17 +434,17 @@ impl LlamaRunner {
 
     /// Convert a JSON schema to a grammar string for constrained decoding.
     pub fn schema_to_grammar(&self, schema: &str) -> Result<String> {
-        let grammar = json_schema_to_grammar(schema)?;
+        let grammar = json_schema_to_grammar(&self.model, schema)?;
         Ok(grammar)
     }
 
     /// Build a sampler from the sampling config.
     fn build_sampler(&self, config: &SamplingConfig) -> LlamaSampler {
-        let mut sampler = LlamaSampler::new();
+        let mut sampler = LlamaSampler::chain_simple([]);
 
         // Temperature
         if config.temperature > 0.0 {
-            sampler = sampler.temp(config.temperature);
+            sampler = sampler.temp(config.temperature as f32);
         }
 
         // Top-k
@@ -443,46 +454,30 @@ impl LlamaRunner {
 
         // Top-p
         if config.top_p > 0.0 {
-            sampler = sampler.top_p(config.top_p, -100.0);
+            sampler = sampler.top_p(config.top_p as f32, -100.0);
         }
 
         // Min-p
         if config.min_p > 0.0 {
-            sampler = sampler.min_p(config.min_p, 256);
+            sampler = sampler.min_p(config.min_p as f32, 256);
         }
 
         // TFS (tail free sampling)
         if config.tfs > 0.0 && config.tfs < 1.0 {
-            sampler = sampler.top_n_sigma(config.tfs);
+            sampler = sampler.top_n_sigma(config.tfs as f32);
         }
 
         // Typical p
         if config.typical_p > 0.0 && config.typical_p < 1.0 {
-            sampler = sampler.typical(config.typical_p);
-        }
-
-        // Mirostat
-        if config.mirostat {
-            sampler = sampler.mirostat_v2(
-                config.mirostat_tau as f32,
-                config.mirostat_eta as f32,
-            );
+            sampler = sampler.typical(config.typical_p as f32);
         }
 
         // Repetition penalty
         if config.repetition_penalty != 1.0 {
             sampler = sampler.penalties(
-                config.repetition_penalty,
-                config.repeat_last_n as i32,
+                config.repetition_penalty as f32,
+                config.repeat_last_n,
                 0.0,
-            );
-        }
-
-        // Finalize
-        if config.mirostat {
-            sampler = sampler.mirostat_v2(
-                config.mirostat_tau as f32,
-                config.mirostat_eta as f32,
             );
         }
 
@@ -509,23 +504,23 @@ impl From<KvCacheType> for llama_cpp_2::context::params::KvCacheType {
 
 /// Manages session save/load.
 pub struct SessionManager {
-    context: Arc<LlamaContext<'static>>,
+    context: Rc<RefCell<LlamaContext<'static>>>,
 }
 
 impl SessionManager {
-    pub fn new(context: Arc<LlamaContext<'static>>) -> Self {
+    pub fn new(context: Rc<RefCell<LlamaContext<'static>>>) -> Self {
         Self { context }
     }
 
     /// Save the current context state to a file.
     pub fn save(&self, path: &str) -> Result<(), String> {
-        self.context.save_session_file(path)?;
+        self.context.borrow().save_session_file(path)?;
         Ok(())
     }
 
     /// Load context state from a file.
     pub fn load(&self, path: &str) -> Result<(), String> {
-        self.context.load_session_file(path)?;
+        self.context.borrow().load_session_file(path)?;
         Ok(())
     }
 
@@ -536,31 +531,70 @@ impl SessionManager {
 
     /// Save a specific sequence's state to a file.
     pub fn save_seq_state(&self, seq_id: i32, path: &str) -> Result<(), String> {
-        self.context.state_seq_save_file(seq_id, path)?;
+        self.context.borrow().state_seq_save_file(seq_id, path)?;
         Ok(())
     }
 
     /// Load a specific sequence's state from a file.
     pub fn load_seq_state(&self, seq_id: i32, path: &str) -> Result<(), String> {
-        self.context.state_seq_load_file(seq_id, path)?;
+        self.context.borrow().state_seq_load_file(seq_id, path)?;
         Ok(())
     }
 
     /// Get the size needed to save the full state.
     pub fn state_size(&self) -> Result<usize, String> {
-        let size = self.context.get_state_size()?;
+        let size = self.context.borrow().get_state_size();
         Ok(size)
     }
 
     /// Get the size needed to save a specific sequence's state.
     pub fn state_seq_size(&self, seq_id: i32) -> Result<usize, String> {
-        let size = self.context.state_seq_get_size_ext(seq_id)?;
+        let ctx = self.context.borrow();
+        let size = ctx.state_seq_get_size_ext(&ctx, seq_id);
         Ok(size)
     }
 }
 
 /// Inspect a GGUF file using the GGUF reader.
-pub fn inspect_gguf(path: &str) -> Result<GgufReader> {
-    let reader = GgufReader::from_path(path)?;
-    Ok(reader)
+///
+/// Note: GgufReader::from_path was removed in llama-cpp-2 0.1.x.
+/// Use llama_cpp_sys_2::gguf_init_from_file directly, or load the model
+/// and query metadata via LlamaModel methods.
+pub fn inspect_gguf(path: &str) -> Result<String> {
+    // Use llama_cpp_sys_2 directly for GGUF inspection
+    let mut n_tensors: u64 = 0;
+    let mut n_kv: u64 = 0;
+    let gguf = unsafe {
+        llama_cpp_sys_2::gguf_init_from_file(
+            std::ffi::CString::new(path).unwrap().as_ptr(),
+            false,
+            &mut n_tensors,
+            &mut n_kv,
+        )
+    };
+
+    if gguf.is_null() {
+        return Err(anyhow::anyhow!("Failed to init GGUF reader for: {}", path));
+    }
+
+    let mut info = String::new();
+    info.push_str(&format!("GGUF file: {}\n", path));
+    info.push_str(&format!("  n_tensors: {}\n", n_tensors));
+    info.push_str(&format!("  n_kv: {}\n", n_kv));
+
+    // Read key KV metadata
+    let keys = unsafe { llama_cpp_sys_2::gguf_kv_get_all(gguf) };
+    if !keys.is_null() {
+        let n_keys = unsafe { llama_cpp_sys_2::gguf_n_keys(gguf) };
+        for i in 0..n_keys {
+            let key_ptr = unsafe { llama_cpp_sys_2::gguf_key_get_name(keys, i as i32) };
+            let key = unsafe { std::ffi::CStr::from_ptr(key_ptr) }.to_string_lossy().to_string();
+            let val_type = unsafe { llama_cpp_sys_2::gguf_kv_get_type(gguf, key_ptr) };
+            info.push_str(&format!("  KV[{}]: {} (type={})\n", i, key, val_type));
+        }
+    }
+
+    unsafe { llama_cpp_sys_2::gguf_free(gguf) };
+
+    Ok(info)
 }
