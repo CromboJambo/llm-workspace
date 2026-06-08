@@ -15,21 +15,33 @@ pub struct Linear {
 }
 
 impl Linear {
-    pub fn new(weight: Vec<f32>, bias: Option<Vec<f32>>, in_features: usize, out_features: usize) -> Self {
-        Self { weight, bias, in_features, out_features }
+    pub fn new(
+        weight: Vec<f32>,
+        bias: Option<Vec<f32>>,
+        in_features: usize,
+        out_features: usize,
+    ) -> Self {
+        Self {
+            weight,
+            bias,
+            in_features,
+            out_features,
+        }
     }
 
     pub fn from_f16_weight(weight_f16: &[u8], bias: Option<Vec<f32>>) -> Self {
         let elements = weight_f16.len() / 2;
-        let weight: Vec<f32> = weight_f16.chunks_exact(2)
+        let weight: Vec<f32> = weight_f16
+            .chunks_exact(2)
             .map(|chunk| f16_to_f32(chunk))
             .collect();
-        let (in_features, out_features) = if elements > 0 {
-            (1, elements)
-        } else {
-            (0, 0)
-        };
-        Self { weight, bias, in_features, out_features }
+        let (in_features, out_features) = if elements > 0 { (1, elements) } else { (0, 0) };
+        Self {
+            weight,
+            bias,
+            in_features,
+            out_features,
+        }
     }
 
     /// Forward pass: y = x @ W^T + bias.
