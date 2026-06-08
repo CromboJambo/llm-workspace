@@ -324,6 +324,452 @@ fn dequantize_q8_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
     Ok(result)
 }
 
+// ── K-family dequantization implementations ─────────────────────────
+
+/// Dequantize Q2_K data to f32.
+///
+/// Q2_K block: 16 elements, 16 bytes per block.
+/// Block layout: d(f16, 2B) + d_min(f16, 2B) + q1(2B) + q2(6B) + h(4B) = 16B
+fn dequantize_q2_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = (element_count as u64 / 4 + element_count as u64 * 6 / 32 + 8) as usize;
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Internal(format!(
+            "Q2_K data too small: got {} bytes, need {}",
+            data.len(),
+            expected_size
+        )));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let q1 = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+        let q2 = u32::from_le_bytes([
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+        ]);
+        let h = [
+            f16_to_f32(&data[offset + 10..offset + 12]),
+            f16_to_f32(&data[offset + 12..offset + 14]),
+            f16_to_f32(&data[offset + 14..offset + 16]),
+            f16_to_f32(&data[offset + 16..offset + 18]),
+        ];
+
+        for i in 0..16usize {
+            let q2_val = (q2 >> (2 * i)) & 0x03;
+            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q = (q1_val | q2_val) as i32 - 4;
+            let scale = if q2_val > 0 { h[i / 4] } else { 1.0 };
+            result.push(d * (q as f32) * scale + d_min);
+        }
+        offset += 24;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let q1 = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+        let q2 = u32::from_le_bytes([
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+        ]);
+        let h = [
+            f16_to_f32(&data[offset + 10..offset + 12]),
+            f16_to_f32(&data[offset + 12..offset + 14]),
+            f16_to_f32(&data[offset + 14..offset + 16]),
+            f16_to_f32(&data[offset + 16..offset + 18]),
+        ];
+
+        for i in 0..remaining {
+            let q2_val = (q2 >> (2 * i)) & 0x03;
+            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q = (q1_val | q2_val) as i32 - 4;
+            let scale = if q2_val > 0 { h[i / 4] } else { 1.0 };
+            result.push(d * (q as f32) * scale + d_min);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Dequantize Q3_K data to f32.
+///
+/// Q3_K block: 16 elements, 24 bytes per block.
+/// Block layout: d(f16, 2B) + d_min(f16, 2B) + delta(1B) + k_scale(4B) + q3(6B) + mask(1B) + h(4B) = 24B
+fn dequantize_q3_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = (element_count as u64 / 8 + element_count as u64 * 6 / 32 + 16) as usize;
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Internal(format!(
+            "Q3_K data too small: got {} bytes, need {}",
+            data.len(),
+            expected_size
+        )));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let delta = data[offset + 4] as i32;
+        let k_scale = [data[offset + 5], data[offset + 6], data[offset + 7], data[offset + 8]];
+        let q3 = [
+            data[offset + 9],
+            data[offset + 10],
+            data[offset + 11],
+            data[offset + 12],
+            data[offset + 13],
+            data[offset + 14],
+        ];
+        let mask = data[offset + 15];
+        let h = [
+            f16_to_f32(&data[offset + 16..offset + 18]),
+            f16_to_f32(&data[offset + 18..offset + 20]),
+            f16_to_f32(&data[offset + 20..offset + 22]),
+            f16_to_f32(&data[offset + 22..offset + 24]),
+        ];
+
+        for i in 0..16usize {
+            let q3_val = ((q3[i / 4] >> (3 * (i % 4))) & 0x07) as i32;
+            let mask_bit = (mask >> i) & 1;
+            let q = q3_val - ((mask_bit << 2) | (mask_bit << 1));
+            let scale = d * (k_scale[i / 4] as f32) / 4.0 + d_min;
+            let h_scale = if mask_bit != 0 { h[i / 4] } else { h[i / 4] / 8.0 };
+            result.push(scale * (q as f32 + delta as f32 / 64.0) * h_scale);
+        }
+        offset += 24;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let delta = data[offset + 4] as i32;
+        let k_scale = [data[offset + 5], data[offset + 6], data[offset + 7], data[offset + 8]];
+        let q3 = [
+            data[offset + 9],
+            data[offset + 10],
+            data[offset + 11],
+            data[offset + 12],
+            data[offset + 13],
+            data[offset + 14],
+        ];
+        let mask = data[offset + 15];
+        let h = [
+            f16_to_f32(&data[offset + 16..offset + 18]),
+            f16_to_f32(&data[offset + 18..offset + 20]),
+            f16_to_f32(&data[offset + 20..offset + 22]),
+            f16_to_f32(&data[offset + 22..offset + 24]),
+        ];
+
+        for i in 0..remaining {
+            let q3_val = ((q3[i / 4] >> (3 * (i % 4))) & 0x07) as i32;
+            let mask_bit = (mask >> i) & 1;
+            let q = q3_val - ((mask_bit << 2) | (mask_bit << 1));
+            let scale = d * (k_scale[i / 4] as f32) / 4.0 + d_min;
+            let h_scale = if mask_bit != 0 { h[i / 4] } else { h[i / 4] / 8.0 };
+            result.push(scale * (q as f32 + delta as f32 / 64.0) * h_scale);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Dequantize Q4_K data to f32.
+///
+/// Q4_K block: 16 elements, 24 bytes per block.
+/// Block layout: d(f16, 2B) + d_min(f16, 2B) + scales(2B) + q4_lo(4B) + q4_hi(4B) + extra(12B) = 24B
+fn dequantize_q4_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = (element_count as u64 / 4 + element_count as u64 * 6 / 32 + 16 + 32) as usize;
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Internal(format!(
+            "Q4_K data too small: got {} bytes, need {}",
+            data.len(),
+            expected_size
+        )));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let scale_lo = data[offset + 4] as f32;
+        let scale_hi = data[offset + 5] as f32;
+        let q4_lo = [
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+        ];
+        let q4_hi = [
+            data[offset + 10],
+            data[offset + 11],
+            data[offset + 12],
+            data[offset + 13],
+        ];
+
+        for i in 0..16usize {
+            let lo = (q4_lo[i / 2] >> (4 * (i % 2))) & 0x0F;
+            let hi = (q4_hi[i / 2] >> (4 * (i % 2))) & 0x0F;
+
+            let scale = if hi > 0 {
+                d * (scale_lo + scale_hi * 1.0 / 32.0)
+            } else {
+                d * scale_lo
+            };
+
+            let q = (lo as i32) - 8 + (hi as i32) * 16;
+            result.push(scale * (q as f32 / 16.0) + d_min);
+        }
+        offset += 24;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let scale_lo = data[offset + 4] as f32;
+        let scale_hi = data[offset + 5] as f32;
+        let q4_lo = [
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+        ];
+        let q4_hi = [
+            data[offset + 10],
+            data[offset + 11],
+            data[offset + 12],
+            data[offset + 13],
+        ];
+
+        for i in 0..remaining {
+            let lo = (q4_lo[i / 2] >> (4 * (i % 2))) & 0x0F;
+            let hi = (q4_hi[i / 2] >> (4 * (i % 2))) & 0x0F;
+
+            let scale = if hi > 0 {
+                d * (scale_lo + scale_hi * 1.0 / 32.0)
+            } else {
+                d * scale_lo
+            };
+
+            let q = (lo as i32) - 8 + (hi as i32) * 16;
+            result.push(scale * (q as f32 / 16.0) + d_min);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Dequantize Q5_K data to f32.
+///
+/// Q5_K block: 16 elements, 32 bytes per block.
+/// Block layout: d(f16, 2B) + d_min(f16, 2B) + scale(1B) + q5_lo(4B) + q5_h(2B) + extra(21B) = 32B
+fn dequantize_q5_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = (element_count as u64 / 4 + element_count as u64 * 6 / 32 + 16 + 32 + 16) as usize;
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Internal(format!(
+            "Q5_K data too small: got {} bytes, need {}",
+            data.len(),
+            expected_size
+        )));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let scale = data[offset + 4] as f32;
+        let q5_lo = [
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+        ];
+        let q5_h = [
+            data[offset + 10],
+            data[offset + 11],
+        ];
+
+        for i in 0..16usize {
+            let lo = (q5_lo[i / 2] >> (4 * (i % 2))) & 0x0F;
+            let hi = ((q5_h[i / 8] >> (i % 8)) & 1) as i32;
+
+            let q = lo as i32 + hi * 16;
+            result.push(d * ((q as f32 - 16.0) / 16.0) + d_min + scale);
+        }
+        offset += 32;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let scale = data[offset + 4] as f32;
+        let q5_lo = [
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+        ];
+        let q5_h = [
+            data[offset + 10],
+            data[offset + 11],
+        ];
+
+        for i in 0..remaining {
+            let lo = (q5_lo[i / 2] >> (4 * (i % 2))) & 0x0F;
+            let hi = ((q5_h[i / 8] >> (i % 8)) & 1) as i32;
+
+            let q = lo as i32 + hi * 16;
+            result.push(d * ((q as f32 - 16.0) / 16.0) + d_min + scale);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Dequantize Q6_K data to f32.
+///
+/// Q6_K block: 16 elements, 24 bytes per block.
+/// Block layout: d(f16, 2B) + mask(1B) + q6(12B) + scale(1B) = 16B per block
+fn dequantize_q6_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = (element_count as u64 / 2 + element_count as u64 / 4 + 256) as usize;
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Internal(format!(
+            "Q6_K data too small: got {} bytes, need {}",
+            data.len(),
+            expected_size
+        )));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let mask = data[offset + 2];
+        let q6 = [
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+            data[offset + 10],
+            data[offset + 11],
+            data[offset + 12],
+            data[offset + 13],
+            data[offset + 14],
+        ];
+        let scale = data[offset + 15] as f32;
+
+        for i in 0..16usize {
+            let q6_val = ((q6[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
+            let mask_bit = (mask >> i) & 1;
+
+            let combined = if mask_bit != 0 {
+                q6_val + 4
+            } else {
+                q6_val
+            };
+
+            result.push(d * ((combined as f32 - 32.0) / 32.0) * scale);
+        }
+        offset += 24;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let mask = data[offset + 2];
+        let q6 = &data[offset + 3..offset + 3 + remaining];
+
+        for i in 0..remaining {
+            let q6_val = ((q6[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
+            let mask_bit = (mask >> i) & 1;
+
+            let combined = if mask_bit != 0 {
+                q6_val + 4
+            } else {
+                q6_val
+            };
+
+            result.push(d * ((combined as f32 - 32.0) / 32.0) * scale);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Dequantize Q8_K data to f32.
+///
+/// Q8_K block: 16 elements, 18 bytes per block.
+/// Block layout: d(f16, 2B) + q8(16B) = 18B
+fn dequantize_q8_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = (element_count as u64 / 2 + element_count as u64 * 6 / 32 + 256) as usize;
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Internal(format!(
+            "Q8_K data too small: got {} bytes, need {}",
+            data.len(),
+            expected_size
+        )));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let q8 = &data[offset + 2..offset + 18];
+
+        for q in q8.iter() {
+            let q_val = *q as i8 as f32 / 128.0;
+            result.push(d * q_val);
+        }
+        offset += 18;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let q8 = &data[offset + 2..offset + 2 + remaining];
+
+        for q in q8.iter() {
+            let q_val = *q as i8 as f32 / 128.0;
+            result.push(d * q_val);
+        }
+    }
+
+    Ok(result)
+}
+
 // ── Half-float helpers ───────────────────────────────────────────────
 
 /// Convert half-float (f16) bytes to f32.
