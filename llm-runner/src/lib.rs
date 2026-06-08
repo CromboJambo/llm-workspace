@@ -26,29 +26,34 @@ pub mod model;
 pub mod model_loader;
 pub mod model_manager;
 pub mod plug_in;
-pub mod remote_discovery;
 pub mod registry;
+pub mod remote_discovery;
 pub mod runner;
 pub mod tokenizer;
 pub mod transformer;
 
-pub use cuda_runtime::{CudaError, CudaDeviceInfo, CudaRuntime, enumerate_devices, select_best_device, is_available, device_count};
-pub use device::{DeviceBackend, DeviceSelector, DeviceSelection, DeviceType, DeviceInfo};
+pub use cuda_runtime::{
+    CudaDeviceInfo, CudaError, CudaRuntime, device_count, enumerate_devices, is_available,
+    select_best_device,
+};
+pub use device::{DeviceBackend, DeviceInfo, DeviceSelection, DeviceSelector, DeviceType};
 pub use device_discovery::LocalDevice;
 pub use error::{Result, RunnerError};
-pub use gguf_weight_loader::{load_gguf_tensor, load_gguf_weights, GgufWeights};
+pub use gguf_weight_loader::{GgufWeights, load_gguf_tensor, load_gguf_weights};
 pub use inference_engine::InferenceEngine;
-pub use kernel::{AttentionKernel, CpuAttentionKernel, GemmKernel, GemmBuilder};
+pub use kernel::{AttentionKernel, CpuAttentionKernel, GemmBuilder, GemmKernel};
 pub use kernel::{DeviceBuffer, HostTmaDescriptor, Kvcache};
 pub use model::{CpuModel, Model, ModelConfig};
 pub use model_loader::ModelLoader;
 pub use model_manager::{ModelManager, ModelSpec, PreloadConfig, PreloadStats};
 pub use plug_in::PlugInProtocol;
-pub use remote_discovery::{RemoteDevice, RemoteDiscoveryConfig};
 pub use registry::{DiscoveredModel, ModelDiscovery, ModelEntry, ModelFormat, Registry};
+pub use remote_discovery::{RemoteDevice, RemoteDiscoveryConfig};
 pub use runner::{DeviceRouter, RouteResult, RunnerBridge};
 pub use tokenizer::Tokenizer;
-pub use transformer::{LlamaModel, SamplingConfig, sample, argmax, load_tokenizer_from_gguf, GgufTokenizerConfig};
+pub use transformer::{
+    GgufTokenizerConfig, LlamaModel, SamplingConfig, argmax, load_tokenizer_from_gguf, sample,
+};
 
 // ── llama.rs: High-level API over llama.cpp ──
 pub mod llama;
