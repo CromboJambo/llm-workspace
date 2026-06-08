@@ -35,6 +35,42 @@ use half::f16;
 /// Configuration for a transformer model.
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
+    pub num_layers: usize,
+    pub num_heads: usize,
+    pub head_dim: usize,
+    pub max_seq: usize,
+    pub num_kv_heads: usize,
+    pub use_tma: bool,
+    pub attention_arch: AttentionArch,
+}
+
+impl ModelConfig {
+    /// Create a model config from loaded GGUF weights.
+    pub fn from_gguf(header: &crabjar_gguf::types::GgufHeader) -> Result<Self, RunnerError> {
+        let embed_dim = header.embedding_length().ok_or_else(|| {
+            RunnerError::MissingHeaderField("embedding_length".to_string())
+        })? as usize;
+        let num_heads = header.attention_head_count().ok_or_else(|| {
+            RunnerError::MissingHeaderField("attention_head_count".to_string())
+        })? as usize;
+        let num_kv_heads = header.attention_head_count_kv().unwrap_or(num_heads as u32) as usize;
+        let num_layers = header.block_count().unwrap_or(32) as usize;
+        let head_dim = if num_heads > 0 { embed_dim / num_heads } else { 64 };
+        let max_seq = header.context_length().ok_or_else(|| {
+            RunnerError::MissingHeaderField("context_length".to_string())
+        })? as usize;
+
+        Ok(Self {
+            num_layers,
+            num_heads,
+            head_dim,
+            max_seq,
+            num_kv_heads,
+            use_tma: false,
+            attention_arch: AttentionArch::default(),
+        })
+    }
+}
     /// Number of transformer layers.
     pub num_layers: usize,
     /// Number of attention heads (may differ from encoder/decoder heads in GQA).
@@ -49,20 +85,6 @@ pub struct ModelConfig {
     pub use_tma: bool,
     /// Target attention architecture.
     pub attention_arch: AttentionArch,
-}
-
-impl Default for ModelConfig {
-    fn default() -> Self {
-        Self {
-            num_layers: 32,
-            num_heads: 8,
-            head_dim: 64,
-            max_seq: 2048,
-            num_kv_heads: 8,
-            use_tma: true,
-            attention_arch: AttentionArch::default(),
-        }
-    }
 }
 
 impl ModelConfig {
@@ -521,18 +543,22 @@ impl CpuModel {
         let hidden = self.llama_model.embed(token, self.seq_len)?;
         let hidden = self.llama_model.forward_layers(&hidden, self.seq_len)?;
 
-        // Store KV for this layer
+        // Store KV for all layers
         let embed_dim = hidden.len();
-        let key: Vec<f16> = hidden[embed_dim - (self.config.head_dim * self.config.num_heads)..]
+        let kv_dim = self.config.head_dim * self.config.num_heads;
+        let key: Vec<f16> = hidden[embed_dim - kv_dim..]
             .iter()
             .map(|&x| f16::from_f32(x))
             .collect();
         let value = key.clone();
 
-        if let Some((key_cache, _value_cache)) = self.kv_caches.last_mut() {
+        for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
             key_cache
                 .append(&key, &value)
-                .map_err(|e| RunnerError::Tensor(format!("KV append failed: {e}")))?;
+                .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
+            value_cache
+                .append(&key, &value)
+                .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
         }
 
         self.seq_len += 1;
