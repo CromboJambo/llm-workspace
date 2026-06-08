@@ -72,11 +72,14 @@ pub mod kvcache;
 pub mod tma_bridge;
 pub mod tma_descriptor;
 
-pub use attention::{AttentionArch, AttentionConfig, AttentionError, AttentionKernel, AttentionSlice, CpuAttentionKernel};
+pub use attention::{
+    AttentionArch, AttentionConfig, AttentionError, AttentionKernel, AttentionSlice,
+    CpuAttentionKernel,
+};
 pub use builder::{GemmBuilder, KernelFromPtx, PtxSource};
 pub use device_buf::DeviceBuffer;
 pub use device_buf::DeviceBufferError;
 pub use gemm::{GemmArch, GemmConfig, GemmError, GemmKernel};
-pub use kvcache::{Kvcache, KvcacheSlice, KvError};
+pub use kvcache::{KvError, Kvcache, KvcacheSlice};
 pub use tma_bridge::HostTmaDescriptor;
 pub use tma_descriptor::TmaDescriptor;
