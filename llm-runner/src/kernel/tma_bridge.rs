@@ -9,11 +9,12 @@
 //! passed to kernels as `*const TmaDescriptor`.
 
 use cuda_core::sys::{
-    cuTensorMapEncodeTiled, CUtensorMap, CUtensorMapDataType_enum_CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
+    CUtensorMap, CUtensorMapDataType_enum_CU_TENSOR_MAP_DATA_TYPE_FLOAT16,
     CUtensorMapFloatOOBfill_enum_CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE,
     CUtensorMapInterleave_enum_CU_TENSOR_MAP_INTERLEAVE_NONE,
     CUtensorMapL2promotion_enum_CU_TENSOR_MAP_L2_PROMOTION_NONE,
-    CUtensorMapSwizzle_enum_CU_TENSOR_MAP_SWIZZLE_128B, CUtensorMapSwizzle_enum_CU_TENSOR_MAP_SWIZZLE_NONE,
+    CUtensorMapSwizzle_enum_CU_TENSOR_MAP_SWIZZLE_128B,
+    CUtensorMapSwizzle_enum_CU_TENSOR_MAP_SWIZZLE_NONE, cuTensorMapEncodeTiled,
 };
 use std::mem::MaybeUninit;
 
@@ -72,7 +73,10 @@ impl HostTmaDescriptor {
         };
 
         if result != 0 {
-            return Err(format!("cuTensorMapEncodeTiled failed: error code {}", result));
+            return Err(format!(
+                "cuTensorMapEncodeTiled failed: error code {}",
+                result
+            ));
         }
 
         let descriptor = unsafe { tensor_map.assume_init() };
@@ -149,18 +153,14 @@ mod tests {
     fn host_tma_descriptor_create() {
         // Can't actually call cuTensorMapEncodeTiled without a CUDA context,
         // but we can verify the struct is properly sized.
-        let desc = HostTmaDescriptor {
-            opaque: [0u64; 16],
-        };
+        let desc = HostTmaDescriptor { opaque: [0u64; 16] };
         assert_eq!(desc.opaque.len(), 16);
         assert_eq!(std::mem::size_of_val(&desc.opaque), 128);
     }
 
     #[test]
     fn host_tma_descriptor_zeroed() {
-        let desc = HostTmaDescriptor {
-            opaque: [0u64; 16],
-        };
+        let desc = HostTmaDescriptor { opaque: [0u64; 16] };
         for &word in &desc.opaque {
             assert_eq!(word, 0u64);
         }
@@ -177,9 +177,7 @@ mod tests {
 
     #[test]
     fn host_tma_descriptor_debug() {
-        let desc = HostTmaDescriptor {
-            opaque: [0u64; 16],
-        };
+        let desc = HostTmaDescriptor { opaque: [0u64; 16] };
         let debug_str = format!("{:?}", desc);
         assert!(debug_str.contains("HostTmaDescriptor"));
     }
