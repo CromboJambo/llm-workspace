@@ -66,7 +66,7 @@ impl AttentionArch {
 }
 
 /// Configuration for an attention kernel launch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AttentionConfig {
     /// Number of attention heads (num_heads).
     pub num_heads: usize,
@@ -468,8 +468,22 @@ impl AttentionKernel for CpuAttentionKernel {
             // Scale by 1/sqrt(head_dim)
             let scaled: Vec<f32> = qk.iter().map(|x| x * scale).collect();
 
+            // Apply causal mask: mask positions where key_idx > query_idx
+            let mut masked = scaled;
+            if let Some(mask_buf) = mask {
+                if let Some(mask_slice) = mask_buf.as_slice() {
+                    for q in 0..query_seq_len {
+                        for k in 0..cache_seq_len {
+                            if k > q {
+                                masked[q * cache_seq_len + k] = f32::NEG_INFINITY;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Apply softmax over cache_seq_len dimension
-            let attn_weights = Self::softmax(&scaled, query_seq_len, cache_seq_len);
+            let attn_weights = Self::softmax(&masked, query_seq_len, cache_seq_len);
 
             // Compute attn_weights @ V: [query_seq_len x head_dim]
             // attn_weights is [query_seq_len x cache_seq_len], V is [cache_seq_len x head_dim]
