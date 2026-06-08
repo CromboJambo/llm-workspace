@@ -59,7 +59,6 @@ unsafe impl<T: Send> Sync for DeviceBuffer<T> {}
 impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Host(v) => f.debug_tuple("Host").field(v).finish(),
             Self::Device(ptr, len) => f.debug_tuple("Device").field(ptr).field(len).finish(),
             Self::DeviceTma(ptr, len, _desc) => {
                 f.debug_tuple("DeviceTma").field(ptr).field(len).finish()
@@ -172,7 +171,6 @@ impl<T> DeviceBuffer<T> {
             _ => None,
         }
     }
-}
 
     /// Create a device buffer from a raw pointer address and element count.
     ///
