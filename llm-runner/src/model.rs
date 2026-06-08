@@ -46,7 +46,7 @@ pub struct ModelConfig {
 
 impl ModelConfig {
     /// Create a model config from loaded GGUF weights.
-    pub fn from_gguf(header: &crabjar_gguf::types::GgufHeader) -> Result<Self, RunnerError> {
+    pub fn from_gguf(header: &crabjar_gguf::types::GgufHeader) -> Result<Self> {
         let embed_dim = header.embedding_length().ok_or_else(|| {
             RunnerError::MissingHeaderField("embedding_length".to_string())
         })? as usize;
