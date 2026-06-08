@@ -196,8 +196,18 @@ mod tests {
 
     #[test]
     fn apply_rope_f16_identity_at_zero() {
-        let mut q = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
-        let mut k = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
+        let mut q = vec![
+            f16::from_f32(1.0),
+            f16::from_f32(2.0),
+            f16::from_f32(3.0),
+            f16::from_f32(4.0),
+        ];
+        let mut k = vec![
+            f16::from_f32(1.0),
+            f16::from_f32(2.0),
+            f16::from_f32(3.0),
+            f16::from_f32(4.0),
+        ];
         let orig_q = q.clone();
 
         apply_rope_f16(&mut q, &mut k, 4, 1, 1, 0, 10000.0);
@@ -211,28 +221,54 @@ mod tests {
 
     #[test]
     fn apply_rope_f16_preserves_norm() {
-        let mut q = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
-        let mut k = vec![f16::from_f32(0.5), f16::from_f32(1.5), f16::from_f32(2.5), f16::from_f32(3.5)];
-        let orig_norm = q.iter().map(|x| x.to_f32() * x.to_f32()).sum::<f32>().sqrt();
+        let mut q = vec![
+            f16::from_f32(1.0),
+            f16::from_f32(2.0),
+            f16::from_f32(3.0),
+            f16::from_f32(4.0),
+        ];
+        let mut k = vec![
+            f16::from_f32(0.5),
+            f16::from_f32(1.5),
+            f16::from_f32(2.5),
+            f16::from_f32(3.5),
+        ];
+        let orig_norm = q
+            .iter()
+            .map(|x| x.to_f32() * x.to_f32())
+            .sum::<f32>()
+            .sqrt();
 
         apply_rope_f16(&mut q, &mut k, 4, 1, 1, 1, 10000.0);
 
-        let new_norm = q.iter().map(|x| x.to_f32() * x.to_f32()).sum::<f32>().sqrt();
+        let new_norm = q
+            .iter()
+            .map(|x| x.to_f32() * x.to_f32())
+            .sum::<f32>()
+            .sqrt();
         assert!((orig_norm - new_norm).abs() < 1e-3);
     }
 
     #[test]
     fn apply_rope_f16_multi_head() {
         let mut q = vec![
-            f16::from_f32(1.0), f16::from_f32(0.0),
-            f16::from_f32(0.0), f16::from_f32(1.0),
-            f16::from_f32(1.0), f16::from_f32(0.0),
-            f16::from_f32(0.0), f16::from_f32(1.0),
+            f16::from_f32(1.0),
+            f16::from_f32(0.0),
+            f16::from_f32(0.0),
+            f16::from_f32(1.0),
+            f16::from_f32(1.0),
+            f16::from_f32(0.0),
+            f16::from_f32(0.0),
+            f16::from_f32(1.0),
         ];
         let mut k = q.clone();
         apply_rope_f16(&mut q, &mut k, 4, 2, 1, 1, 10000.0);
         // Should produce non-trivial rotation (not all zeros)
-        let norm: f32 = q.iter().map(|x| x.to_f32() * x.to_f32()).sum::<f32>().sqrt();
+        let norm: f32 = q
+            .iter()
+            .map(|x| x.to_f32() * x.to_f32())
+            .sum::<f32>()
+            .sqrt();
         assert!(norm > 0.0);
     }
 
