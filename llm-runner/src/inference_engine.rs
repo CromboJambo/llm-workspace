@@ -1,7 +1,7 @@
 use crate::cuda_runtime::{CudaRuntime, enumerate_devices, is_available};
 use crate::error::RunnerError;
-use crate::kernel::{GemmKernel, GemmBuilder, GemmArch, GemmConfig};
-use crate::kernel::{AttentionKernel, AttentionArch, AttentionConfig, CpuAttentionKernel};
+use crate::kernel::{AttentionArch, AttentionConfig, AttentionKernel, CpuAttentionKernel};
+use crate::kernel::{GemmArch, GemmBuilder, GemmConfig, GemmKernel};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Module;
 use half::f16;
@@ -28,7 +28,7 @@ impl InferenceEngine {
             .with_config(GemmConfig::default())
             .build();
         let attention = Box::new(CpuAttentionKernel::new());
-        
+
         // Try to initialize CUDA if device preference is GPU
         let (cuda_runtime, stream) = if matches!(device, Device::Cuda(_)) || is_available() {
             match CudaRuntime::for_default_device() {
@@ -58,7 +58,7 @@ impl InferenceEngine {
     /// Create engine with a specific GEMM kernel.
     pub fn with_gemm(device: Device, dtype: DType, gemm: Box<dyn GemmKernel>) -> Self {
         let attention = Box::new(CpuAttentionKernel::new());
-        
+
         let (cuda_runtime, stream) = if is_available() {
             match CudaRuntime::for_default_device() {
                 Ok(rt) => {
@@ -217,7 +217,6 @@ impl InferenceEngine {
 
     /// List available CUDA devices.
     pub fn list_devices() -> Result<Vec<crate::cuda_runtime::CudaDeviceInfo>, RunnerError> {
-        enumerate_devices()
-            .map_err(|e| RunnerError::Device(e.to_string()))
+        enumerate_devices().map_err(|e| RunnerError::Device(e.to_string()))
     }
 }
