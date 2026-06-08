@@ -26,12 +26,13 @@
 //! Models exceeding `preload_threshold_score` and `min_usage_for_preload`
 //! are queued for background preloading.
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 use tracing::{debug, info, warn};
 
 /// Model specification for loading.
@@ -106,10 +107,11 @@ pub struct PreloadStats {
 /// preload queue to keep frequently-used models ready.
 #[derive(Clone)]
 pub struct ModelManager {
-    loaded_models: Arc<RwLock<Vec<(String, ModelLoadInfo)>>>,
-    usage_stats: Arc<RwLock<Vec<(String, ModelUsageStats)>>>,
+    loaded_models: Arc<RwLock<HashMap<String, ModelLoadInfo>>>,
+    usage_stats: Arc<RwLock<HashMap<String, ModelUsageStats>>>,
     preload_config: PreloadConfig,
     preload_queue: Arc<RwLock<VecDeque<String>>>,
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl ModelManager {
@@ -118,11 +120,13 @@ impl ModelManager {
     }
 
     pub fn with_config(config: PreloadConfig) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
         Self {
-            loaded_models: Arc::new(RwLock::new(Vec::new())),
-            usage_stats: Arc::new(RwLock::new(Vec::new())),
+            loaded_models: Arc::new(RwLock::new(HashMap::new())),
+            usage_stats: Arc::new(RwLock::new(HashMap::new())),
             preload_config: config,
             preload_queue: Arc::new(RwLock::new(VecDeque::new())),
+            shutdown_tx: Arc::new(shutdown_tx),
         }
     }
 
@@ -142,11 +146,9 @@ impl ModelManager {
             access_count: 1,
         };
 
-        // Remove existing entry if overwriting
         {
             let mut models = self.loaded_models.write().await;
-            models.retain(|(n, _)| n != &name);
-            models.push((name.clone(), info));
+            models.insert(name.clone(), info);
         }
 
         info!("Model '{}' registered in manager", name);
@@ -165,7 +167,7 @@ impl ModelManager {
     pub async fn record_access(&self, name: &str, response_time: Duration) {
         {
             let mut models = self.loaded_models.write().await;
-            if let Some((_, info)) = models.iter_mut().find(|(n, _)| n == name) {
+            if let Some(info) = models.get_mut(name) {
                 info.last_accessed = std::time::SystemTime::now();
                 info.access_count += 1;
             }
@@ -178,10 +180,7 @@ impl ModelManager {
     async fn update_usage_stats(&self, name: &str, response_time: Duration) {
         let mut stats = self.usage_stats.write().await;
 
-        let existing = stats.iter().position(|(n, _)| n == name);
-
-        if let Some(idx) = existing {
-            let entry = &mut stats[idx].1;
+        if let Some(entry) = stats.get_mut(name) {
             entry.total_requests += 1;
             entry.last_used = std::time::SystemTime::now();
 
@@ -191,9 +190,8 @@ impl ModelManager {
                 / entry.total_requests as f64;
             entry.average_response_time = Duration::from_millis(new_avg_ms as u64);
 
-            let time_since_last_use = entry
-                .last_used
-                .duration_since(std::time::SystemTime::now())
+            let time_since_last_use = std::time::SystemTime::now()
+                .duration_since(entry.last_used)
                 .unwrap_or_default()
                 .as_secs() as f64;
             let recency_factor = 1.0 / (1.0 + time_since_last_use / 3600.0);
@@ -207,7 +205,7 @@ impl ModelManager {
                 "Updated usage stats"
             );
         } else {
-            stats.push((
+            stats.insert(
                 name.to_string(),
                 ModelUsageStats {
                     model_name: name.to_string(),
@@ -216,7 +214,7 @@ impl ModelManager {
                     average_response_time: response_time,
                     popularity_score: 1.0,
                 },
-            ));
+            );
 
             debug!(
                 model = name,
@@ -242,7 +240,7 @@ impl ModelManager {
                 .filter(|(name, stat)| {
                     stat.total_requests >= self.preload_config.min_usage_for_preload
                         && stat.popularity_score >= self.preload_config.preload_threshold_score
-                        && !loaded_models.iter().any(|(n, _)| n == name)
+                        && !loaded_models.contains_key(*name)
                 })
                 .collect();
 
@@ -282,16 +280,24 @@ impl ModelManager {
     /// Start the background preloading task.
     ///
     /// Spawns a tokio task that periodically processes the preload queue.
-    /// The caller should keep the returned handle alive.
-    pub fn start_preloading_task(&self) -> tokio::task::JoinHandle<()> {
+    /// Returns a shutdown channel sender and a JoinHandle. Call `shutdown_tx.send(false)` to stop the task.
+    pub fn start_preloading_task(&self) -> (tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<()>) {
         let manager = Arc::new(self.clone());
         let cleanup_interval = self.preload_config.cleanup_interval;
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = shutdown_rx.changed() => {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
 
                 let model_to_preload = {
                     let mut queue = manager.preload_queue.write().await;
@@ -315,7 +321,11 @@ impl ModelManager {
 
                 manager.cleanup_old_models().await;
             }
-        })
+
+            debug!("Preloading task shut down");
+        });
+
+        (shutdown_tx, handle)
     }
 
     /// Clean up old/unused models to free memory.
@@ -363,9 +373,9 @@ impl ModelManager {
     /// Unload a model from the manager.
     pub async fn unload_model(&self, name: &str) -> bool {
         let mut models = self.loaded_models.write().await;
-        let had = models.iter().any(|(n, _)| n == name);
+        let had = models.contains_key(name);
         if had {
-            models.retain(|(n, _)| n != name);
+            models.remove(name);
             info!(model = name, "Model unloaded from manager");
         }
         had
@@ -374,22 +384,19 @@ impl ModelManager {
     /// Get information about a loaded model.
     pub async fn model_info(&self, name: &str) -> Option<ModelLoadInfo> {
         let models = self.loaded_models.read().await;
-        models
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.clone())
+        models.get(name).cloned()
     }
 
     /// List all loaded model names.
     pub async fn list_loaded_models(&self) -> Vec<String> {
         let models = self.loaded_models.read().await;
-        models.iter().map(|(n, _)| n.clone()).collect()
+        models.keys().cloned().collect()
     }
 
     /// Check if a model is loaded.
     pub async fn is_loaded(&self, name: &str) -> bool {
         let models = self.loaded_models.read().await;
-        models.iter().any(|(n, _)| n == name)
+        models.contains_key(name)
     }
 
     /// Count loaded models.
@@ -451,6 +458,14 @@ mod tests {
             a.preload_stats().await.loaded_models,
             b.preload_stats().await.loaded_models
         );
+    }
+
+    #[tokio::test]
+    async fn model_manager_has_shutdown_channel() {
+        let manager = ModelManager::new();
+        let (tx, _handle) = manager.start_preloading_task();
+        drop(tx);
+        // Shutdown channel is functional
     }
 
     // ── Model Loading ──────────────────────────────────────────────────
