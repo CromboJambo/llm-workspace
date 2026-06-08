@@ -29,7 +29,7 @@ use crate::kernel::tma_descriptor::TmaDescriptor;
 use half::f16;
 
 /// Attention tensor core architecture selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum AttentionArch {
     /// WGMMA -- warp group matrix multiply (sm_120, consumer Blackwell)
     Wgmma,
