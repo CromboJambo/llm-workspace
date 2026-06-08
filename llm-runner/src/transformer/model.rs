@@ -9,17 +9,31 @@ use crabjar_gguf::types::GgufHeader;
 use tracing::debug;
 
 use crate::error::{Result, RunnerError};
-use crate::gguf_weight_loader::{load_gguf_weights, GgufWeights};
+use crate::gguf_weight_loader::{GgufWeights, load_gguf_weights};
+use crate::transformer::GgufTokenizer;
 use crate::transformer::layer::{Attention, FeedForward, TransformerLayer};
 use crate::transformer::linear::Linear;
 use crate::transformer::rms_norm::RmsNorm;
 use crate::transformer::rope::RopeConfig;
-use crate::transformer::tokenizer::{load_tokenizer_from_gguf, GgufTokenizerConfig};
-use crate::transformer::GgufTokenizer;
+use crate::transformer::tokenizer::{GgufTokenizerConfig, load_tokenizer_from_gguf};
+
+/// Model architecture family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelArch {
+    #[default]
+    Llama,
+    Gemma,
+    Qwen2,
+    Qwen3,
+    Phi3,
+    Mixtral,
+    Starcoder2,
+}
 
 /// Llama-style model configuration.
 #[derive(Debug, Clone)]
 pub struct LlamaConfig {
+    pub arch: ModelArch,
     pub num_layers: usize,
     pub num_heads: usize,
     pub num_kv_heads: usize,
@@ -36,21 +50,48 @@ pub struct LlamaConfig {
 impl LlamaConfig {
     /// Build config from a GGUF header.
     pub fn from_gguf_header(header: &GgufHeader) -> Self {
+        let arch_str = header.architecture().unwrap_or("llama");
+        let arch = match arch_str {
+            "gemma" => ModelArch::Gemma,
+            "qwen2" => ModelArch::Qwen2,
+            "qwen3" => ModelArch::Qwen3,
+            "phi3" => ModelArch::Phi3,
+            "mixtral" => ModelArch::Mixtral,
+            "starcoder2" => ModelArch::Starcoder2,
+            _ => ModelArch::Llama,
+        };
+
         let embed_dim = header.embedding_length().unwrap_or(4096) as usize;
         let num_heads = header.attention_head_count().unwrap_or(32) as usize;
-        let num_kv_heads = header.attention_head_count_kv().unwrap_or(num_heads as u32) as usize;
+
+        let num_kv_heads = match arch {
+            ModelArch::Qwen2 | ModelArch::Qwen3 => header
+                .get_kv_u32(&format!("{arch_str}.num_key_value_heads"))
+                .unwrap_or(8) as usize,
+            _ => header.attention_head_count_kv().unwrap_or(num_heads as u32) as usize,
+        };
+
         let num_layers = header.block_count().unwrap_or(32) as usize;
-        let head_dim = embed_dim / num_heads;
-        let intermediate_dim = header.feed_forward_length().unwrap_or(11008) as usize;
+        let head_dim = if num_heads > 0 {
+            embed_dim / num_heads
+        } else {
+            64
+        };
+        let intermediate_dim = match arch {
+            ModelArch::Qwen2 | ModelArch::Qwen3 => header
+                .get_kv_u32(&format!("{arch_str}.feed_forward_length"))
+                .unwrap_or(11008) as usize,
+            _ => header.feed_forward_length().unwrap_or(11008) as usize,
+        };
         let max_seq_len = header.context_length().unwrap_or(4096) as usize;
         let rope_base = 10000.0;
         let rope_dim = header.rope_dimension_count().unwrap_or(head_dim as i32) as usize;
         let rms_norm_eps = header.normalization_epsilon().unwrap_or(1e-5);
 
-        // Use rope_dimension_count if provided, otherwise use head_dim
         let actual_head_dim = if rope_dim > 0 { rope_dim } else { head_dim };
 
         Self {
+            arch,
             num_layers,
             num_heads,
             num_kv_heads,
@@ -64,6 +105,63 @@ impl LlamaConfig {
             rms_norm_eps,
         }
     }
+
+    /// Get the layer prefix for this architecture.
+    pub fn layer_prefix(&self, layer_idx: usize) -> String {
+        match self.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => {
+                format!("model.layers.{layer_idx}.")
+            }
+            _ => format!("layers.{layer_idx}."),
+        }
+    }
+
+    /// Check if this architecture uses `gate_proj` / `up_proj` / `down_proj` naming.
+    pub fn uses_gate_up_down(&self) -> bool {
+        matches!(self.arch, ModelArch::Qwen2 | ModelArch::Qwen3)
+    }
+
+    /// Check if this architecture uses `q_proj` / `k_proj` / `v_proj` / `o_proj` naming.
+    pub fn uses_proj_naming(&self) -> bool {
+        matches!(
+            self.arch,
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3
+        )
+    }
+
+    /// Get the attention weight suffix for this architecture.
+    pub fn attn_weight_suffix(&self) -> &str {
+        match self.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => "proj.weight",
+            _ => ".weight",
+        }
+    }
+
+    /// Get the embedding tensor name for this architecture.
+    pub fn embedding_name(&self) -> &str {
+        match self.arch {
+            ModelArch::Qwen2 | ModelArch::Qwen3 => "model.embed_tokens.weight",
+            ModelArch::Gemma => "model.embed_tokens.weight",
+            _ => "tok_embeddings.weight",
+        }
+    }
+
+    /// Get the output/LM-head tensor name for this architecture.
+    pub fn output_name(&self) -> &str {
+        match self.arch {
+            ModelArch::Gemma => "lm_head.weight",
+            ModelArch::Qwen2 | ModelArch::Qwen3 => "lm_head.weight",
+            _ => "output.weight",
+        }
+    }
+
+    /// Get the final norm tensor name for this architecture (if any).
+    pub fn final_norm_name(&self) -> Option<&str> {
+        match self.arch {
+            ModelArch::Qwen2 | ModelArch::Qwen3 => Some("model.norm.weight"),
+            _ => None,
+        }
+    }
 }
 
 /// A loaded Llama-style model ready for inference.
@@ -71,6 +169,7 @@ pub struct LlamaModel {
     pub config: LlamaConfig,
     pub token_embeddings: Option<Linear>,
     pub output: Option<Linear>,
+    pub final_norm: Option<RmsNorm>,
     pub layers: Vec<TransformerLayer>,
     pub vocab_size: u32,
     pub tokenizer: Option<GgufTokenizer>,
@@ -103,21 +202,21 @@ impl LlamaModel {
         let config = LlamaConfig::from_gguf_header(header);
 
         let vocab_size = header.vocab_size().unwrap_or(32000);
-        let rope_config = RopeConfig::new(
-            config.head_dim,
-            config.rope_base,
-            config.max_seq_len,
-        );
+        let rope_config = RopeConfig::new(config.head_dim, config.rope_base, config.max_seq_len);
 
-        // Load token embeddings
-        let token_embeddings = weights.tensors.get("tok_embeddings.weight").map(|tensor_data| {
-            Linear::from_f16_weight(tensor_data, None)
-        });
+        // Load token embeddings — architecture-dependent name
+        let embedding_name = config.embedding_name();
+        let token_embeddings = weights
+            .tensors
+            .get(embedding_name)
+            .map(|tensor_data| Linear::from_f16_weight(tensor_data, None));
 
-        // Load output (LM head)
-        let output = weights.tensors.get("output.weight").map(|tensor_data| {
-            Linear::from_f16_weight(tensor_data, None)
-        });
+        // Load output (LM head) — architecture-dependent name
+        let output_name = config.output_name();
+        let output = weights
+            .tensors
+            .get(output_name)
+            .map(|tensor_data| Linear::from_f16_weight(tensor_data, None));
 
         // Build transformer layers
         let mut layers = Vec::with_capacity(config.num_layers);
@@ -126,10 +225,21 @@ impl LlamaModel {
             layers.push(layer);
         }
 
+        // Load final norm for architectures that have it (qwen2/qwen3)
+        let final_norm = if let Some(norm_name) = config.final_norm_name() {
+            weights
+                .tensors
+                .get(norm_name)
+                .map(|tensor_data| RmsNorm::new(f16_bytes_to_f32(tensor_data), config.rms_norm_eps))
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             token_embeddings,
             output,
+            final_norm,
             layers,
             vocab_size,
             tokenizer: None,
@@ -144,48 +254,137 @@ impl LlamaModel {
         config: &LlamaConfig,
         _rope: &RopeConfig,
     ) -> Result<TransformerLayer> {
-        let prefix = format!("layers.{layer_idx}.");
+        let prefix = config.layer_prefix(layer_idx);
 
-        // RMSNorm weights
-        let attention_norm_data = weights.tensors.get(&format!("{}.attention_norm.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}attention_norm.weight")))?;
-        let attention_norm = RmsNorm::new(
-            f16_bytes_to_f32(attention_norm_data),
-            config.rms_norm_eps,
-        );
+        // RMSNorm weights — architecture-dependent names
+        let attention_norm_name = match config.arch {
+            ModelArch::Gemma => format!("{prefix}input_layernorm.weight"),
+            ModelArch::Qwen2 | ModelArch::Qwen3 => format!("{prefix}norm_1.weight"),
+            _ => format!("{prefix}attention_norm.weight"),
+        };
+        let attention_norm_data = weights
+            .tensors
+            .get(&attention_norm_name)
+            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {attention_norm_name}")))?;
+        let attention_norm =
+            RmsNorm::new(f16_bytes_to_f32(attention_norm_data), config.rms_norm_eps);
 
-        let ffn_norm_data = weights.tensors.get(&format!("{}.ffn_norm.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}ffn_norm.weight")))?;
-        let ffn_norm = RmsNorm::new(
-            f16_bytes_to_f32(ffn_norm_data),
-            config.rms_norm_eps,
-        );
+        let ffn_norm_name = match config.arch {
+            ModelArch::Gemma => format!("{prefix}post_attention_layernorm.weight"),
+            ModelArch::Qwen2 | ModelArch::Qwen3 => format!("{prefix}norm_2.weight"),
+            _ => format!("{prefix}ffn_norm.weight"),
+        };
+        let ffn_norm_data = weights
+            .tensors
+            .get(&ffn_norm_name)
+            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {ffn_norm_name}")))?;
+        let ffn_norm = RmsNorm::new(f16_bytes_to_f32(ffn_norm_data), config.rms_norm_eps);
 
-        // Attention weights
-        let wq_data = weights.tensors.get(&format!("{}.attention.wq.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}attention.wq.weight")))?;
-        let wk_data = weights.tensors.get(&format!("{}.attention.wk.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}attention.wk.weight")))?;
-        let wv_data = weights.tensors.get(&format!("{}.attention.wv.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}attention.wv.weight")))?;
-        let wo_data = weights.tensors.get(&format!("{}.attention.wo.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}attention.wo.weight")))?;
+        // Attention weights — architecture-dependent naming
+        let suffix = config.attn_weight_suffix();
+        let wq_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}q_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing q_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wq.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wq.weight"))
+                }),
+        }?;
+        let wk_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}k_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing k_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wk.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wk.weight"))
+                }),
+        }?;
+        let wv_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}v_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing v_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wv.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wv.weight"))
+                }),
+        }?;
+        let wo_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}o_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing o_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wo.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wo.weight"))
+                }),
+        }?;
 
-        let _embed_dim = config.embed_dim;
         let wq = Linear::from_f16_weight(wq_data, None);
         let wk = Linear::from_f16_weight(wk_data, None);
         let wv = Linear::from_f16_weight(wv_data, None);
         let wo = Linear::from_f16_weight(wo_data, None);
 
-        let attention = Attention::new(wq, wk, wv, wo, config.head_dim, config.num_heads, config.num_kv_heads);
+        let attention = Attention::new(
+            wq,
+            wk,
+            wv,
+            wo,
+            config.head_dim,
+            config.num_heads,
+            config.num_kv_heads,
+        );
 
-        // FFN weights — llama naming: w1, w2, w3
-        let w1_data = weights.tensors.get(&format!("{}.feed_forward.w1.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w1.weight")))?;
-        let w2_data = weights.tensors.get(&format!("{}.feed_forward.w2.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w2.weight")))?;
-        let w3_data = weights.tensors.get(&format!("{}.feed_forward.w3.weight", prefix))
-            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w3.weight")))?;
+        // FFN weights — architecture-dependent naming
+        let (w1_data, w2_data, w3_data) = match config.arch {
+            ModelArch::Qwen2 | ModelArch::Qwen3 => {
+                let w1 = weights
+                    .tensors
+                    .get(&format!("{prefix}gate.weight"))
+                    .ok_or_else(|| RunnerError::ModelLoad("missing gate weight".into()))?;
+                let w2 = weights
+                    .tensors
+                    .get(&format!("{prefix}down_proj.weight"))
+                    .ok_or_else(|| RunnerError::ModelLoad("missing down_proj weight".into()))?;
+                let w3 = weights
+                    .tensors
+                    .get(&format!("{prefix}up.weight"))
+                    .ok_or_else(|| RunnerError::ModelLoad("missing up weight".into()))?;
+                (w1, w2, w3)
+            }
+            _ => {
+                let w1 = weights
+                    .tensors
+                    .get(&format!("{prefix}feed_forward.w1.weight"))
+                    .ok_or_else(|| {
+                        RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w1.weight"))
+                    })?;
+                let w2 = weights
+                    .tensors
+                    .get(&format!("{prefix}feed_forward.w2.weight"))
+                    .ok_or_else(|| {
+                        RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w2.weight"))
+                    })?;
+                let w3 = weights
+                    .tensors
+                    .get(&format!("{prefix}feed_forward.w3.weight"))
+                    .ok_or_else(|| {
+                        RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w3.weight"))
+                    })?;
+                (w1, w2, w3)
+            }
+        };
 
         let w1 = Linear::from_f16_weight(w1_data, None);
         let w2 = Linear::from_f16_weight(w2_data, None);
@@ -193,7 +392,12 @@ impl LlamaModel {
 
         let feed_forward = FeedForward::new(w1, w2, w3, config.intermediate_dim);
 
-        Ok(TransformerLayer::new(attention, feed_forward, attention_norm, ffn_norm))
+        Ok(TransformerLayer::new(
+            attention,
+            feed_forward,
+            attention_norm,
+            ffn_norm,
+        ))
     }
 
     /// Run the model on a single token input.
@@ -208,7 +412,9 @@ impl LlamaModel {
 
     /// Embed a single token ID into its embedding vector.
     pub fn embed(&self, token: u32, _start_pos: usize) -> Result<Vec<f32>> {
-        let emb = self.token_embeddings.as_ref()
+        let emb = self
+            .token_embeddings
+            .as_ref()
             .ok_or_else(|| RunnerError::ModelLoad("missing token embeddings".to_string()))?;
 
         let token_idx = token as usize;
@@ -220,7 +426,9 @@ impl LlamaModel {
 
     /// Apply the output (LM head) to get logits from hidden states.
     pub fn apply_output_head(&self, hidden: &[f32]) -> Result<Vec<f32>> {
-        let output = self.output.as_ref()
+        let output = self
+            .output
+            .as_ref()
             .ok_or_else(|| RunnerError::ModelLoad("missing output layer".to_string()))?;
 
         let logits = output.forward(hidden, 1);
@@ -236,6 +444,11 @@ impl LlamaModel {
             h = layer.forward(&h, 1, 1, start_pos + layer_idx);
         }
 
+        // Apply final norm for architectures that have it (qwen2/qwen3)
+        if let Some(ref norm) = self.final_norm {
+            h = norm.forward(&h, 1);
+        }
+
         Ok(h)
     }
 
@@ -246,11 +459,18 @@ impl LlamaModel {
 
     /// Check if this model supports the given architecture.
     pub fn is_supported_architecture(arch: &str) -> bool {
-        matches!(arch, "llama" | "mistral" | "mixtral" | "gemma" | "phi3" | "qwen2" | "qwen3" | "starcoder2")
+        matches!(
+            arch,
+            "llama" | "mistral" | "mixtral" | "gemma" | "phi3" | "qwen2" | "qwen3" | "starcoder2"
+        )
     }
 
     /// Sample a token from logits using the configured sampling strategy.
-    pub fn sample_from_logits(logits: &[f32], config: &crate::transformer::SamplingConfig, rng: &mut rand::rngs::StdRng) -> u32 {
+    pub fn sample_from_logits(
+        logits: &[f32],
+        config: &crate::transformer::SamplingConfig,
+        rng: &mut rand::rngs::StdRng,
+    ) -> u32 {
         crate::transformer::sample(logits, config, rng)
     }
 
@@ -284,9 +504,9 @@ impl LlamaModel {
 
         // Use the last token for each forward pass (autoregressive)
         for _ in 0..max_tokens {
-            let last_token = *context.last().ok_or_else(|| {
-                RunnerError::ModelLoad("empty context".to_string())
-            })?;
+            let last_token = *context
+                .last()
+                .ok_or_else(|| RunnerError::ModelLoad("empty context".to_string()))?;
 
             // Get logits for the last token
             let logits = self.forward(last_token, pos)?;
@@ -318,7 +538,8 @@ impl LlamaModel {
 
 /// Convert f16 tensor bytes to f32 Vec.
 fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes.chunks_exact(2)
+    bytes
+        .chunks_exact(2)
         .map(|chunk| {
             let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
             let sign = ((bits >> 15) & 1) as u32;
@@ -346,9 +567,9 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use crabjar_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     fn make_test_gguf_llama(path: &Path) {
         // KV pairs — numeric values must use correct type tags, not String
@@ -396,34 +617,94 @@ mod tests {
 
         // Compute offsets
         let mut offset = 0u64;
-        let tensors: Vec<GgufTensorInfo> = tensor_shapes.iter().enumerate().map(|(i, shape)| {
-            let tensor_info = GgufTensorInfo {
-                name: tensor_names[i].to_string(),
-                shape: shape.clone(),
-                offset,
-                dtype: 1,
-            };
-            let elems: u64 = shape.iter().product();
-            offset += elems * 2; // F16 = 2 bytes
-            tensor_info
-        }).collect();
+        let tensors: Vec<GgufTensorInfo> = tensor_shapes
+            .iter()
+            .enumerate()
+            .map(|(i, shape)| {
+                let tensor_info = GgufTensorInfo {
+                    name: tensor_names[i].to_string(),
+                    shape: shape.clone(),
+                    offset,
+                    dtype: 1,
+                };
+                let elems: u64 = shape.iter().product();
+                offset += elems * 2; // F16 = 2 bytes
+                tensor_info
+            })
+            .collect();
 
         // Tensor metadata — compute sizes first
         let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "output.weight".to_string(), shape: vec![32000u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wq.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wk.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wv.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wo.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention_norm.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.feed_forward.w1.weight".to_string(), shape: vec![64u64, 128u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.feed_forward.w2.weight".to_string(), shape: vec![128u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.feed_forward.w3.weight".to_string(), shape: vec![64u64, 128u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.ffn_norm.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo {
+                name: "tok_embeddings.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "output.weight".to_string(),
+                shape: vec![32000u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wq.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wk.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wv.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wo.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention_norm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.feed_forward.w1.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.feed_forward.w2.weight".to_string(),
+                shape: vec![128u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.feed_forward.w3.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.ffn_norm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
         ];
 
-        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let data_section_start =
+            crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
 
         // Write file
         let mut buf = Vec::new();
@@ -454,10 +735,13 @@ mod tests {
         }
 
         // Pad to data_section_start and write tensor data
-        let total_tensor_bytes: u64 = tensors.iter().map(|t| {
-            let elems: u64 = t.shape.iter().product();
-            elems * 2 // F16 = 2 bytes
-        }).sum();
+        let total_tensor_bytes: u64 = tensors
+            .iter()
+            .map(|t| {
+                let elems: u64 = t.shape.iter().product();
+                elems * 2 // F16 = 2 bytes
+            })
+            .sum();
         buf.resize((data_section_start + total_tensor_bytes) as usize, 0);
         for i in 0..total_tensor_bytes as usize {
             buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
@@ -503,11 +787,17 @@ mod tests {
             crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
             crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
             crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int16(v) => {
+                buf.extend_from_slice(&(*v as i16).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int32(v) => {
+                buf.extend_from_slice(&(*v as i32).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int64(v) => {
+                buf.extend_from_slice(&(*v as i64).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
             crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
             crabjar_gguf::GgufKvValue::String(s) => {
@@ -534,7 +824,9 @@ mod tests {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            crabjar_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Float16(v) => {
+                buf.extend_from_slice(&(*v as u16).to_le_bytes())
+            }
         }
     }
 
@@ -579,7 +871,10 @@ mod tests {
             }
         };
 
-        let data: Vec<u8> = vec![pack(1.0), pack(2.0), pack(0.5), pack(-1.0)].into_iter().flatten().collect();
+        let data: Vec<u8> = vec![pack(1.0), pack(2.0), pack(0.5), pack(-1.0)]
+            .into_iter()
+            .flatten()
+            .collect();
         let result = f16_bytes_to_f32(&data);
         assert_eq!(result.len(), 4);
         assert!((result[0] - 1.0).abs() < 1e-5);
@@ -609,9 +904,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 1,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -630,11 +928,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
@@ -666,12 +969,13 @@ mod tests {
     fn llama_model_architecture_from_header() {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "phi3"),
-        ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let kv_pairs: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "phi3")];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -690,11 +994,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
@@ -717,8 +1026,131 @@ mod tests {
             // No rope.dimension_count — should fall back to head_dim
             kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
         ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 1,
+        }];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let config = LlamaConfig::from_gguf_header(&header);
+        // Without rope.dimension_count, should fall back to head_dim (64/4 = 16)
+        assert_eq!(config.head_dim, 16);
+    }
+
+    #[test]
+    fn llama_config_detects_gemma_architecture() {
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "gemma"),
+            kv_pair_str("general.file_type", "F16"),
+            kv_pair_u32("gemma.context_length", 4096),
+            kv_pair_u32("gemma.embedding_length", 64),
+            kv_pair_u32("gemma.block_count", 2),
+            kv_pair_u32("gemma.attention.head_count", 4),
+            kv_pair_u32("gemma.attention.head_count_kv", 2),
+            kv_pair_u32("gemma.feed_forward_length", 128),
+            kv_pair_u32("gemma.attention.layer_norm_rms_epsilon", 1000000u32), // gemma uses 1e6 scaled by 1e6
+            kv_pair_i32("gemma.rope.dimension_count", 64),
+        ];
         let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
+            GgufTensorInfo {
+                name: "model.embed_tokens.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "lm_head.weight".to_string(),
+                shape: vec![32000u64, 64u64],
+                offset: 128,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.input_layernorm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 6553600,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.q_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 6553664,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.k_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 13107328,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.v_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 19660992,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.o_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 26214656,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.post_attention_layernorm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 32768320,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.gate_proj.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 32768384,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.up_proj.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 32768512,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.down_proj.weight".to_string(),
+                shape: vec![128u64, 64u64],
+                offset: 32768768,
+                dtype: 1,
+            },
         ];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
@@ -738,16 +1170,363 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
         let config = LlamaConfig::from_gguf_header(&header);
-        // Without rope.dimension_count, should fall back to head_dim (64/4 = 16)
-        assert_eq!(config.head_dim, 16);
+        assert_eq!(config.arch, ModelArch::Gemma);
+        assert_eq!(config.layer_prefix(0), "model.layers.0.");
+        assert_eq!(config.embedding_name(), "model.embed_tokens.weight");
+        assert_eq!(config.output_name(), "lm_head.weight");
+        assert!(config.final_norm_name().is_none());
+        assert!(config.uses_proj_naming());
+        assert_eq!(config.attn_weight_suffix(), "proj.weight");
+    }
+
+    #[test]
+    fn llama_config_detects_qwen2_architecture() {
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "qwen2"),
+            kv_pair_str("general.file_type", "F16"),
+            kv_pair_u32("qwen2.context_length", 4096),
+            kv_pair_u32("qwen2.embedding_length", 64),
+            kv_pair_u32("qwen2.block_count", 2),
+            kv_pair_u32("qwen2.attention.head_count", 4),
+            kv_pair_u32("qwen2.attention.head_count_kv", 2),
+            kv_pair_u32("qwen2.feed_forward_length", 128),
+            kv_pair_u32("qwen2.attention.layer_norm_rms_epsilon", 1000000u32),
+            kv_pair_i32("qwen2.rope.dimension_count", 64),
+            kv_pair_u32("qwen2.num_key_value_heads", 2),
+        ];
+        let tensors: Vec<GgufTensorInfo> = vec![
+            GgufTensorInfo {
+                name: "model.embed_tokens.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.norm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 64,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "lm_head.weight".to_string(),
+                shape: vec![32000u64, 64u64],
+                offset: 128,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.norm_1.weight".to_string(),
+                shape: vec![64u64],
+                offset: 6553600,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.q_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 6553664,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.k_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 13107328,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.v_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 19660992,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.o_proj.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 26214656,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.norm_2.weight".to_string(),
+                shape: vec![64u64],
+                offset: 32768320,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.gate.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 32768384,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.up.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 32768512,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "model.layers.0.down_proj.weight".to_string(),
+                shape: vec![128u64, 64u64],
+                offset: 32768768,
+                dtype: 1,
+            },
+        ];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let config = LlamaConfig::from_gguf_header(&header);
+        assert_eq!(config.arch, ModelArch::Qwen2);
+        assert_eq!(config.layer_prefix(0), "model.layers.0.");
+        assert_eq!(config.embedding_name(), "model.embed_tokens.weight");
+        assert_eq!(config.output_name(), "lm_head.weight");
+        assert_eq!(config.final_norm_name(), Some("model.norm.weight"));
+        assert!(config.uses_proj_naming());
+        assert!(config.uses_gate_up_down());
+        assert_eq!(config.attn_weight_suffix(), "proj.weight");
+        // num_kv_heads should come from qwen2.num_key_value_heads
+        assert_eq!(config.num_kv_heads, 2);
+    }
+
+    #[test]
+    fn llama_config_detects_phi3_architecture() {
+        let dir = tempdir().unwrap();
+        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "phi3"),
+            kv_pair_str("general.file_type", "F16"),
+            kv_pair_u32("phi3.context_length", 4096),
+            kv_pair_u32("phi3.embedding_length", 64),
+            kv_pair_u32("phi3.block_count", 2),
+            kv_pair_u32("phi3.attention.head_count", 4),
+            kv_pair_u32("phi3.attention.head_count_kv", 2),
+            kv_pair_u32("phi3.feed_forward_length", 128),
+            kv_pair_f32("phi3.attention.layer_norm_epsilon", 1e-5),
+            kv_pair_i32("phi3.rope.dimension_count", 64),
+        ];
+        let tensors: Vec<GgufTensorInfo> = vec![
+            GgufTensorInfo {
+                name: "tok_embeddings.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "output.weight".to_string(),
+                shape: vec![32000u64, 64u64],
+                offset: 128,
+                dtype: 1,
+            },
+        ];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let config = LlamaConfig::from_gguf_header(&header);
+        assert_eq!(config.arch, ModelArch::Phi3);
+        assert_eq!(config.layer_prefix(0), "layers.0.");
+        assert_eq!(config.embedding_name(), "tok_embeddings.weight");
+        assert_eq!(config.output_name(), "output.weight");
+        assert!(config.final_norm_name().is_none());
+        assert!(!config.uses_proj_naming());
+        assert!(!config.uses_gate_up_down());
+    }
+
+    #[test]
+    fn llama_config_layer_prefix_per_arch() {
+        let kv_pairs: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
+        let tensors: Vec<GgufTensorInfo> = vec![];
+        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&PathBuf::from("/tmp/_arch_test.gguf"), &buf).unwrap();
+
+        // Test llama prefix
+        let kv_llama: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
+        let h_llama = GgufHeader {
+            version: 3,
+            kv_pairs: kv_llama,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        assert_eq!(
+            LlamaConfig::from_gguf_header(&h_llama).layer_prefix(5),
+            "layers.5."
+        );
+
+        // Test gemma prefix
+        let kv_gemma: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "gemma")];
+        let h_gemma = GgufHeader {
+            version: 3,
+            kv_pairs: kv_gemma,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        assert_eq!(
+            LlamaConfig::from_gguf_header(&h_gemma).layer_prefix(5),
+            "model.layers.5."
+        );
+
+        // Test qwen2 prefix
+        let kv_qwen: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "qwen2")];
+        let h_qwen = GgufHeader {
+            version: 3,
+            kv_pairs: kv_qwen,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        assert_eq!(
+            LlamaConfig::from_gguf_header(&h_qwen).layer_prefix(5),
+            "model.layers.5."
+        );
+
+        // Test phi3 prefix (llama-style)
+        let kv_phi3: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "phi3")];
+        let h_phi3 = GgufHeader {
+            version: 3,
+            kv_pairs: kv_phi3,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        assert_eq!(
+            LlamaConfig::from_gguf_header(&h_phi3).layer_prefix(5),
+            "layers.5."
+        );
+    }
+
+    #[test]
+    fn llama_config_embedding_output_names_per_arch() {
+        let kv_llama: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
+        let h_llama = GgufHeader {
+            version: 3,
+            kv_pairs: kv_llama,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        let c_llama = LlamaConfig::from_gguf_header(&h_llama);
+        assert_eq!(c_llama.embedding_name(), "tok_embeddings.weight");
+        assert_eq!(c_llama.output_name(), "output.weight");
+
+        let kv_gemma: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "gemma")];
+        let h_gemma = GgufHeader {
+            version: 3,
+            kv_pairs: kv_gemma,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        let c_gemma = LlamaConfig::from_gguf_header(&h_gemma);
+        assert_eq!(c_gemma.embedding_name(), "model.embed_tokens.weight");
+        assert_eq!(c_gemma.output_name(), "lm_head.weight");
+
+        let kv_qwen: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "qwen2")];
+        let h_qwen = GgufHeader {
+            version: 3,
+            kv_pairs: kv_qwen,
+            tensors: vec![],
+            data_alignment: None,
+            data_section_start: 0,
+        };
+        let c_qwen = LlamaConfig::from_gguf_header(&h_qwen);
+        assert_eq!(c_qwen.embedding_name(), "model.embed_tokens.weight");
+        assert_eq!(c_qwen.output_name(), "lm_head.weight");
     }
 }
