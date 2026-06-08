@@ -72,10 +72,9 @@ impl RunnerBridge {
         {
             Ok(Ok(response)) => {
                 if response.status().is_success() {
-                    let body = response
-                        .text()
-                        .await
-                        .map_err(|e| RunnerError::Internal(format!("Failed to read response: {e}")))?;
+                    let body = response.text().await.map_err(|e| {
+                        RunnerError::Internal(format!("Failed to read response: {e}"))
+                    })?;
 
                     // Parse LM Studio response format
                     match self.parse_lm_studio_response(&body, &request) {
@@ -98,19 +97,14 @@ impl RunnerBridge {
                     }
                 } else {
                     let status = response.status();
-                    let body = response
-                        .text()
-                        .await
-                        .unwrap_or_default();
+                    let body = response.text().await.unwrap_or_default();
                     Err(RunnerError::Internal(format!(
                         "Remote inference failed ({}): {}",
                         status, body
                     )))
                 }
             }
-            Ok(Err(e)) => Err(RunnerError::Internal(format!(
-                "Remote request failed: {e}"
-            ))),
+            Ok(Err(e)) => Err(RunnerError::Internal(format!("Remote request failed: {e}"))),
             Err(_) => Err(RunnerError::Internal(
                 "Remote request timed out".to_string(),
             )),
@@ -127,8 +121,12 @@ impl RunnerBridge {
             .map_err(|e| RunnerError::Internal(format!("JSON parse error: {e}")))?;
 
         // LM Studio returns {"text": "..."} or {"choices": [{"text": "..."}]}
-        let output = json.get("text")
-            .or_else(|| json.get("choices").and_then(|c| c.get(0).and_then(|c| c.get("text"))))
+        let output = json
+            .get("text")
+            .or_else(|| {
+                json.get("choices")
+                    .and_then(|c| c.get(0).and_then(|c| c.get("text")))
+            })
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
@@ -229,7 +227,10 @@ impl DeviceRouter {
                 latency_ms = remote.latency_ms,
                 "Routing to remote LM Studio"
             );
-            let response = self.bridge.send_remote_request(request, &remote.endpoint).await?;
+            let response = self
+                .bridge
+                .send_remote_request(request, &remote.endpoint)
+                .await?;
             Ok(RouteResult {
                 selection,
                 response: Some(response),
@@ -263,7 +264,10 @@ impl DeviceRouter {
 
         if let Some(remote) = &selection.remote {
             debug!(endpoint = %remote.endpoint, "Quick-routing to remote LM Studio");
-            let response = self.bridge.send_remote_request(request, &remote.endpoint).await?;
+            let response = self
+                .bridge
+                .send_remote_request(request, &remote.endpoint)
+                .await?;
             Ok(RouteResult {
                 selection,
                 response: Some(response),
