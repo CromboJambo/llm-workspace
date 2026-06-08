@@ -21,7 +21,22 @@ pub struct TmaDescriptor(pub u128);
 impl TmaDescriptor {
     /// Create a new zeroed descriptor.
     pub const fn new() -> Self {
-        Self([0u32; 4])
+        Self(0u128)
+    }
+
+    /// Get the underlying u128 value.
+    pub const fn as_u128(&self) -> u128 {
+        self.0
+    }
+
+    /// Get the descriptor as [u32; 4] for hardware register access.
+    pub const fn as_u32_words(&self) -> [u32; 4] {
+        [
+            (self.0) as u32,
+            (self.0 >> 32) as u32,
+            (self.0 >> 64) as u32,
+            (self.0 >> 96) as u32,
+        ]
     }
 
     /// Set the GMEM address offset (within the buffer base).
@@ -29,13 +44,13 @@ impl TmaDescriptor {
     /// The offset must be 256-byte aligned for TMA.
     /// Stored in word 0 [31:0].
     pub const fn with_gmem_addr(mut self, addr: u64) -> Self {
-        self.0[0] = (addr & 0xFFFFFFFF) as u32;
+        self.0 |= (addr as u128 & 0xFFFFFFFF) << 0;
         self
     }
 
     /// Get the GMEM address offset from the descriptor.
-    pub fn gmem_addr(&self) -> u64 {
-        self.0[0] as u64
+    pub const fn gmem_addr(&self) -> u64 {
+        (self.0 & 0xFFFFFFFF) as u64
     }
 
     /// Set the box (region) dimensions and strides.
@@ -46,9 +61,8 @@ impl TmaDescriptor {
     /// `box_y` — number of elements along Y axis (16-bit).
     /// `gmem_y_stride` — GMEM stride in elements between consecutive columns (16-bit).
     /// `smem_y_stride` — SMEM stride in elements between consecutive columns (16-bit).
-    ///   Stored in word 3 [15:0] to avoid word boundary issues.
     #[allow(clippy::too_many_arguments)]
-    pub fn with_box(
+    pub const fn with_box(
         mut self,
         box_x: u16,
         gmem_x_stride: u16,
@@ -57,61 +71,47 @@ impl TmaDescriptor {
         gmem_y_stride: u16,
         smem_y_stride: u16,
     ) -> Self {
-        // Word 1: box X [15:0], gmem_x_stride [23:16], smem_x_stride [31:24]
-        self.0[1] |= box_x as u32;
-        self.0[1] |= ((gmem_x_stride.min(255)) as u32) << 16;
-        self.0[1] |= ((smem_x_stride.min(255)) as u32) << 24;
-
-        // Word 2: box Y [15:0], gmem_y_stride [31:16]
-        self.0[2] |= box_y as u32;
-        self.0[2] |= (gmem_y_stride as u32) << 16;
-
-        // Word 3: smem_y_stride [15:0]
-        self.0[3] |= (smem_y_stride as u32) << 16;
-
+        self.0 |= (box_x as u128) << 0;
+        self.0 |= ((gmem_x_stride.min(255) as u128) << 16);
+        self.0 |= ((smem_x_stride.min(255) as u128) << 24);
+        self.0 |= (box_y as u128) << 32;
+        self.0 |= ((gmem_y_stride as u128) << 48);
+        self.0 |= ((smem_y_stride as u128) << 64);
         self
     }
 
     /// Set the element info field.
-    ///
-    /// element_size: 0=1B, 1=2B, 2=4B, 3=8B. f16 = 2B → value 1.
-    pub fn with_element_info(mut self, element_size: u8) -> Self {
-        // Stored in word 1 bits [31:28]
-        self.0[1] |= ((element_size as u32) & 0xF) << 28;
+    pub const fn with_element_info(mut self, element_size: u8) -> Self {
+        self.0 |= ((element_size as u128 & 0xF) << 112);
         self
     }
 
     /// Set the descriptor type.
-    ///
-    /// 0x01 = Global Cache Read (TMA load).
-    pub fn with_descriptor_type(mut self, dtype: u8) -> Self {
-        self.0[3] |= (dtype as u32) << 24;
+    pub const fn with_descriptor_type(mut self, dtype: u8) -> Self {
+        self.0 |= ((dtype as u128) << 72);
         self
     }
 
     /// Set the SMEM config field.
-    pub fn with_smem_config(mut self, config: u8) -> Self {
-        self.0[3] |= (config as u32) << 28;
+    pub const fn with_smem_config(mut self, config: u8) -> Self {
+        self.0 |= ((config as u128) << 104);
         self
     }
 
     /// Set the cache hint.
-    ///
-    /// 0 = default (read-through to L2).
-    /// 1 = don't allocate in L2.
-    pub fn with_cache_hint(mut self, hint: u8) -> Self {
-        self.0[3] |= (hint as u32) << 30;
+    pub const fn with_cache_hint(mut self, hint: u8) -> Self {
+        self.0 |= ((hint as u128 & 0x3) << 122);
         self
     }
 
-    /// Pack the descriptor into bytes for passing to `tmca_gcr_read`.
-    pub fn as_bytes(&self) -> &[u32; 4] {
-        &self.0
-    }
-
-    /// Unpack from bytes received from a kernel.
-    pub fn from_bytes(bytes: [u32; 4]) -> Self {
-        Self(bytes)
+    /// Unpack from [u32; 4] words received from a kernel.
+    pub const fn from_u32_words(words: [u32; 4]) -> Self {
+        Self(
+            (words[0] as u128)
+                | ((words[1] as u128) << 32)
+                | ((words[2] as u128) << 64)
+                | ((words[3] as u128) << 96),
+        )
     }
 }
 
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn descriptor_new_is_zeroed() {
         let desc = TmaDescriptor::new();
-        assert_eq!(desc.0, [0, 0, 0, 0]);
+        assert_eq!(desc.as_u128(), 0);
     }
 
     #[test]
@@ -162,51 +162,51 @@ mod tests {
     #[test]
     fn descriptor_with_box() {
         let desc = TmaDescriptor::new().with_box(64, 128, 128, 256, 128, 128);
+        let words = desc.as_u32_words();
 
-        // box X = 64 in word 1 [15:0]
-        assert_eq!(desc.0[1] & 0xFFFF, 64u32);
-        // gmem_x_stride = 128 in word 1 [23:16]
-        assert_eq!((desc.0[1] >> 16) & 0xFF, 128u32);
-        // smem_x_stride = 128 in word 1 [31:24]
-        assert_eq!((desc.0[1] >> 24) & 0xFF, 128u32);
-        // box Y = 256 in word 2 [15:0]
-        assert_eq!(desc.0[2] & 0xFFFF, 256u32);
-        // gmem_y_stride = 128 in word 2 [31:16]
-        assert_eq!((desc.0[2] >> 16) & 0xFFFF, 128u32);
-        // smem_y_stride = 128 in word 3 [31:16]
-        assert_eq!((desc.0[3] >> 16) & 0xFFFF, 128u32);
+        assert_eq!(words[0] & 0xFFFF, 64u32);
+        assert_eq!((words[0] >> 16) & 0xFF, 128u32);
+        assert_eq!((words[0] >> 24) & 0xFF, 128u32);
+        assert_eq!(words[1] & 0xFFFF, 256u32);
+        assert_eq!((words[1] >> 16) & 0xFFFF, 128u32);
+        assert_eq!((words[2] >> 16) & 0xFFFF, 128u32);
     }
 
     #[test]
     fn descriptor_with_box_saturates_large_stride() {
         let desc = TmaDescriptor::new().with_box(64, 500, 500, 256, 128, 128);
+        let words = desc.as_u32_words();
 
-        assert_eq!((desc.0[1] >> 16) & 0xFF, 255u32);
-        assert_eq!((desc.0[1] >> 24) & 0xFF, 255u32);
+        assert_eq!((words[0] >> 16) & 0xFF, 255u32);
+        assert_eq!((words[0] >> 24) & 0xFF, 255u32);
     }
 
     #[test]
     fn descriptor_with_element_info() {
         let desc = TmaDescriptor::new().with_element_info(1);
-        assert_eq!((desc.0[1] >> 28) & 0xF, 1u32);
+        let words = desc.as_u32_words();
+        assert_eq!((words[3] >> 28) & 0xF, 1u32);
     }
 
     #[test]
     fn descriptor_with_descriptor_type() {
         let desc = TmaDescriptor::new().with_descriptor_type(1);
-        assert_eq!((desc.0[3] >> 24) & 0xFF, 1u32);
+        let words = desc.as_u32_words();
+        assert_eq!((words[2] >> 24) & 0xFF, 1u32);
     }
 
     #[test]
     fn descriptor_with_smem_config() {
         let desc = TmaDescriptor::new().with_smem_config(0);
-        assert_eq!((desc.0[3] >> 28) & 0xF, 0u32);
+        let words = desc.as_u32_words();
+        assert_eq!((words[3] >> 28) & 0xF, 0u32);
     }
 
     #[test]
     fn descriptor_with_cache_hint() {
         let desc = TmaDescriptor::new().with_cache_hint(0);
-        assert_eq!((desc.0[3] >> 30) & 0x3, 0u32);
+        let words = desc.as_u32_words();
+        assert_eq!((words[3] >> 30) & 0x3, 0u32);
     }
 
     #[test]
@@ -221,16 +221,17 @@ mod tests {
             .with_cache_hint(0);
 
         assert_eq!(desc.gmem_addr(), addr);
-        assert_eq!(desc.0[1] & 0xFFFF, 64u32);
-        assert_eq!(desc.0[2] & 0xFFFF, 512u32);
-        assert_eq!((desc.0[3] >> 24) & 0xFF, 1u32);
+        let words = desc.as_u32_words();
+        assert_eq!(words[0] & 0xFFFF, 64u32);
+        assert_eq!(words[1] & 0xFFFF, 512u32);
+        assert_eq!((words[2] >> 24) & 0xFF, 1u32);
     }
 
     #[test]
-    fn descriptor_from_bytes_roundtrip() {
-        let bytes = [1, 2, 3, 4];
-        let desc = TmaDescriptor::from_bytes(bytes);
-        assert_eq!(desc.0, bytes);
+    fn descriptor_from_words_roundtrip() {
+        let words = [1, 2, 3, 4];
+        let desc = TmaDescriptor::from_u32_words(words);
+        assert_eq!(desc.as_u32_words(), words);
     }
 
     #[test]
@@ -240,7 +241,7 @@ mod tests {
             .with_box(64, 128, 128, 256, 128, 128);
         let dup = desc;
         assert_eq!(dup.gmem_addr(), desc.gmem_addr());
-        assert_eq!(dup.0[1] & 0xFFFF, desc.0[1] & 0xFFFF);
-        assert_eq!(dup.0[2], desc.0[2]);
+        assert_eq!(dup.as_u32_words()[0] & 0xFFFF, desc.as_u32_words()[0] & 0xFFFF);
+        assert_eq!(dup.as_u32_words()[1], desc.as_u32_words()[1]);
     }
 }
