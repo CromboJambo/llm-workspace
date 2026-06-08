@@ -9,8 +9,8 @@
 //! TODO: Add ECC error detection via cuDeviceGetEccStatus
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 use std::os::raw::c_int;
+use tracing::debug;
 
 /// A discovered local GPU device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +93,12 @@ pub fn discover_local_devices() -> Vec<LocalDevice> {
 
 /// Initialize CUDA driver API.
 fn init_cuda() -> Result<(), String> {
-    cudarc::driver::result::init()
-        .map_err(|e| format!("CUDA init failed: {e}"))
+    cudarc::driver::result::init().map_err(|e| format!("CUDA init failed: {e}"))
 }
 
 /// Get the number of CUDA devices.
 fn get_device_count() -> Result<c_int, String> {
-    cudarc::driver::result::device::get_count()
-        .map_err(|e| format!("Device count failed: {e}"))
+    cudarc::driver::result::device::get_count().map_err(|e| format!("Device count failed: {e}"))
 }
 
 /// Get info for a specific CUDA device.
@@ -122,7 +120,10 @@ fn get_device_info(ordinal: i32) -> Option<LocalDevice> {
     let (total_vram, free_vram) = match get_nvml_memory(ordinal) {
         Some((total, free)) => (total, free),
         None => {
-            debug!(ordinal, "NVML unavailable, using global cuMemGetInfo as fallback");
+            debug!(
+                ordinal,
+                "NVML unavailable, using global cuMemGetInfo as fallback"
+            );
             match cudarc::driver::result::mem_get_info() {
                 Ok((total, free)) => (total as u64, free as u64),
                 Err(_) => (0, 0),
