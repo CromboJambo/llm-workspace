@@ -4,8 +4,8 @@
 //!
 
 #![allow(clippy::needless_borrow)]
-use rand::rngs::StdRng;
 use rand::RngExt;
+use rand::rngs::StdRng;
 
 /// Sampling configuration.
 #[derive(Debug, Clone)]
@@ -38,7 +38,8 @@ pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 
 
     // Apply temperature scaling
     let scaled_logits: Vec<f32> = if config.temperature > 0.0 {
-        logits.iter()
+        logits
+            .iter()
             .map(|&logit| logit / config.temperature)
             .collect()
     } else {
@@ -49,10 +50,8 @@ pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 
     let probs = softmax(&scaled_logits);
 
     // Apply top-k filtering
-    let mut indexed_probs: Vec<(f32, usize)> = probs.iter()
-        .enumerate()
-        .map(|(i, &p)| (p, i))
-        .collect();
+    let mut indexed_probs: Vec<(f32, usize)> =
+        probs.iter().enumerate().map(|(i, &p)| (p, i)).collect();
 
     if config.top_k > 0 {
         indexed_probs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -79,13 +78,16 @@ pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 
     let total_prob: f32 = indexed_probs.iter().map(|(p, _)| p).sum();
     if total_prob <= 0.0 {
         // Fallback to argmax
-        return logits.iter().enumerate()
+        return logits
+            .iter()
+            .enumerate()
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i as u32)
             .unwrap_or(0);
     }
 
-    let normalized_probs: Vec<(f32, usize)> = indexed_probs.iter()
+    let normalized_probs: Vec<(f32, usize)> = indexed_probs
+        .iter()
         .map(|(p, i)| (*p / total_prob, *i))
         .collect();
 
@@ -100,12 +102,17 @@ pub fn sample(logits: &[f32], config: &SamplingConfig, rng: &mut StdRng) -> u32 
     }
 
     // Fallback to last token
-    normalized_probs.last().map(|(_, idx)| *idx as u32).unwrap_or(0)
+    normalized_probs
+        .last()
+        .map(|(_, idx)| *idx as u32)
+        .unwrap_or(0)
 }
 
 /// Argmax sampling (greedy decoding).
 pub fn argmax(logits: &[f32]) -> u32 {
-    logits.iter().enumerate()
+    logits
+        .iter()
+        .enumerate()
         .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i as u32)
         .unwrap_or(0)
@@ -126,8 +133,8 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn softmax_basic() {
