@@ -166,11 +166,11 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
                 .flat_map(|v| v.to_le_bytes())
                 .collect())
         }
-        GgufDtype::Q1_K => dequantize_q1_k(data, element_count),
-        GgufDtype::Q2_K_S => dequantize_q2_k(data, element_count),
-        GgufDtype::Q3_K_S => dequantize_q3_k(data, element_count),
-        GgufDtype::Q4_K_S => dequantize_q4_k(data, element_count),
-        GgufDtype::Q2_K_M => dequantize_q2_k(data, element_count),
+        GgufDtype::Q1_K => dequantize_q1_k(raw_data, element_count),
+        GgufDtype::Q2_K_S => dequantize_q2_k(raw_data, element_count),
+        GgufDtype::Q3_K_S => dequantize_q3_k(raw_data, element_count),
+        GgufDtype::Q4_K_S => dequantize_q4_k(raw_data, element_count),
+        GgufDtype::Q2_K_M => dequantize_q2_k(raw_data, element_count),
         GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => Ok(raw_data.to_vec()),
         GgufDtype::Unknown(_) => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
             "Unknown GGUF dtype {} for tensor '{}'",
@@ -347,7 +347,7 @@ fn dequantize_q1_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         let d = f16_to_f32(&data[offset..offset + 2]);
         let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
         let q1 = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
-        let delta = [
+        let _delta = [
             f16_to_f32(&data[offset + 6..offset + 8]),
             f16_to_f32(&data[offset + 8..offset + 10]),
             f16_to_f32(&data[offset + 10..offset + 12]),
