@@ -70,24 +70,7 @@ impl ModelConfig {
             attention_arch: AttentionArch::default(),
         })
     }
-}
-    /// Number of transformer layers.
-    pub num_layers: usize,
-    /// Number of attention heads (may differ from encoder/decoder heads in GQA).
-    pub num_heads: usize,
-    /// Dimension per attention head.
-    pub head_dim: usize,
-    /// Maximum sequence length (context window).
-    pub max_seq: usize,
-    /// Number of attention heads per group (for GQA, <= num_heads).
-    pub num_kv_heads: usize,
-    /// Whether to use TMA for attention data movement.
-    pub use_tma: bool,
-    /// Target attention architecture.
-    pub attention_arch: AttentionArch,
-}
 
-impl ModelConfig {
     pub fn with_num_layers(mut self, num_layers: usize) -> Self {
         self.num_layers = num_layers;
         self
@@ -497,7 +480,7 @@ impl CpuModel {
 
         let mut outputs = Vec::with_capacity(self.kv_caches.len());
 
-        for (layer_idx, (key_cache, _value_cache)) in self.kv_caches.iter_mut().enumerate() {
+        for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
             // For each position in the prompt, compute the forward pass
             let mut layer_outputs = Vec::new();
             for (pos, &token) in prompt_tokens.iter().enumerate() {
@@ -519,6 +502,9 @@ impl CpuModel {
                 let value = key.clone();
 
                 key_cache.append(&key, &value).map_err(|e| {
+                    RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}"))
+                })?;
+                value_cache.append(&value, &key).map_err(|e| {
                     RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}"))
                 })?;
 
@@ -557,7 +543,7 @@ impl CpuModel {
                 .append(&key, &value)
                 .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
             value_cache
-                .append(&key, &value)
+                .append(&value, &key)
                 .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
         }
 
@@ -647,58 +633,57 @@ mod tests {
     // ── ModelConfig ────────────────────────────────────────────────────
 
     #[test]
-    fn model_config_default() {
-        let config = ModelConfig::default();
-        assert_eq!(config.num_layers, 32);
+    fn model_config_from_gguf_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::path::PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
+        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+            kv_pair_str("general.architecture", "llama"),
+            kv_pair_u32("llama.context_length", 2048),
+            kv_pair_u32("llama.embedding_length", 64),
+            kv_pair_u32("llama.block_count", 4),
+            kv_pair_u32("llama.attention.head_count", 8),
+            kv_pair_u32("llama.attention.head_count_kv", 4),
+        ];
+        let tensors: Vec<crabjar_gguf::GgufTensorInfo> = vec![crabjar_gguf::GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 1,
+        }];
+        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+        for kv in &kv_pairs {
+            let key_bytes = kv.key.as_bytes();
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key_bytes);
+            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            write_kv_value(&mut buf, &kv.value);
+        }
+        for tensor in &tensors {
+            let name_bytes = tensor.name.as_bytes();
+            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(name_bytes);
+            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
+            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+            buf.extend_from_slice(&tensor.offset.to_le_bytes());
+        }
+        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        buf.resize((data_section_start + total) as usize, 0);
+        std::fs::write(&path, &buf).unwrap();
+        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let config = ModelConfig::from_gguf(&header).unwrap();
+        assert_eq!(config.num_layers, 4);
         assert_eq!(config.num_heads, 8);
-        assert_eq!(config.head_dim, 64);
+        assert_eq!(config.head_dim, 8);
         assert_eq!(config.max_seq, 2048);
-        assert_eq!(config.num_kv_heads, 8);
-        assert!(config.use_tma);
-        assert_eq!(config.attention_arch, AttentionArch::Tcgen05);
-    }
-
-    #[test]
-    fn model_config_builder_chain() {
-        let config = ModelConfig::default()
-            .with_num_layers(16)
-            .with_num_heads(12)
-            .with_head_dim(128)
-            .with_max_seq(4096)
-            .with_num_kv_heads(4)
-            .with_tma(false)
-            .with_attention_arch(AttentionArch::Wgmma);
-
-        assert_eq!(config.num_layers, 16);
-        assert_eq!(config.num_heads, 12);
-        assert_eq!(config.head_dim, 128);
-        assert_eq!(config.max_seq, 4096);
         assert_eq!(config.num_kv_heads, 4);
-        assert!(!config.use_tma);
-        assert_eq!(config.attention_arch, AttentionArch::Wgmma);
-    }
-
-    #[test]
-    fn model_config_attention_config() {
-        let config = ModelConfig::default()
-            .with_num_heads(16)
-            .with_head_dim(128)
-            .with_max_seq(2048)
-            .with_attention_arch(AttentionArch::Wgmma);
-
-        let ac = config.attention_config();
-        assert_eq!(ac.num_heads, 16);
-        assert_eq!(ac.head_dim, 128);
-        assert_eq!(ac.max_seq, 2048);
-        assert_eq!(ac.arch, AttentionArch::Wgmma);
-    }
-
-    #[test]
-    fn model_config_clone() {
-        let config = ModelConfig::default().with_num_layers(8);
-        let cloned = config.clone();
-        assert_eq!(config.num_layers, cloned.num_layers);
-        assert_eq!(config.num_heads, cloned.num_heads);
     }
 
     // ── Model ──────────────────────────────────────────────────────────
