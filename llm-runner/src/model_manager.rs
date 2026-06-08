@@ -67,14 +67,26 @@ pub struct ModelUsageStats {
 }
 
 /// Configuration for smart preloading behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PreloadConfig {
     pub enabled: bool,
     pub max_preloaded_models: usize,
     pub max_memory_mb: usize,
     pub preload_threshold_score: f64,
     pub min_usage_for_preload: u64,
-    pub cleanup_interval: Duration,
+    #[serde(default = "default_cleanup_secs")]
+    pub cleanup_interval_secs: u64,
+}
+
+fn default_cleanup_secs() -> u64 {
+    300
+}
+
+impl PreloadConfig {
+    /// Get the cleanup interval as a [`Duration`].
+    pub fn cleanup_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.cleanup_interval_secs)
+    }
 }
 
 impl Default for PreloadConfig {
@@ -85,13 +97,13 @@ impl Default for PreloadConfig {
             max_memory_mb: 8192,
             preload_threshold_score: 0.5,
             min_usage_for_preload: 2,
-            cleanup_interval: Duration::from_secs(300),
+            cleanup_interval_secs: 300,
         }
     }
 }
 
 /// Preloading statistics for monitoring.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PreloadStats {
     pub loaded_models: usize,
     pub max_models: usize,
@@ -283,7 +295,7 @@ impl ModelManager {
     /// Returns a shutdown channel sender and a JoinHandle. Call `shutdown_tx.send(false)` to stop the task.
     pub fn start_preloading_task(&self) -> (tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<()>) {
         let manager = Arc::new(self.clone());
-        let cleanup_interval = self.preload_config.cleanup_interval;
+        let cleanup_interval = self.preload_config.cleanup_interval();
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
         let handle = tokio::spawn(async move {
