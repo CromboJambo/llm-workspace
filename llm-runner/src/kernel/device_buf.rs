@@ -256,45 +256,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_host() {
-        let buf = DeviceBuffer::from_host(vec![1, 2, 3]);
+    fn host_buffer_from_vec() {
+        let buf = HostBuffer::from_host(vec![1, 2, 3]);
         assert_eq!(buf.len(), 3);
         assert!(!buf.is_empty());
-        assert_eq!(buf.as_slice(), Some(&[1, 2, 3][..]));
+        assert_eq!(buf.as_slice(), &[1, 2, 3]);
         assert_eq!(buf.to_host(), vec![1, 2, 3]);
     }
 
     #[test]
-    fn zeros() {
-        let buf: DeviceBuffer<i32> = DeviceBuffer::zeros(5);
+    fn host_buffer_zeros() {
+        let buf: HostBuffer<i32> = HostBuffer::zeros(5);
         assert_eq!(buf.len(), 5);
         assert_eq!(buf.to_host(), vec![0, 0, 0, 0, 0]);
     }
 
     #[test]
-    fn empty() {
-        let buf: DeviceBuffer<i32> = DeviceBuffer::from_host(vec![]);
+    fn host_buffer_empty() {
+        let buf: HostBuffer<i32> = HostBuffer::from_host(vec![]);
         assert!(buf.is_empty());
         assert_eq!(buf.len(), 0);
     }
 
     #[test]
-    fn as_mut_slice() {
-        let mut buf = DeviceBuffer::from_host(vec![1, 2, 3]);
-        if let Some(slice) = buf.as_mut_slice() {
-            slice[0] = 10;
-        }
+    fn host_buffer_as_mut_slice() {
+        let mut buf = HostBuffer::from_host(vec![1, 2, 3]);
+        buf.as_mut_slice()[0] = 10;
         assert_eq!(buf.to_host(), vec![10, 2, 3]);
     }
 
     #[test]
-    fn device_ptr() {
-        let host_buf = DeviceBuffer::from_host(vec![1]);
-        assert!(host_buf.device_ptr().is_none());
-
+    fn device_buffer_ptr() {
         let device_buf: DeviceBuffer<i32> = unsafe { DeviceBuffer::from_device(0x1000, 10) };
         assert_eq!(device_buf.device_ptr(), Some(0x1000));
         assert_eq!(device_buf.len(), 10);
+        assert!(device_buf.is_device());
         assert!(device_buf.as_slice().is_none());
+    }
+
+    #[test]
+    fn host_buffer_into_vec() {
+        let buf = HostBuffer::from_host(vec![4, 5, 6]);
+        let vec: Vec<i32> = buf.into_inner();
+        assert_eq!(vec, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn host_buffer_from_vec_trait() {
+        let buf: HostBuffer<i32> = vec![7, 8, 9].into();
+        assert_eq!(buf.to_host(), vec![7, 8, 9]);
     }
 }
