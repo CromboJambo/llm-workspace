@@ -29,8 +29,14 @@ pub enum RunnerError {
     #[error("asset loading error: {0}")]
     Asset(String),
 
-    #[error("internal error: {0}")]
+    #[error("unspecified internal error: {0}")]
     Internal(String),
+
+    #[error("dequantization error for tensor '{0}': {1}")]
+    Dequant(String, String),
+
+    #[error("GGUF header missing required field: {0}")]
+    MissingHeaderField(String),
 }
 
 pub type Result<T> = std::result::Result<T, RunnerError>;
