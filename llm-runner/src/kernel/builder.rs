@@ -10,8 +10,8 @@
 //!
 //! The builder supports both WGMMA (sm_120) and tcgen05 (sm_100) architectures.
 
-use super::gemm::{GemmArch, GemmConfig, GemmError, GemmKernel};
 use super::device_buf::DeviceBuffer;
+use super::gemm::{GemmArch, GemmConfig, GemmError, GemmKernel};
 use half::f16;
 use std::sync::Arc;
 
@@ -36,7 +36,11 @@ impl PtxSource {
     }
 
     /// Load PTX from a file on disk.
-    pub fn from_file(path: impl AsRef<std::path::Path>, arch: GemmArch, kernel_name: impl Into<String>) -> Result<Self, std::io::Error> {
+    pub fn from_file(
+        path: impl AsRef<std::path::Path>,
+        arch: GemmArch,
+        kernel_name: impl Into<String>,
+    ) -> Result<Self, std::io::Error> {
         let ptx = std::fs::read_to_string(&path)?;
         Ok(Self::new(ptx, arch, kernel_name))
     }
@@ -101,7 +105,10 @@ impl GemmBuilder {
         }
 
         // Select best kernel for current architecture
-        let best = self.ptx_sources.iter().find(|p| p.arch == self.default_arch)
+        let best = self
+            .ptx_sources
+            .iter()
+            .find(|p| p.arch == self.default_arch)
             .or_else(|| self.ptx_sources.first());
 
         match best {
@@ -174,7 +181,9 @@ impl KernelFromPtx {
     pub fn from_source(source: PtxSource, config: GemmConfig) -> Result<Self, GemmError> {
         // Try to initialize CUDA and load PTX
         let (ctx, module, function, stream) = match Self::try_load_gpu(&source) {
-            Ok((ctx, module, function, stream)) => (Some(ctx), Some(module), Some(function), Some(stream)),
+            Ok((ctx, module, function, stream)) => {
+                (Some(ctx), Some(module), Some(function), Some(stream))
+            }
             Err(_) => (None, None, None, None), // GPU unavailable
         };
 
@@ -192,7 +201,17 @@ impl KernelFromPtx {
     }
 
     /// Try to load PTX into a CUDA context.
-    fn try_load_gpu(source: &PtxSource) -> Result<(Arc<cuda_core::CudaContext>, Arc<cuda_core::CudaModule>, cuda_core::CudaFunction, Arc<cuda_core::CudaStream>), GemmError> {
+    fn try_load_gpu(
+        source: &PtxSource,
+    ) -> Result<
+        (
+            Arc<cuda_core::CudaContext>,
+            Arc<cuda_core::CudaModule>,
+            cuda_core::CudaFunction,
+            Arc<cuda_core::CudaStream>,
+        ),
+        GemmError,
+    > {
         // Initialize CUDA
         unsafe {
             cuda_core::init(0).map_err(|_| GemmError::LaunchFailed("CUDA init failed".into()))?;
@@ -203,15 +222,18 @@ impl KernelFromPtx {
             .map_err(|e| GemmError::LaunchFailed(format!("CUDA context creation failed: {e}")))?;
 
         // Load PTX from source string
-        let module = ctx.load_module_from_ptx_src(&source.ptx)
+        let module = ctx
+            .load_module_from_ptx_src(&source.ptx)
             .map_err(|e| GemmError::LaunchFailed(format!("PTX load failed: {e}")))?;
 
         // Get kernel function
-        let function = module.load_function(&source.kernel_name)
+        let function = module
+            .load_function(&source.kernel_name)
             .map_err(|e| GemmError::LaunchFailed(format!("Function lookup failed: {e}")))?;
 
         // Create stream
-        let stream = ctx.new_stream()
+        let stream = ctx
+            .new_stream()
             .map_err(|e| GemmError::LaunchFailed(format!("Stream creation failed: {e}")))?;
 
         Ok((ctx, module, function, stream))
@@ -270,9 +292,9 @@ impl GemmKernel for KernelFromPtx {
 
         // If GPU is available, launch the kernel
         if self.gpu_available {
-            if let (Some(ctx), Some(_module), Some(func), Some(stream)) = 
-                (&self.ctx, &self.module, &self.function, &self.stream) {
-                
+            if let (Some(ctx), Some(_module), Some(func), Some(stream)) =
+                (&self.ctx, &self.module, &self.function, &self.stream)
+            {
                 // Bind context to thread
                 ctx.bind_to_thread()
                     .map_err(|e| GemmError::LaunchFailed(e.to_string()))?;
@@ -282,11 +304,14 @@ impl GemmKernel for KernelFromPtx {
                     DeviceBuffer::Cuda(buf) => buf.clone(),
                     _ => {
                         // Host buffer — need to allocate on device first
-                        let buf = cuda_core::DeviceBuffer::from_host(stream, 
+                        let buf = cuda_core::DeviceBuffer::from_host(
+                            stream,
                             a.as_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
-                                expected: a_expected, got: 0
-                            })?
-                        ).map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
+                                expected: a_expected,
+                                got: 0,
+                            })?,
+                        )
+                        .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
                         Arc::new(buf)
                     }
                 };
@@ -294,11 +319,14 @@ impl GemmKernel for KernelFromPtx {
                 let dev_b = match b {
                     DeviceBuffer::Cuda(buf) => buf.clone(),
                     _ => {
-                        let buf = cuda_core::DeviceBuffer::from_host(stream,
+                        let buf = cuda_core::DeviceBuffer::from_host(
+                            stream,
                             b.as_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
-                                expected: b_expected, got: 0
-                            })?
-                        ).map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
+                                expected: b_expected,
+                                got: 0,
+                            })?,
+                        )
+                        .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
                         Arc::new(buf)
                     }
                 };
@@ -306,11 +334,15 @@ impl GemmKernel for KernelFromPtx {
                 let mut dev_c = match c {
                     DeviceBuffer::Cuda(buf) => buf.clone(),
                     _ => {
-                        let buf = cuda_core::DeviceBuffer::from_host(stream,
-                            c.as_mut_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
-                                expected: c_expected, got: 0
-                            })?
-                        ).map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
+                        let buf = cuda_core::DeviceBuffer::from_host(
+                            stream,
+                            c.as_mut_slice()
+                                .ok_or_else(|| GemmError::BufferSizeMismatch {
+                                    expected: c_expected,
+                                    got: 0,
+                                })?,
+                        )
+                        .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
                         Arc::new(buf)
                     }
                 };
@@ -323,7 +355,7 @@ impl GemmKernel for KernelFromPtx {
                 let m_val = m as u32;
                 let n_val = n as u32;
                 let k_val = k as u32;
-                
+
                 let mut kernel_params: Vec<*mut std::ffi::c_void> = vec![
                     &alpha as *const f32 as *mut std::ffi::c_void,
                     &dev_a as *const _ as *mut std::ffi::c_void,
@@ -344,11 +376,13 @@ impl GemmKernel for KernelFromPtx {
                         0,
                         stream.cu_stream(),
                         &mut kernel_params,
-                    ).map_err(|e| GemmError::LaunchFailed(format!("Kernel launch failed: {e}")))?;
+                    )
+                    .map_err(|e| GemmError::LaunchFailed(format!("Kernel launch failed: {e}")))?;
                 }
 
                 // Synchronize
-                stream.synchronize()
+                stream
+                    .synchronize()
                     .map_err(|e| GemmError::LaunchFailed(format!("Synchronize failed: {e}")))?;
 
                 // Copy result back if c was a host buffer
@@ -438,7 +472,9 @@ mod tests {
     #[test]
     fn builder_validate_dims_wgmma_any_k() {
         // Wgmma has no K divisibility constraint — only block_size matters
-        let config = GemmConfig::default().with_arch(GemmArch::Wgmma).with_block_size(64);
+        let config = GemmConfig::default()
+            .with_arch(GemmArch::Wgmma)
+            .with_block_size(64);
         let builder = GemmBuilder::new().with_config(config);
         assert!(builder.validate_dims(64, 64, 1).is_ok());
         assert!(builder.validate_dims(64, 64, 17).is_ok());
@@ -459,11 +495,7 @@ mod tests {
 
     #[test]
     fn ptx_source_new() {
-        let ptx = PtxSource::new(
-            "version 8.0".to_string(),
-            GemmArch::Tcgen05,
-            "tcgen05_gemm",
-        );
+        let ptx = PtxSource::new("version 8.0".to_string(), GemmArch::Tcgen05, "tcgen05_gemm");
         assert_eq!(ptx.arch, GemmArch::Tcgen05);
         assert_eq!(ptx.kernel_name, "tcgen05_gemm");
         assert_eq!(ptx.ptx, "version 8.0");
