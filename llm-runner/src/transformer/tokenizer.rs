@@ -14,7 +14,7 @@ use tracing::debug;
 use crate::error::RunnerError;
 
 /// GGUF tokenizer configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GgufTokenizerConfig {
     /// Tokenizer model type (e.g., "llama", "gpt2", "bpe").
     pub model_type: String,
