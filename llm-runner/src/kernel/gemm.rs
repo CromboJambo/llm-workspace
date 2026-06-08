@@ -36,7 +36,7 @@ impl GemmArch {
 
     pub fn tile_size(&self) -> usize {
         match self {
-            Self::Wgmma => 64,   // 64x64x64 tiles
+            Self::Wgmma => 64,    // 64x64x64 tiles
             Self::Tcgen05 => 128, // 128x128x16 tiles
         }
     }
@@ -194,10 +194,12 @@ impl GemmKernel for CpuGemmKernel {
             });
         }
 
-        let c_host = c.as_mut_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
-            expected: m * n,
-            got: 0,
-        })?;
+        let c_host = c
+            .as_mut_slice()
+            .ok_or_else(|| GemmError::BufferSizeMismatch {
+                expected: m * n,
+                got: 0,
+            })?;
         if c_host.len() < m * n {
             return Err(GemmError::BufferSizeMismatch {
                 expected: m * n,
@@ -291,7 +293,7 @@ mod tests {
         let kernel = CpuGemmKernel::new();
         let a = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 4]); // [2x2]
         let b = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 4]); // [2x2]
-        let mut c = DeviceBuffer::from_host(vec![0.0f32; 4]);          // [2x2]
+        let mut c = DeviceBuffer::from_host(vec![0.0f32; 4]); // [2x2]
 
         let result = kernel.matmul(1.0, &a, &b, 0.0, &mut c, 2, 2, 2);
         assert!(result.is_ok());
@@ -308,7 +310,7 @@ mod tests {
         let kernel = CpuGemmKernel::new();
         let a = DeviceBuffer::from_host(vec![f16::from_f32(2.0); 1]); // [1x1]
         let b = DeviceBuffer::from_host(vec![f16::from_f32(3.0); 1]); // [1x1]
-        let mut c = DeviceBuffer::from_host(vec![10.0f32; 1]);        // [1x1]
+        let mut c = DeviceBuffer::from_host(vec![10.0f32; 1]); // [1x1]
 
         let result = kernel.matmul(1.0, &a, &b, 1.0, &mut c, 1, 1, 1);
         assert!(result.is_ok());
@@ -320,9 +322,9 @@ mod tests {
     #[test]
     fn cpu_gemm_kernel_matmul_buffer_too_small() {
         let kernel = CpuGemmKernel::new();
-        let a = DeviceBuffer::from_host(vec![f16::ZERO, f16::ZERO]);    // [2x1] - correct for m=2,k=1
-        let b = DeviceBuffer::from_host(vec![f16::ZERO]);               // [1x1] - correct for k=1,n=1
-        let mut c = DeviceBuffer::from_host(vec![0.0f32; 1]);           // [1x1] - too small for m=2,n=1
+        let a = DeviceBuffer::from_host(vec![f16::ZERO, f16::ZERO]); // [2x1] - correct for m=2,k=1
+        let b = DeviceBuffer::from_host(vec![f16::ZERO]); // [1x1] - correct for k=1,n=1
+        let mut c = DeviceBuffer::from_host(vec![0.0f32; 1]); // [1x1] - too small for m=2,n=1
 
         // C needs m*n = 2*1 = 2 elements, but only has 1
         let result = kernel.matmul(1.0, &a, &b, 0.0, &mut c, 2, 1, 1);
@@ -337,7 +339,10 @@ mod tests {
         assert!(msg.contains("2"));
         assert!(msg.contains("3"));
 
-        let err = GemmError::BufferSizeMismatch { expected: 10, got: 5 };
+        let err = GemmError::BufferSizeMismatch {
+            expected: 10,
+            got: 5,
+        };
         assert!(err.to_string().contains("10"));
         assert!(err.to_string().contains("5"));
     }
