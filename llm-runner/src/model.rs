@@ -990,3 +990,64 @@ mod tests {
         assert_eq!(model.seq_len, 1);
     }
 }
+
+// ── Test helpers ─────────────────────────────────────────────────────
+
+fn kv_pair_str(key: &str, value: &str) -> crabjar_gguf::GgufKvPair {
+    crabjar_gguf::GgufKvPair {
+        key: key.to_string(),
+        value_type: crabjar_gguf::GgufValueType::String,
+        value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+    }
+}
+
+fn kv_pair_u32(key: &str, value: u32) -> crabjar_gguf::GgufKvPair {
+    crabjar_gguf::GgufKvPair {
+        key: key.to_string(),
+        value_type: crabjar_gguf::GgufValueType::Uint32,
+        value: crabjar_gguf::GgufKvValue::Uint32(value),
+    }
+}
+
+fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
+    use crabjar_gguf::GgufKvValue;
+    match value {
+        GgufKvValue::Uint8(v) => buf.push(*v),
+        GgufKvValue::Int8(v) => buf.push(*v as u8),
+        GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+        GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+        GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+        GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Bool(v) => buf.push(*v as u8),
+        GgufKvValue::String(s) => {
+            buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            buf.extend_from_slice(s.as_bytes());
+        }
+        GgufKvValue::Int8Array(arr) => {
+            let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
+            buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+            buf.extend_from_slice(&bytes);
+        }
+        GgufKvValue::Uint8Array(arr) => {
+            buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+            buf.extend_from_slice(arr);
+        }
+        GgufKvValue::Array(arr) => {
+            buf.extend_from_slice(&9u32.to_le_bytes());
+            buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+            for elem in arr {
+                write_kv_value(buf, elem);
+            }
+        }
+        GgufKvValue::Bfloat16(v) => {
+            let raw = (*v as u32) << 16;
+            buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
+        }
+        GgufKvValue::Float16(v) => {
+            buf.extend_from_slice(&(*v as u16).to_le_bytes())
+        }
+    }
+}
