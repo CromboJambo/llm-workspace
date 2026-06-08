@@ -159,8 +159,7 @@ mod tests {
 
     #[test]
     fn descriptor_with_box() {
-        let desc = TmaDescriptor::new()
-            .with_box(64, 128, 128, 256, 128, 128);
+        let desc = TmaDescriptor::new().with_box(64, 128, 128, 256, 128, 128);
 
         // box X = 64 in word 1 [15:0]
         assert_eq!(desc.0[1] & 0xFFFF, 64u32);
@@ -178,8 +177,7 @@ mod tests {
 
     #[test]
     fn descriptor_with_box_saturates_large_stride() {
-        let desc = TmaDescriptor::new()
-            .with_box(64, 500, 500, 256, 128, 128);
+        let desc = TmaDescriptor::new().with_box(64, 500, 500, 256, 128, 128);
 
         assert_eq!((desc.0[1] >> 16) & 0xFF, 255u32);
         assert_eq!((desc.0[1] >> 24) & 0xFF, 255u32);
