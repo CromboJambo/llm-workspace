@@ -172,6 +172,17 @@ impl<T> DeviceBuffer<T> {
         }
     }
 
+    /// Convenience: create a device buffer from host data (stores as Cuda variant with stream).
+    pub fn from_host_device_data(
+        stream: &cuda_core::CudaStream,
+        data: &[T],
+    ) -> Result<Self, DeviceBufferError>
+    where
+        T: Clone + Default,
+    {
+        Self::from_host_device(stream, data)
+    }
+
     /// Create a device buffer from a raw pointer address and element count.
     ///
     /// # Safety
