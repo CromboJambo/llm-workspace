@@ -8,7 +8,7 @@
 use half::f16;
 
 /// Rotary positional embeddings configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RopeConfig {
     /// Dimension per head (must be even).
     pub head_dim: usize,

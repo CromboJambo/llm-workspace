@@ -1,9 +1,10 @@
 //! Context configuration for llama.cpp inference.
 
+use serde::{Deserialize, Serialize};
 use crate::llama::sampler::KvCacheType;
 
 /// Configuration for a [`LlamaContext`](llama_cpp_2::context::LlamaContext).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContextConfig {
     /// Number of tokens in the KV cache.
     pub n_ctx: u32,
@@ -30,7 +31,7 @@ pub struct ContextConfig {
 }
 
 /// Attention type.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum AttentionType {
     #[default]
     Auto,
@@ -40,7 +41,7 @@ pub enum AttentionType {
 }
 
 /// Pooling type for embeddings.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum PoolingType {
     #[default]
     None,
@@ -49,7 +50,7 @@ pub enum PoolingType {
 }
 
 /// RoPE scaling type.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum RopeScalingType {
     #[default]
     None,

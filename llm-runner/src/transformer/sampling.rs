@@ -8,7 +8,7 @@ use rand::RngExt;
 use rand::rngs::StdRng;
 
 /// Sampling configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SamplingConfig {
     /// Temperature for logit scaling (1.0 = no scaling, < 1.0 = sharper, > 1.0 = softer).
     pub temperature: f32,

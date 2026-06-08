@@ -31,7 +31,7 @@ pub enum ModelArch {
 }
 
 /// Llama-style model configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlamaConfig {
     pub arch: ModelArch,
     pub num_layers: usize,

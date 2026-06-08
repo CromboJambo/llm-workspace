@@ -78,7 +78,7 @@ pub struct SamplingConfig {
 }
 
 /// KV cache type.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub enum KvCacheType {
     #[default]
     F32,

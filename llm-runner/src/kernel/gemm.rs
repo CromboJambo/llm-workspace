@@ -43,7 +43,7 @@ impl GemmArch {
 }
 
 /// Configuration for a GEMM kernel launch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GemmConfig {
     /// Target architecture
     pub arch: GemmArch,
