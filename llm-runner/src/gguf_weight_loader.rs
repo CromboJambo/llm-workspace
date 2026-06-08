@@ -96,7 +96,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q4_0 => {
             let dequantized = dequantize_q4_0(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q4_0 dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -104,7 +104,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q4_1 => {
             let dequantized = dequantize_q4_1(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q4_1 dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -112,7 +112,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q8_0 => {
             let dequantized = dequantize_q8_0(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q8_0 dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -120,7 +120,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q2_K => {
             let dequantized = dequantize_q2_k(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q2_K dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -128,7 +128,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q3_K => {
             let dequantized = dequantize_q3_k(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q3_K dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -136,7 +136,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q4_K | GgufDtype::Q4_K_M => {
             let dequantized = dequantize_q4_k(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q4_K dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -144,7 +144,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q5_K | GgufDtype::Q5_K_M | GgufDtype::Q5_K_S => {
             let dequantized = dequantize_q5_k(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q5_K dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -152,7 +152,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q6_K | GgufDtype::Q6_K_S => {
             let dequantized = dequantize_q6_k(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q6_K dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
@@ -160,18 +160,17 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         }
         GgufDtype::Q8_K | GgufDtype::Q8_K_M => {
             let dequantized = dequantize_q8_k(raw_data, element_count)
-                .map_err(|e| RunnerError::Internal(format!("Q8_K dequant failed: {e}")))?;
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
                 .flat_map(|v| v.to_le_bytes())
                 .collect())
         }
-        GgufDtype::Q1_K | GgufDtype::Q2_K_S | GgufDtype::Q3_K_S | GgufDtype::Q4_K_S | GgufDtype::Q2_K_M => {
-            Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
-                "K-family variant {} for tensor '{}' not yet implemented",
-                tensor.dtype, tensor.name
-            ))))
-        }
+        GgufDtype::Q1_K => dequantize_q1_k(data, element_count),
+        GgufDtype::Q2_K_S => dequantize_q2_k(data, element_count),
+        GgufDtype::Q3_K_S => dequantize_q3_k(data, element_count),
+        GgufDtype::Q4_K_S => dequantize_q4_k(data, element_count),
+        GgufDtype::Q2_K_M => dequantize_q2_k(data, element_count),
         GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => Ok(raw_data.to_vec()),
         GgufDtype::Unknown(_) => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
             "Unknown GGUF dtype {} for tensor '{}'",
@@ -325,6 +324,72 @@ fn dequantize_q8_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
 }
 
 // ── K-family dequantization implementations ─────────────────────────
+
+/// Dequantize Q1_K data to f32.
+///
+/// Q1_K block: 16 elements, 20 bytes per block.
+fn dequantize_q1_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
+    let num_full_blocks = element_count / 16;
+    let remaining = element_count % 16;
+    let expected_size = num_full_blocks * 20 + if remaining > 0 { 2 + remaining.div_ceil(2) } else { 0 };
+
+    if data.len() < expected_size {
+        return Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
+            "Q1_K data too small: got {} bytes, need {}",
+            data.len(), expected_size
+        ))));
+    }
+
+    let mut result = Vec::with_capacity(element_count);
+    let mut offset = 0usize;
+
+    for _ in 0..num_full_blocks {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let q1 = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+        let delta = [
+            f16_to_f32(&data[offset + 6..offset + 8]),
+            f16_to_f32(&data[offset + 8..offset + 10]),
+            f16_to_f32(&data[offset + 10..offset + 12]),
+            f16_to_f32(&data[offset + 12..offset + 14]),
+        ];
+        let h = [
+            f16_to_f32(&data[offset + 14..offset + 16]),
+            f16_to_f32(&data[offset + 16..offset + 18]),
+            f16_to_f32(&data[offset + 18..offset + 20]),
+            f16_to_f32(&data[offset + 20..offset + 22]),
+        ];
+
+        for i in 0..16usize {
+            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q = q1_val as i32 - 4;
+            let scale = if q1_val > 0 { h[i / 4] } else { 1.0 };
+            result.push(d * (q as f32) * scale + d_min);
+        }
+        offset += 20;
+    }
+
+    if remaining > 0 {
+        let d = f16_to_f32(&data[offset..offset + 2]);
+        let d_min = f16_to_f32(&data[offset + 2..offset + 4]);
+        let q1 = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+        let h = [
+            f16_to_f32(&data[offset + 14..offset + 16]),
+            f16_to_f32(&data[offset + 16..offset + 18]),
+            f16_to_f32(&data[offset + 18..offset + 20]),
+            f16_to_f32(&data[offset + 20..offset + 22]),
+        ];
+
+        for i in 0..remaining {
+            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q = q1_val as i32 - 4;
+            let scale = if q1_val > 0 { h[i / 4] } else { 1.0 };
+            result.push(d * (q as f32) * scale + d_min);
+        }
+    }
+
+    Ok(result)
+}
 
 /// Dequantize Q2_K data to f32.
 ///
@@ -708,6 +773,7 @@ fn dequantize_q6_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         let d = f16_to_f32(&data[offset..offset + 2]);
         let mask = data[offset + 2];
         let q6 = &data[offset + 3..offset + 3 + remaining];
+        let scale = data[offset + 15] as f32;
 
         for i in 0..remaining {
             let q6_val = ((q6[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
