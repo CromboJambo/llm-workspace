@@ -43,14 +43,16 @@ pub struct GgufTokenizerConfig {
 impl GgufTokenizerConfig {
     /// Build config from GGUF header KV pairs.
     pub fn from_gguf_header(header: &GgufHeader) -> Self {
-        let model_type = header.get_kv_str("tokenizer.ggml.model")
+        let model_type = header
+            .get_kv_str("tokenizer.ggml.model")
             .unwrap_or("llama")
             .to_string();
         let vocab_size = header.vocab_size().unwrap_or(32000);
 
         // Load added tokens from GGUF
         let mut added_tokens = HashMap::new();
-        let token_count = header.get_kv_u32("tokenizer.ggml.tokens")
+        let token_count = header
+            .get_kv_u32("tokenizer.ggml.tokens")
             .or_else(|| header.get_kv_u32("tokenizer.ggml.length"))
             .unwrap_or(0);
 
@@ -69,13 +71,16 @@ impl GgufTokenizerConfig {
             })
             .collect();
 
-        let pre_tokenizer_type = header.get_kv_str("tokenizer.ggml.pre")
+        let pre_tokenizer_type = header
+            .get_kv_str("tokenizer.ggml.pre")
             .map(|s| s.to_string());
 
-        let post_processor_type = header.get_kv_str("tokenizer.ggml.postprocess")
+        let post_processor_type = header
+            .get_kv_str("tokenizer.ggml.postprocess")
             .map(|s| s.to_string());
 
-        let pattern = header.get_kv_str("tokenizer.ggml.token_type")
+        let pattern = header
+            .get_kv_str("tokenizer.ggml.token_type")
             .map(|s| s.to_string());
 
         let bos_token_id = header.get_kv_u32("tokenizer.ggml.bos_token_id");
@@ -160,11 +165,10 @@ impl GgufTokenizerConfig {
             "added_tokens": serde_json::Value::Array(added_tokens_json)
         });
 
-        Tokenizer::from_bytes(config.to_string().as_bytes())
-            .unwrap_or_else(|e| {
-                debug!("Failed to build tokenizer from GGUF config: {e}, using empty tokenizer");
-                Tokenizer::new(tokenizers::models::bpe::BPE::default())
-            })
+        Tokenizer::from_bytes(config.to_string().as_bytes()).unwrap_or_else(|e| {
+            debug!("Failed to build tokenizer from GGUF config: {e}, using empty tokenizer");
+            Tokenizer::new(tokenizers::models::bpe::BPE::default())
+        })
     }
 }
 
@@ -194,8 +198,8 @@ pub fn tokenizer_config_from_header(header: &GgufHeader) -> GgufTokenizerConfig 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use crabjar_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
+    use tempfile::tempdir;
 
     fn make_test_gguf_with_vocab(path: &Path) {
         // KV pairs
@@ -215,7 +219,8 @@ mod tests {
         };
 
         // Compute data_section_start with BOTH kv_pairs and tensor_info
-        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], None);
+        let data_section_start =
+            crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], None);
 
         // Write file
         let mut buf = Vec::new();
@@ -245,7 +250,8 @@ mod tests {
 
         // Pad to data_section_start and write tensor data
         buf.resize((data_section_start + 16) as usize, 0);
-        buf[data_section_start as usize..data_section_start as usize + 16].copy_from_slice(&[0u8; 16]);
+        buf[data_section_start as usize..data_section_start as usize + 16]
+            .copy_from_slice(&[0u8; 16]);
 
         std::fs::write(path, &buf).unwrap();
     }
@@ -271,11 +277,17 @@ mod tests {
             crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
             crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
             crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int16(v) => {
+                buf.extend_from_slice(&(*v as i16).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int32(v) => {
+                buf.extend_from_slice(&(*v as i32).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int64(v) => {
+                buf.extend_from_slice(&(*v as i64).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
             crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
             crabjar_gguf::GgufKvValue::String(s) => {
@@ -302,7 +314,9 @@ mod tests {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            crabjar_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Float16(v) => {
+                buf.extend_from_slice(&(*v as u16).to_le_bytes())
+            }
         }
     }
 
@@ -388,9 +402,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 1,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -409,11 +426,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let result = load_tokenizer_from_gguf(&path);
@@ -442,9 +464,12 @@ mod tests {
             kv_pair_str("tokenizer.ggml.postprocess", "none"),
             kv_pair_str("tokenizer.ggml.token_type", "byte"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "test.weight".to_string(), shape: vec![4u64], offset: 0, dtype: 0 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "test.weight".to_string(),
+            shape: vec![4u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -463,10 +488,15 @@ mod tests {
         buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
         buf.extend_from_slice(name_bytes);
         buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-        for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+        for dim in &tensor.shape {
+            buf.extend_from_slice(&dim.to_le_bytes());
+        }
         buf.extend_from_slice(&tensor.dtype.to_le_bytes());
         buf.extend_from_slice(&tensor.offset.to_le_bytes());
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
