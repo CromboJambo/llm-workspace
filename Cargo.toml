@@ -8,6 +8,15 @@ members = [
 ]
 resolver = "2"
 
+[workspace.lints.rust]
+rust_2024_compatibility = "warn"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "allow"
+nursery = "warn"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
