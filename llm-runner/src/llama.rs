@@ -28,36 +28,35 @@
 //! println!("{}", result.text);
 //! ```
 
-pub mod sampler;
-pub mod model;
 pub mod context;
+pub mod model;
+pub mod sampler;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
 use llama_cpp_2::{
-    llama_backend,
-    model::{LlamaModel, LlamaModelParams},
     context::{LlamaContext, params::LlamaContextParams},
+    json_schema_to_grammar, llama_backend,
     llama_batch::LlamaBatch,
-    token::LlamaToken,
+    model::{LlamaModel, LlamaModelParams},
     sampling::LlamaSampler,
-    json_schema_to_grammar,
+    token::LlamaToken,
 };
 
 use anyhow::Result;
 use tracing::{info, warn};
 
-pub use sampler::SamplingConfig;
-pub use model::ModelInfo;
 pub use context::ContextConfig;
+pub use model::ModelInfo;
+pub use sampler::SamplingConfig;
 
 // ── Re-exported types from llama-cpp-2 that users may need ──
 
-pub use llama_cpp_2::model::LlamaChatMessage;
-pub use llama_cpp_2::context::session::LlamaStateSeqFlags;
 pub use llama_cpp_2::LlamaBackendDevice;
+pub use llama_cpp_2::context::session::LlamaStateSeqFlags;
+pub use llama_cpp_2::model::LlamaChatMessage;
 
 /// Result of a generation run.
 #[derive(Debug, Clone)]
@@ -154,8 +153,7 @@ impl LlamaRunnerBuilder {
         info!("llama.cpp backend initialized");
 
         // Load the model
-        let model_params = LlamaModelParams::default()
-            .with_n_gpu_layers(self.n_gpu_layers);
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(self.n_gpu_layers);
         let model = LlamaModel::load_from_file(&backend, &model_params, &self.model_path)?;
         info!(
             "Loaded model: {} params={} n_embd={} n_layer={} n_head={} n_head_kv={} n_ctx_train={}",
@@ -255,7 +253,9 @@ impl LlamaRunner {
         messages: &[LlamaChatMessage],
         add_generation_prompt: bool,
     ) -> Result<String> {
-        let result = self.model.apply_chat_template(messages, add_generation_prompt)?;
+        let result = self
+            .model
+            .apply_chat_template(messages, add_generation_prompt)?;
         Ok(result.text)
     }
 
@@ -332,7 +332,11 @@ impl LlamaRunner {
 
             // Check for EOS
             if self.model.is_eog_token(token) {
-                info!("EOS token reached at position {}, generated {} tokens", pos + 1, gen_count);
+                info!(
+                    "EOS token reached at position {}, generated {} tokens",
+                    pos + 1,
+                    gen_count
+                );
                 break;
             }
         }
@@ -354,7 +358,11 @@ impl LlamaRunner {
             "Generation complete: {} tokens in {:.2}ms ({:.2} tok/s)",
             gen_count,
             gen_time,
-            if gen_time > 0.0 { gen_count as f64 / gen_time * 1000.0 } else { 0.0 }
+            if gen_time > 0.0 {
+                gen_count as f64 / gen_time * 1000.0
+            } else {
+                0.0
+            }
         );
 
         Ok(GenerationResult {
@@ -474,11 +482,8 @@ impl LlamaRunner {
 
         // Repetition penalty
         if config.repetition_penalty != 1.0 {
-            sampler = sampler.penalties(
-                config.repetition_penalty as f32,
-                config.repeat_last_n,
-                0.0,
-            );
+            sampler =
+                sampler.penalties(config.repetition_penalty as f32, config.repeat_last_n, 0.0);
         }
 
         sampler
@@ -588,7 +593,9 @@ pub fn inspect_gguf(path: &str) -> Result<String> {
         let n_keys = unsafe { llama_cpp_sys_2::gguf_n_keys(gguf) };
         for i in 0..n_keys {
             let key_ptr = unsafe { llama_cpp_sys_2::gguf_key_get_name(keys, i as i32) };
-            let key = unsafe { std::ffi::CStr::from_ptr(key_ptr) }.to_string_lossy().to_string();
+            let key = unsafe { std::ffi::CStr::from_ptr(key_ptr) }
+                .to_string_lossy()
+                .to_string();
             let val_type = unsafe { llama_cpp_sys_2::gguf_kv_get_type(gguf, key_ptr) };
             info.push_str(&format!("  KV[{}]: {} (type={})\n", i, key, val_type));
         }
