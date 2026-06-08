@@ -61,7 +61,9 @@ impl LlamaConfig {
             _ => ModelArch::Llama,
         };
 
-        let embed_dim = header.embedding_length().unwrap_or(4096) as usize;
+        let embed_dim = header.embedding_length().ok_or_else(|| {
+            RunnerError::MissingHeaderField("embedding_length".to_string())
+        })? as usize;
         let num_heads = header.attention_head_count().unwrap_or(32) as usize;
 
         let num_kv_heads = match arch {
