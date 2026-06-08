@@ -53,7 +53,10 @@ impl Attention {
     ) -> Self {
         let kv_dim = num_kv_heads * head_dim;
         Self {
-            wq, wk, wv, wo,
+            wq,
+            wk,
+            wv,
+            wo,
             rope: RopeConfig::new(head_dim, 10000.0, 4096),
             num_heads,
             num_kv_heads,
@@ -66,7 +69,13 @@ impl Attention {
     ///
     /// input: [batch, embed_dim]
     /// Returns: [batch, embed_dim]
-    pub fn forward(&self, x: &[f32], batch_size: usize, seq_len: usize, start_pos: usize) -> Vec<f32> {
+    pub fn forward(
+        &self,
+        x: &[f32],
+        batch_size: usize,
+        seq_len: usize,
+        start_pos: usize,
+    ) -> Vec<f32> {
         let embed_dim = self.num_heads * self.head_dim;
 
         // Q/K/V projections
@@ -77,10 +86,8 @@ impl Attention {
         // Apply RoPE to Q and K
         let mut q_rope = q;
         let mut k_rope = k;
-        self.rope.apply(
-            &mut q_rope, &mut k_rope,
-            self.num_heads, seq_len, start_pos,
-        );
+        self.rope
+            .apply(&mut q_rope, &mut k_rope, self.num_heads, seq_len, start_pos);
 
         // Scaled dot-product attention: softmax(Q @ K^T / sqrt(head_dim)) @ V
         let scale = 1.0 / (self.head_dim as f32).sqrt();
@@ -101,7 +108,8 @@ impl Attention {
                     let mut sum = 0.0f32;
                     for h in 0..self.num_heads {
                         let q_start = q_idx + h * self.head_dim;
-                        let k_start = (b * seq_len + j) * self.kv_dim + h / (self.num_heads / self.num_kv_heads) * self.head_dim;
+                        let k_start = (b * seq_len + j) * self.kv_dim
+                            + h / (self.num_heads / self.num_kv_heads) * self.head_dim;
                         for d in 0..self.head_dim {
                             sum += q_rope[q_start + d] * k_rope[k_start + d];
                         }
@@ -110,7 +118,10 @@ impl Attention {
                 }
 
                 // Softmax
-                let max_val = attn_weights.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let max_val = attn_weights
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
                 let exps: Vec<f32> = attn_weights.iter().map(|w| (*w - max_val).exp()).collect();
                 let exp_sum: f32 = exps.iter().sum();
                 let softmax_out: Vec<f32> = if exp_sum > 0.0 {
@@ -126,7 +137,8 @@ impl Attention {
                     for d in 0..self.head_dim {
                         let mut sum = 0.0f32;
                         for j in 0..seq_len {
-                            let v_start = (b * seq_len + j) * self.kv_dim + group * self.head_dim + d;
+                            let v_start =
+                                (b * seq_len + j) * self.kv_dim + group * self.head_dim + d;
                             sum += softmax_out[j] * v[v_start];
                         }
                         attn_output[h * self.head_dim + d] = sum;
@@ -157,7 +169,12 @@ pub struct FeedForward {
 
 impl FeedForward {
     pub fn new(w1: Linear, w2: Linear, w3: Linear, intermediate_dim: usize) -> Self {
-        Self { w1, w2, w3, intermediate_dim }
+        Self {
+            w1,
+            w2,
+            w3,
+            intermediate_dim,
+        }
     }
 
     /// Forward pass: silu(x @ W1^T) * (x @ W3^T) @ W2^T
@@ -199,12 +216,20 @@ impl TransformerLayer {
     ///
     /// input: [batch, embed_dim]
     /// Returns: [batch, embed_dim] with residual connections applied
-    pub fn forward(&self, x: &[f32], batch_size: usize, seq_len: usize, start_pos: usize) -> Vec<f32> {
+    pub fn forward(
+        &self,
+        x: &[f32],
+        batch_size: usize,
+        seq_len: usize,
+        start_pos: usize,
+    ) -> Vec<f32> {
         let embed_dim = x.len() / batch_size;
 
         // Attention sub-layer: x + attn(RMSNorm(x))
         let normed = self.attention_norm.forward(x, batch_size);
-        let attn_out = self.attention.forward(&normed, batch_size, seq_len, start_pos);
+        let attn_out = self
+            .attention
+            .forward(&normed, batch_size, seq_len, start_pos);
 
         // Residual: x + attn_out
         let mut h = vec![0.0f32; batch_size * embed_dim];
@@ -266,9 +291,24 @@ mod tests {
         let wo = Linear::new(vec![1.0; embed_dim * embed_dim], None, embed_dim, embed_dim);
         let attention = Attention::new(wq, wk, wv, wo, head_dim, num_heads, num_kv_heads);
 
-        let w1 = Linear::new(vec![1.0; embed_dim * intermediate_dim], None, embed_dim, intermediate_dim);
-        let w2 = Linear::new(vec![1.0; intermediate_dim * embed_dim], None, intermediate_dim, embed_dim);
-        let w3 = Linear::new(vec![1.0; embed_dim * intermediate_dim], None, embed_dim, intermediate_dim);
+        let w1 = Linear::new(
+            vec![1.0; embed_dim * intermediate_dim],
+            None,
+            embed_dim,
+            intermediate_dim,
+        );
+        let w2 = Linear::new(
+            vec![1.0; intermediate_dim * embed_dim],
+            None,
+            intermediate_dim,
+            embed_dim,
+        );
+        let w3 = Linear::new(
+            vec![1.0; embed_dim * intermediate_dim],
+            None,
+            embed_dim,
+            intermediate_dim,
+        );
         let feed_forward = FeedForward::new(w1, w2, w3, intermediate_dim);
 
         let norm_weight = vec![1.0; embed_dim];
