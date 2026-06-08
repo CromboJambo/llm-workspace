@@ -218,7 +218,12 @@ impl ModelManager {
                 },
             ));
 
-            debug!(model = name, requests = 1, popularity = 1.0, "Created new usage stats");
+            debug!(
+                model = name,
+                requests = 1,
+                popularity = 1.0,
+                "Created new usage stats"
+            );
         }
     }
 
@@ -320,16 +325,13 @@ impl ModelManager {
             return;
         }
 
-        let cutoff_time =
-            std::time::SystemTime::now() - Duration::from_secs(3600);
+        let cutoff_time = std::time::SystemTime::now() - Duration::from_secs(3600);
 
         let mut models = self.loaded_models.write().await;
         let mut candidates: Vec<_> = models
             .iter()
             .enumerate()
-            .filter(|(_, (_, info))| {
-                info.last_accessed < cutoff_time && info.access_count < 5
-            })
+            .filter(|(_, (_, info))| info.last_accessed < cutoff_time && info.access_count < 5)
             .map(|(idx, (name, info))| (idx, name.clone(), info.last_accessed, info.access_count))
             .collect();
 
@@ -372,7 +374,10 @@ impl ModelManager {
     /// Get information about a loaded model.
     pub async fn model_info(&self, name: &str) -> Option<ModelLoadInfo> {
         let models = self.loaded_models.read().await;
-        models.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+        models
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
     }
 
     /// List all loaded model names.
@@ -442,7 +447,10 @@ mod tests {
     async fn model_manager_default_is_same_as_new() {
         let a = ModelManager::default();
         let b = ModelManager::new();
-        assert_eq!(a.preload_stats().await.loaded_models, b.preload_stats().await.loaded_models);
+        assert_eq!(
+            a.preload_stats().await.loaded_models,
+            b.preload_stats().await.loaded_models
+        );
     }
 
     // ── Model Loading ──────────────────────────────────────────────────
@@ -450,7 +458,9 @@ mod tests {
     #[tokio::test]
     async fn load_model_sets_count() {
         let manager = ModelManager::new();
-        manager.load_model("test".into(), make_spec("test", "/models/test.gguf")).await;
+        manager
+            .load_model("test".into(), make_spec("test", "/models/test.gguf"))
+            .await;
         assert_eq!(manager.model_count().await, 1);
         assert!(manager.is_loaded("test").await);
     }
@@ -478,8 +488,12 @@ mod tests {
     #[tokio::test]
     async fn load_overwrites_existing_model() {
         let manager = ModelManager::new();
-        manager.load_model("dup".into(), make_spec("dup", "/models/a.gguf")).await;
-        manager.load_model("dup".into(), make_spec("dup", "/models/b.gguf")).await;
+        manager
+            .load_model("dup".into(), make_spec("dup", "/models/a.gguf"))
+            .await;
+        manager
+            .load_model("dup".into(), make_spec("dup", "/models/b.gguf"))
+            .await;
         assert_eq!(manager.model_count().await, 1);
 
         let info = manager.model_info("dup").await.unwrap();
@@ -491,7 +505,10 @@ mod tests {
         let manager = ModelManager::new();
         for i in 0..5 {
             manager
-                .load_model(format!("model-{}", i), make_spec(&format!("model-{}", i), &format!("/models/{}.gguf", i)))
+                .load_model(
+                    format!("model-{}", i),
+                    make_spec(&format!("model-{}", i), &format!("/models/{}.gguf", i)),
+                )
                 .await;
         }
         assert_eq!(manager.model_count().await, 5);
@@ -502,7 +519,12 @@ mod tests {
     #[tokio::test]
     async fn unload_existing_model() {
         let manager = ModelManager::new();
-        manager.load_model("to-unload".into(), make_spec("to-unload", "/models/unload.gguf")).await;
+        manager
+            .load_model(
+                "to-unload".into(),
+                make_spec("to-unload", "/models/unload.gguf"),
+            )
+            .await;
         assert!(manager.unload_model("to-unload").await);
         assert!(!manager.is_loaded("to-unload").await);
         assert_eq!(manager.model_count().await, 0);
@@ -519,10 +541,16 @@ mod tests {
     #[tokio::test]
     async fn record_access_updates_info() {
         let manager = ModelManager::new();
-        manager.load_model("track".into(), make_spec("track", "/models/track.gguf")).await;
+        manager
+            .load_model("track".into(), make_spec("track", "/models/track.gguf"))
+            .await;
 
-        manager.record_access("track", Duration::from_millis(50)).await;
-        manager.record_access("track", Duration::from_millis(100)).await;
+        manager
+            .record_access("track", Duration::from_millis(50))
+            .await;
+        manager
+            .record_access("track", Duration::from_millis(100))
+            .await;
 
         let info = manager.model_info("track").await.unwrap();
         assert_eq!(info.access_count, 3); // 1 from load + 2 from record_access
@@ -531,11 +559,18 @@ mod tests {
     #[tokio::test]
     async fn record_access_updates_last_accessed() {
         let manager = ModelManager::new();
-        manager.load_model("time-track".into(), make_spec("time-track", "/models/t.gguf")).await;
+        manager
+            .load_model(
+                "time-track".into(),
+                make_spec("time-track", "/models/t.gguf"),
+            )
+            .await;
 
         let before = std::time::SystemTime::now();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        manager.record_access("time-track", Duration::from_millis(10)).await;
+        manager
+            .record_access("time-track", Duration::from_millis(10))
+            .await;
         let after = std::time::SystemTime::now();
 
         let info = manager.model_info("time-track").await.unwrap();
@@ -548,10 +583,14 @@ mod tests {
     #[tokio::test]
     async fn usage_stats_popularity_grows_with_requests() {
         let manager = ModelManager::new();
-        manager.load_model("hot".into(), make_spec("hot", "/models/hot.gguf")).await;
+        manager
+            .load_model("hot".into(), make_spec("hot", "/models/hot.gguf"))
+            .await;
 
         for _ in 0..10 {
-            manager.record_access("hot", Duration::from_millis(10)).await;
+            manager
+                .record_access("hot", Duration::from_millis(10))
+                .await;
         }
 
         let stats = manager.preload_stats().await;
@@ -570,8 +609,12 @@ mod tests {
     #[tokio::test]
     async fn list_loaded_models_populated() {
         let manager = ModelManager::new();
-        manager.load_model("alpha".into(), make_spec("alpha", "/models/a.gguf")).await;
-        manager.load_model("beta".into(), make_spec("beta", "/models/b.gguf")).await;
+        manager
+            .load_model("alpha".into(), make_spec("alpha", "/models/a.gguf"))
+            .await;
+        manager
+            .load_model("beta".into(), make_spec("beta", "/models/b.gguf"))
+            .await;
 
         let models = manager.list_loaded_models().await;
         assert_eq!(models.len(), 2);
@@ -612,7 +655,12 @@ mod tests {
     #[tokio::test]
     async fn preload_stats_with_loaded_models() {
         let manager = ModelManager::new();
-        manager.load_model("stat-model".into(), make_spec("stat-model", "/models/s.gguf")).await;
+        manager
+            .load_model(
+                "stat-model".into(),
+                make_spec("stat-model", "/models/s.gguf"),
+            )
+            .await;
 
         let stats = manager.preload_stats().await;
         assert_eq!(stats.loaded_models, 1);
@@ -625,7 +673,9 @@ mod tests {
     #[tokio::test]
     async fn unload_model_clears_loaded_status() {
         let manager = ModelManager::new();
-        manager.load_model("clear".into(), make_spec("clear", "/models/clear.gguf")).await;
+        manager
+            .load_model("clear".into(), make_spec("clear", "/models/clear.gguf"))
+            .await;
         assert!(manager.is_loaded("clear").await);
         manager.unload_model("clear").await;
         assert!(!manager.is_loaded("clear").await);
@@ -678,8 +728,11 @@ mod tests {
             let m = Arc::clone(&manager);
             handles.push(tokio::spawn(async move {
                 let name = format!("lu-{}", i);
-                m.load_model(name.clone(), make_spec(&name, &format!("/models/lu{}.gguf", i)))
-                    .await;
+                m.load_model(
+                    name.clone(),
+                    make_spec(&name, &format!("/models/lu{}.gguf", i)),
+                )
+                .await;
 
                 if i % 2 == 0 {
                     m.unload_model(&name).await;
