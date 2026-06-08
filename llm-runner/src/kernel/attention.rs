@@ -179,13 +179,17 @@ impl AttentionSlice {
 
         let key_slices: Vec<KvcacheSlice> = (0..num_heads)
             .map(|h| {
-                KvcacheSlice::new(gmem_addr, num_heads, head_dim, max_seq, h, seq_start, seq_len, true)
+                KvcacheSlice::new(
+                    gmem_addr, num_heads, head_dim, max_seq, h, seq_start, seq_len, true,
+                )
             })
             .collect();
 
         let value_slices: Vec<KvcacheSlice> = (0..num_heads)
             .map(|h| {
-                KvcacheSlice::new(gmem_addr, num_heads, head_dim, max_seq, h, seq_start, seq_len, false)
+                KvcacheSlice::new(
+                    gmem_addr, num_heads, head_dim, max_seq, h, seq_start, seq_len, false,
+                )
             })
             .collect();
 
@@ -199,7 +203,10 @@ impl AttentionSlice {
     }
 
     /// Get TMA descriptors for K and V of a specific head.
-    pub fn tma_descriptors(&self, head_idx: usize) -> (Option<TmaDescriptor>, Option<TmaDescriptor>) {
+    pub fn tma_descriptors(
+        &self,
+        head_idx: usize,
+    ) -> (Option<TmaDescriptor>, Option<TmaDescriptor>) {
         if head_idx >= self.key_slices.len() {
             return (None, None);
         }
@@ -455,7 +462,8 @@ impl AttentionKernel for CpuAttentionKernel {
             // Compute Q @ K^T: [query_seq_len x cache_seq_len]
             // Q is [query_seq_len x head_dim], K is [cache_seq_len x head_dim]
             // Q @ K^T[i][j] = sum_l(Q[i][l] * K[j][l])
-            let qk = Self::matmul_transpose_b(q_slice, &k_slice, query_seq_len, cache_seq_len, head_dim);
+            let qk =
+                Self::matmul_transpose_b(q_slice, &k_slice, query_seq_len, cache_seq_len, head_dim);
 
             // Scale by 1/sqrt(head_dim)
             let scaled: Vec<f32> = qk.iter().map(|x| x * scale).collect();
@@ -469,7 +477,8 @@ impl AttentionKernel for CpuAttentionKernel {
                 for d in 0..head_dim {
                     let mut sum = 0.0f32;
                     for s in 0..cache_seq_len {
-                        sum += attn_weights[q * cache_seq_len + s] * v_slice[s * head_dim + d].to_f32();
+                        sum += attn_weights[q * cache_seq_len + s]
+                            * v_slice[s * head_dim + d].to_f32();
                     }
                     output[q * out_dim + head * head_dim + d] = sum;
                 }
@@ -547,7 +556,9 @@ mod tests {
 
     #[test]
     fn attention_config_effective_block_size_zero_falls_back() {
-        let config = AttentionConfig::default().with_arch(AttentionArch::Wgmma).with_block_size(0);
+        let config = AttentionConfig::default()
+            .with_arch(AttentionArch::Wgmma)
+            .with_block_size(0);
         assert_eq!(config.effective_block_size(), 128);
     }
 
@@ -660,9 +671,7 @@ mod tests {
         }
 
         // Query: 2 positions, 4 heads, 8 dim per head
-        let query = DeviceBuffer::from_host(
-            vec![f16::from_f32(1.0); 2 * 4 * 8]
-        );
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 2 * 4 * 8]);
 
         let config = AttentionConfig::default()
             .with_num_heads(4)
@@ -751,7 +760,16 @@ mod tests {
             .with_max_seq(8);
 
         // Mask: first position attends to all, second position attends only to first
-        let mask_data = vec![0.0, 0.0, 0.0, 0.0, f32::NEG_INFINITY, f32::NEG_INFINITY, 0.0, 0.0];
+        let mask_data = vec![
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+            0.0,
+            0.0,
+        ];
         let mask = DeviceBuffer::from_host(mask_data);
 
         let result = kernel.forward(&query, &key_cache, &value_cache, Some(&mask), &config);
@@ -799,10 +817,18 @@ mod tests {
         // A = [[1, 2], [3, 4]], B = [[5, 6], [7, 8]]
         // A @ B^T = [[1*5+2*6, 1*7+2*8], [3*5+4*6, 3*7+4*8]]
         //         = [[17, 23], [39, 53]]
-        let a = vec![f16::from_f32(1.0), f16::from_f32(2.0),
-                     f16::from_f32(3.0), f16::from_f32(4.0)];
-        let b = vec![f16::from_f32(5.0), f16::from_f32(6.0),
-                     f16::from_f32(7.0), f16::from_f32(8.0)];
+        let a = vec![
+            f16::from_f32(1.0),
+            f16::from_f32(2.0),
+            f16::from_f32(3.0),
+            f16::from_f32(4.0),
+        ];
+        let b = vec![
+            f16::from_f32(5.0),
+            f16::from_f32(6.0),
+            f16::from_f32(7.0),
+            f16::from_f32(8.0),
+        ];
 
         let result = CpuAttentionKernel::matmul_transpose_b(&a, &b, 2, 2, 2);
         assert_eq!(result.len(), 4);
@@ -836,7 +862,9 @@ mod tests {
             .with_head_dim(4)
             .with_max_seq(8);
 
-        let result = kernel.forward(&query, &key_cache, &value_cache, None, &config).unwrap();
+        let result = kernel
+            .forward(&query, &key_cache, &value_cache, None, &config)
+            .unwrap();
         let output = result.to_host();
 
         // With uniform attention over 3 equal-value rows (1,2,3), output ≈ 2.0 per element
@@ -865,7 +893,9 @@ mod tests {
             .with_head_dim(4)
             .with_max_seq(8);
 
-        let result = kernel.forward(&query, &key_cache, &value_cache, None, &config).unwrap();
+        let result = kernel
+            .forward(&query, &key_cache, &value_cache, None, &config)
+            .unwrap();
         // With single cache position, softmax is trivially [1.0], output = V
         let output = result.to_host();
         for v in &output {
