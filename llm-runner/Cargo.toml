@@ -36,9 +36,9 @@ libm.workspace = true
 num-traits.workspace = true
 num_cpus.workspace = true
 rayon.workspace = true
-cuda-device = { path = "/home/crombo/reference_materials/cuda-oxide/crates/cuda-device" }
-cuda-host = { path = "/home/crombo/reference_materials/cuda-oxide/crates/cuda-host" }
-cuda-core = { path = "/home/crombo/reference_materials/cuda-oxide/crates/cuda-core" }
+cuda-device = { git = "https://github.com/NVlabs/cuda-oxide.git", package = "cuda-device" }
+cuda-host = { git = "https://github.com/NVlabs/cuda-oxide.git", package = "cuda-host" }
+cuda-core = { git = "https://github.com/NVlabs/cuda-oxide.git", package = "cuda-core" }
 hf-hub.workspace = true
 zip.workspace = true
 memmap2.workspace = true
@@ -48,6 +48,7 @@ tokio.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 llama-cpp-2.workspace = true
+llama-cpp-sys-2 = "0.1.146"
 nvml-wrapper = "0.12"
 
 [dev-dependencies]

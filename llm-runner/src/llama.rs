@@ -36,11 +36,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
+use llama_cpp_sys_2;
 use llama_cpp_2::{
     context::{LlamaContext, params::LlamaContextParams},
     json_schema_to_grammar, llama_backend,
     llama_batch::LlamaBatch,
-    model::{LlamaModel, LlamaModelParams},
+    model::LlamaModel,
+    model::params::LlamaModelParams,
     sampling::LlamaSampler,
     token::LlamaToken,
 };
@@ -273,7 +275,8 @@ impl LlamaRunner {
 
     /// Get logits for a specific sequence.
     pub fn get_logits_ith(&self, i: i32) -> Result<Vec<f32>> {
-        let logits = self.context.borrow().get_logits_ith(i);
+        let ctx = self.context.borrow();
+        let logits = ctx.get_logits_ith(i);
         Ok(logits.to_vec())
     }
 
@@ -535,14 +538,16 @@ impl SessionManager {
     }
 
     /// Save a specific sequence's state to a file.
-    pub fn save_seq_state(&self, seq_id: i32, path: &str) -> Result<(), String> {
-        self.context.borrow().state_seq_save_file(seq_id, path)?;
+    pub fn save_seq_state(&self, seq_id: i32, path: &str, tokens: &[LlamaToken]) -> Result<(), String> {
+        self.context.borrow_mut().state_seq_save_file(path, seq_id, tokens)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
     /// Load a specific sequence's state from a file.
-    pub fn load_seq_state(&self, seq_id: i32, path: &str) -> Result<(), String> {
-        self.context.borrow().state_seq_load_file(seq_id, path)?;
+    pub fn load_seq_state(&self, dest_seq_id: i32, path: &str, max_tokens: usize) -> Result<(), String> {
+        self.context.borrow_mut().state_seq_load_file(path, dest_seq_id, max_tokens)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -555,7 +560,7 @@ impl SessionManager {
     /// Get the size needed to save a specific sequence's state.
     pub fn state_seq_size(&self, seq_id: i32) -> Result<usize, String> {
         let ctx = self.context.borrow();
-        let size = ctx.state_seq_get_size_ext(&ctx, seq_id);
+        let size = ctx.state_seq_get_size_ext(seq_id, LlamaStateSeqFlags::default());
         Ok(size)
     }
 }
@@ -572,9 +577,10 @@ pub fn inspect_gguf(path: &str) -> Result<String> {
     let gguf = unsafe {
         llama_cpp_sys_2::gguf_init_from_file(
             std::ffi::CString::new(path).unwrap().as_ptr(),
-            false,
-            &mut n_tensors,
-            &mut n_kv,
+            llama_cpp_sys_2::gguf_init_params {
+                no_alloc: false,
+                ctx: std::ptr::null_mut(),
+            },
         )
     };
 
@@ -582,10 +588,10 @@ pub fn inspect_gguf(path: &str) -> Result<String> {
         return Err(anyhow::anyhow!("Failed to init GGUF reader for: {}", path));
     }
 
+    let n_tensors = unsafe { llama_cpp_sys_2::gguf_get_n_tensors(gguf) };
+    let n_kv = unsafe { llama_cpp_sys_2::gguf_get_n_kv(gguf) };
     let mut info = String::new();
-    info.push_str(&format!("GGUF file: {}\n", path));
-    info.push_str(&format!("  n_tensors: {}\n", n_tensors));
-    info.push_str(&format!("  n_kv: {}\n", n_kv));
+    info.push_str(&format!("GGUF file: {}\n  n_tensors: {}\n  n_kv: {}\n", path, n_tensors, n_kv));
 
     // Read key KV metadata
     let keys = unsafe { llama_cpp_sys_2::gguf_kv_get_all(gguf) };
