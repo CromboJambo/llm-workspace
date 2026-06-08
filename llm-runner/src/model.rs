@@ -23,12 +23,12 @@
 //!    - Compute attention over full cache (box_y=1 for decode)
 //!    - Sample next token from output logits
 
-use crate::error::RunnerError;
 use crate::error::Result;
+use crate::error::RunnerError;
 use crate::inference_engine::InferenceEngine;
+use crate::kernel::DeviceBuffer;
 use crate::kernel::attention::{AttentionArch, AttentionConfig};
 use crate::kernel::kvcache::Kvcache;
-use crate::kernel::DeviceBuffer;
 use crate::transformer::LlamaModel;
 use half::f16;
 
@@ -158,12 +158,13 @@ impl Model {
     }
 
     /// Create a model with a specific GEMM kernel.
-    pub fn with_gemm(config: ModelConfig, gemm: Box<dyn crate::kernel::GemmKernel>, on_device: bool) -> Self {
-        let engine = InferenceEngine::with_gemm(
-            candle_core::Device::Cpu,
-            candle_core::DType::F32,
-            gemm,
-        );
+    pub fn with_gemm(
+        config: ModelConfig,
+        gemm: Box<dyn crate::kernel::GemmKernel>,
+        on_device: bool,
+    ) -> Self {
+        let engine =
+            InferenceEngine::with_gemm(candle_core::Device::Cpu, candle_core::DType::F32, gemm);
         Self::new(config, engine, on_device)
     }
 
@@ -216,19 +217,16 @@ impl Model {
             let output = if key_cache.seq_len() == 0 {
                 // First prefill step: no KV cache yet, use query as output (identity projection)
                 DeviceBuffer::from_host(
-                    query.as_slice().unwrap_or(&[])
+                    query
+                        .as_slice()
+                        .unwrap_or(&[])
                         .iter()
                         .map(|&x| x.to_f32())
-                        .collect()
+                        .collect(),
                 )
             } else {
-                self.engine.attention(
-                    &query,
-                    key_cache,
-                    value_cache,
-                    None,
-                    &config,
-                )?
+                self.engine
+                    .attention(&query, key_cache, value_cache, None, &config)?
             };
 
             // Append the last row of output as new KV for this layer
@@ -280,19 +278,16 @@ impl Model {
             // Compute attention for this layer
             let output = if key_cache.seq_len() == 0 {
                 DeviceBuffer::from_host(
-                    query.as_slice().unwrap_or(&[])
+                    query
+                        .as_slice()
+                        .unwrap_or(&[])
                         .iter()
                         .map(|&x| x.to_f32())
-                        .collect()
+                        .collect(),
                 )
             } else {
-                self.engine.attention(
-                    &query,
-                    key_cache,
-                    value_cache,
-                    None,
-                    &config,
-                )?
+                self.engine
+                    .attention(&query, key_cache, value_cache, None, &config)?
             };
 
             last_output = output;
@@ -300,9 +295,7 @@ impl Model {
             // Append the last row as new KV for this layer
             // In a real model, this would come from the Q/K projection and V projection weights
             if let Some(slice) = last_output.as_slice() {
-                let key: Vec<f16> = slice.iter()
-                    .map(|&x| f16::from_f32(x))
-                    .collect();
+                let key: Vec<f16> = slice.iter().map(|&x| f16::from_f32(x)).collect();
                 let value: Vec<f16> = key.clone();
                 key_cache.append(&key, &value).map_err(|e| {
                     RunnerError::Tensor(format!("Layer {} KV append failed: {e}", layer_idx))
@@ -374,7 +367,8 @@ impl Model {
 
     /// Get total KV cache elements across all layers.
     pub fn total_kv_elements(&self) -> usize {
-        self.kv_caches.iter()
+        self.kv_caches
+            .iter()
             .map(|(k, v)| k.total_elements() + v.total_elements())
             .sum()
     }
@@ -399,8 +393,8 @@ pub struct CpuModel {
 impl CpuModel {
     /// Create a `CpuModel` from a GGUF file.
     pub fn load_gguf(path: &std::path::Path) -> Result<Self> {
-        let llama_model = LlamaModel::load_gguf(path)
-            .map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
+        let llama_model =
+            LlamaModel::load_gguf(path).map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
         Self::from_llama_model(llama_model)
     }
 
@@ -420,8 +414,10 @@ impl CpuModel {
 
         let kv_caches = (0..config.num_layers)
             .map(|_| {
-                let key_cache = Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
-                let value_cache = Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
+                let key_cache =
+                    Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
+                let value_cache =
+                    Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
                 (key_cache, value_cache)
             })
             .collect();
@@ -484,14 +480,17 @@ impl CpuModel {
             let mut layer_outputs = Vec::new();
             for (pos, &token) in prompt_tokens.iter().enumerate() {
                 let hidden = self.llama_model.embed(token, self.seq_len + pos)?;
-                let hidden = self.llama_model.forward_layers(&hidden, self.seq_len + pos)?;
+                let hidden = self
+                    .llama_model
+                    .forward_layers(&hidden, self.seq_len + pos)?;
 
                 // Store the last hidden state as KV for this layer
                 let last_hidden = &hidden;
                 let embed_dim = last_hidden.len();
 
                 // Extract key/value from hidden state (simplified: use last embed_dim elements)
-                let key: Vec<f16> = last_hidden[embed_dim - (self.config.head_dim * self.config.num_heads)..]
+                let key: Vec<f16> = last_hidden
+                    [embed_dim - (self.config.head_dim * self.config.num_heads)..]
                     .iter()
                     .map(|&x| f16::from_f32(x))
                     .collect();
@@ -531,9 +530,9 @@ impl CpuModel {
         let value = key.clone();
 
         if let Some((key_cache, _value_cache)) = self.kv_caches.last_mut() {
-            key_cache.append(&key, &value).map_err(|e| {
-                RunnerError::Tensor(format!("KV append failed: {e}"))
-            })?;
+            key_cache
+                .append(&key, &value)
+                .map_err(|e| RunnerError::Tensor(format!("KV append failed: {e}")))?;
         }
 
         self.seq_len += 1;
@@ -581,12 +580,15 @@ impl CpuModel {
             }
 
             // Get the last token from prompt + generated
-            let current_tokens: Vec<u32> = prompt_tokens.iter().cloned()
+            let current_tokens: Vec<u32> = prompt_tokens
+                .iter()
+                .cloned()
                 .chain(generated.iter().cloned())
                 .collect();
-            let last_token = current_tokens.last().copied().ok_or_else(|| {
-                RunnerError::Tensor("no tokens to decode".to_string())
-            })?;
+            let last_token = current_tokens
+                .last()
+                .copied()
+                .ok_or_else(|| RunnerError::Tensor("no tokens to decode".to_string()))?;
 
             // Decode one step
             let logits = self.decode(last_token)?;
