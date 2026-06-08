@@ -118,6 +118,60 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
                 .flat_map(|v| v.to_le_bytes())
                 .collect())
         }
+        GgufDtype::Q2_K => {
+            let dequantized = dequantize_q2_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Internal(format!("Q2_K dequant failed: {e}")))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q3_K => {
+            let dequantized = dequantize_q3_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Internal(format!("Q3_K dequant failed: {e}")))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q4_K | GgufDtype::Q4_K_M => {
+            let dequantized = dequantize_q4_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Internal(format!("Q4_K dequant failed: {e}")))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q5_K | GgufDtype::Q5_K_M | GgufDtype::Q5_K_S => {
+            let dequantized = dequantize_q5_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Internal(format!("Q5_K dequant failed: {e}")))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q6_K | GgufDtype::Q6_K_S => {
+            let dequantized = dequantize_q6_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Internal(format!("Q6_K dequant failed: {e}")))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q8_K | GgufDtype::Q8_K_M => {
+            let dequantized = dequantize_q8_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Internal(format!("Q8_K dequant failed: {e}")))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q1_K | GgufDtype::Q2_K_S | GgufDtype::Q3_K_S | GgufDtype::Q4_K_S | GgufDtype::Q2_K_M => {
+            Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
+                "K-family variant {} for tensor '{}' not yet implemented",
+                tensor.dtype, tensor.name
+            ))))
+        }
         GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => Ok(raw_data.to_vec()),
         GgufDtype::Unknown(_) => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
             "Unknown GGUF dtype {} for tensor '{}'",
