@@ -19,12 +19,12 @@
 pub mod layer;
 pub mod linear;
 pub mod model;
-pub mod rope;
 pub mod rms_norm;
+pub mod rope;
 pub mod sampling;
 pub mod tokenizer;
 
 pub use model::LlamaModel;
-pub use sampling::{sample, argmax, SamplingConfig};
-pub use tokenizer::{load_tokenizer_from_gguf, GgufTokenizerConfig};
+pub use sampling::{SamplingConfig, argmax, sample};
+pub use tokenizer::{GgufTokenizerConfig, load_tokenizer_from_gguf};
 pub use tokenizers::tokenizer::Tokenizer as GgufTokenizer;
