@@ -13,8 +13,10 @@
 //! the buffer base (passed separately to the kernel). The box defines
 //! the region to copy, and strides define how to stride through GMEM/SMEM.
 
-#[derive(Debug, Clone, Copy)]
-pub struct TmaDescriptor(pub [u32; 4]);
+/// 128-bit TMA descriptor packed as u128 for correct alignment and zero-copy casting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C, align(16))]
+pub struct TmaDescriptor(pub u128);
 
 impl TmaDescriptor {
     /// Create a new zeroed descriptor.
