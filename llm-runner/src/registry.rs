@@ -4,7 +4,8 @@
 //! auto-discovered models from filesystem search paths.
 //!
 
-#![allow(clippy::if_same_then_else, clippy::collapsible_if)]//! ## Architecture
+#![allow(clippy::if_same_then_else, clippy::collapsible_if)]
+//! ## Architecture
 //!
 //! ```text
 //! Registry
@@ -397,11 +398,30 @@ impl ModelDiscovery {
             .to_lowercase();
 
         let non_llm_patterns = [
-            "flux", "sd", "stable-diffusion", "sdxl", "dalle", "midjourney",
-            "video", "vid", "animate", "motion",
-            "whisper", "audio", "speech", "tts", "voice",
-            "clip", "embed", "encoder", "vision",
-            "vae", "unet", "controlnet", "lora", "adapter",
+            "flux",
+            "sd",
+            "stable-diffusion",
+            "sdxl",
+            "dalle",
+            "midjourney",
+            "video",
+            "vid",
+            "animate",
+            "motion",
+            "whisper",
+            "audio",
+            "speech",
+            "tts",
+            "voice",
+            "clip",
+            "embed",
+            "encoder",
+            "vision",
+            "vae",
+            "unet",
+            "controlnet",
+            "lora",
+            "adapter",
         ];
 
         if non_llm_patterns.iter().any(|p| filename.contains(p)) {
@@ -413,10 +433,32 @@ impl ModelDiscovery {
         }
 
         let llm_patterns = [
-            "llama", "mistral", "qwen", "phi", "gemma", "codellama", "vicuna",
-            "alpaca", "orca", "falcon", "mpt", "gpt", "claude", "chatglm",
-            "baichuan", "yi", "deepseek", "mixtral", "solar", "openchat",
-            "starling", "wizardlm", "dolphin", "nous", "hermes", "airoboros",
+            "llama",
+            "mistral",
+            "qwen",
+            "phi",
+            "gemma",
+            "codellama",
+            "vicuna",
+            "alpaca",
+            "orca",
+            "falcon",
+            "mpt",
+            "gpt",
+            "claude",
+            "chatglm",
+            "baichuan",
+            "yi",
+            "deepseek",
+            "mixtral",
+            "solar",
+            "openchat",
+            "starling",
+            "wizardlm",
+            "dolphin",
+            "nous",
+            "hermes",
+            "airoboros",
         ];
 
         llm_patterns.iter().any(|p| filename.contains(p)) || true
@@ -426,7 +468,12 @@ impl ModelDiscovery {
         let format = match path.extension().and_then(|s| s.to_str()) {
             Some("gguf") => ModelFormat::Gguf,
             Some("safetensors") => ModelFormat::SafeTensors,
-            _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Unknown format")),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Unknown format",
+                ));
+            }
         };
 
         let size_bytes = std::fs::metadata(path).ok().map(|m| m.len());
