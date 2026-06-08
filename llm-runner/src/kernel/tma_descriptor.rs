@@ -61,7 +61,7 @@ impl TmaDescriptor {
     /// `box_y` — number of elements along Y axis (16-bit).
     /// `gmem_y_stride` — GMEM stride in elements between consecutive columns (16-bit).
     /// `smem_y_stride` — SMEM stride in elements between consecutive columns (16-bit).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::identity_op, clippy::erasing_op)]
     pub const fn with_box(
         mut self,
         box_x: u16,
@@ -72,8 +72,10 @@ impl TmaDescriptor {
         smem_y_stride: u16,
     ) -> Self {
         self.0 |= (box_x as u128) << 0;
-        self.0 |= ((gmem_x_stride.min(255) as u128) << 16);
-        self.0 |= ((smem_x_stride.min(255) as u128) << 24);
+        let gmem_x = if gmem_x_stride > 255 { 255u16 } else { gmem_x_stride };
+        let smem_x = if smem_x_stride > 255 { 255u16 } else { smem_x_stride };
+        self.0 |= (gmem_x as u128) << 16;
+        self.0 |= (smem_x as u128) << 24;
         self.0 |= (box_y as u128) << 32;
         self.0 |= ((gmem_y_stride as u128) << 48);
         self.0 |= ((smem_y_stride as u128) << 64);
