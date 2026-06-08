@@ -27,7 +27,7 @@ pub enum DeviceBufferError {
 #[derive(Clone)]
 pub enum DeviceBuffer<T> {
     Host(Vec<T>),
-    Device(u64, usize), // ptr_addr, len_elements
+    Device(u64, usize),                   // ptr_addr, len_elements
     DeviceTma(u64, usize, TmaDescriptor), // ptr_addr, len_elements, tma_descriptor
     /// Real cuda-oxide backed device buffer (Phase 2 wiring).
     Cuda(Arc<cuda_core::DeviceBuffer<T>>),
@@ -38,7 +38,9 @@ impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
         match self {
             Self::Host(v) => f.debug_tuple("Host").field(v).finish(),
             Self::Device(ptr, len) => f.debug_tuple("Device").field(ptr).field(len).finish(),
-            Self::DeviceTma(ptr, len, _desc) => f.debug_tuple("DeviceTma").field(ptr).field(len).finish(),
+            Self::DeviceTma(ptr, len, _desc) => {
+                f.debug_tuple("DeviceTma").field(ptr).field(len).finish()
+            }
             Self::Cuda(_) => f.debug_tuple("Cuda").field(&"<device-buffer>").finish(),
         }
     }
@@ -145,7 +147,10 @@ impl<T> DeviceBuffer<T> {
 
     /// Check if this buffer is on the device (not host).
     pub fn is_device(&self) -> bool {
-        matches!(self, Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..))
+        matches!(
+            self,
+            Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..)
+        )
     }
 
     /// Allocate device memory and copy data from host.
@@ -177,7 +182,10 @@ impl<T> DeviceBuffer<T> {
     }
 
     /// Copy device buffer contents back to host.
-    pub fn to_host_from_device(&self, stream: &cuda_core::CudaStream) -> Result<Vec<T>, DeviceBufferError>
+    pub fn to_host_from_device(
+        &self,
+        stream: &cuda_core::CudaStream,
+    ) -> Result<Vec<T>, DeviceBufferError>
     where
         T: Clone,
     {
