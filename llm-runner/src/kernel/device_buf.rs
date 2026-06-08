@@ -24,14 +24,37 @@ pub enum DeviceBufferError {
     SizeMismatch { expected: usize, got: usize },
 }
 
+/// Host-backed buffer for data that lives on the CPU side.
+#[derive(Clone)]
+pub struct HostBuffer<T>(pub Vec<T>);
+
+/// Device-backed buffer for data that lives on the GPU.
 #[derive(Clone)]
 pub enum DeviceBuffer<T> {
-    Host(Vec<T>),
-    Device(u64, usize),                   // ptr_addr, len_elements
-    DeviceTma(u64, usize, TmaDescriptor), // ptr_addr, len_elements, tma_descriptor
-    /// Real cuda-oxide backed device buffer (Phase 2 wiring).
+    /// Raw device pointer (no ownership — caller manages lifetime).
+    Device(u64, usize),
+    /// Raw device pointer with TMA descriptor attached.
+    DeviceTma(u64, usize, TmaDescriptor),
+    /// Owned cuda-oxide device buffer (Phase 2 wiring).
     Cuda(Arc<cuda_core::DeviceBuffer<T>>),
 }
+
+impl<T> Drop for DeviceBuffer<T> {
+    fn drop(&mut self) {
+        match self {
+            Self::Cuda(buf) => {
+                // Arc drops the underlying cuda_core::DeviceBuffer which
+                // handles cuMemFree. Raw Device/DeviceTma pointers are
+                // caller-owned and must be freed separately.
+                drop(buf);
+            }
+            _ => {}
+        }
+    }
+}
+
+unsafe impl<T: Send> Send for DeviceBuffer<T> {}
+unsafe impl<T: Send> Sync for DeviceBuffer<T> {}
 
 impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -46,21 +69,58 @@ impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
     }
 }
 
-impl<T: Default + Clone> DeviceBuffer<T> {
+impl<T: Default + Clone> HostBuffer<T> {
     pub fn from_host(data: Vec<T>) -> Self {
-        Self::Host(data)
+        Self(data)
     }
 
     pub fn zeros(len: usize) -> Self
     where
         T: Default + Clone,
     {
-        Self::Host(vec![T::default(); len])
+        Self(vec![T::default(); len])
     }
 
     pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        &self.0
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.0
+    }
+
+    pub fn to_host(self) -> Vec<T> {
+        self.0
+    }
+
+    pub fn into_inner(self) -> Vec<T> {
+        self.0
+    }
+}
+
+impl<T: Default + Clone> From<Vec<T>> for HostBuffer<T> {
+    fn from(v: Vec<T>) -> Self {
+        Self::from_host(v)
+    }
+}
+
+impl<T: Default + Clone> From<HostBuffer<T>> for Vec<T> {
+    fn from(buf: HostBuffer<T>) -> Self {
+        buf.0
+    }
+}
+
+impl<T> DeviceBuffer<T> {
+    pub fn len(&self) -> usize {
         match self {
-            Self::Host(v) => v.len(),
             Self::Device(_, len) | Self::DeviceTma(_, len, _) => *len,
             Self::Cuda(buf) => buf.len(),
         }
@@ -71,32 +131,49 @@ impl<T: Default + Clone> DeviceBuffer<T> {
     }
 
     pub fn as_slice(&self) -> Option<&[T]> {
-        match self {
-            Self::Host(v) => Some(v.as_slice()),
-            Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => None,
-        }
+        None // Device buffers can't be safely deref'd without a stream/context
     }
 
     pub fn as_mut_slice(&mut self) -> Option<&mut [T]> {
-        match self {
-            Self::Host(v) => Some(v.as_mut_slice()),
-            Self::Cuda(_) => None, // Can't get mutable ref to device buffer
-            Self::Device(..) | Self::DeviceTma(..) => None,
-        }
+        None
     }
 
-    pub fn to_host(&self) -> Vec<T>
+    pub fn to_host(&self, stream: &cuda_core::CudaStream) -> Result<Vec<T>, DeviceBufferError>
     where
         T: Clone,
     {
         match self {
-            Self::Host(v) => v.clone(),
-            Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => vec![],
+            Self::Cuda(buf) => buf.to_host_vec(stream).map_err(|e| DeviceBufferError::Transfer(e.to_string())),
+            Self::Device(..) | Self::DeviceTma(..) => Ok(vec![]),
+        }
+    }
+
+    pub fn device_ptr(&self) -> Option<u64> {
+        match self {
+            Self::Device(ptr, _) | Self::DeviceTma(ptr, _, _) => Some(*ptr),
+            Self::Cuda(buf) => Some(buf.cu_deviceptr()),
+        }
+    }
+
+    pub fn tma_descriptor(&self) -> Option<TmaDescriptor> {
+        match self {
+            Self::DeviceTma(_, _, desc) => Some(*desc),
+            _ => None,
+        }
+    }
+
+    pub fn is_device(&self) -> bool {
+        matches!(self, Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..))
+    }
+
+    pub fn as_cuda(&self) -> Option<&Arc<cuda_core::DeviceBuffer<T>>> {
+        match self {
+            Self::Cuda(buf) => Some(buf),
+            _ => None,
         }
     }
 }
 
-impl<T> DeviceBuffer<T> {
     /// Create a device buffer from a raw pointer address and element count.
     ///
     /// # Safety
@@ -127,30 +204,6 @@ impl<T> DeviceBuffer<T> {
             }
             _ => None,
         }
-    }
-
-    pub fn device_ptr(&self) -> Option<u64> {
-        match self {
-            Self::Device(ptr, _) | Self::DeviceTma(ptr, _, _) => Some(*ptr),
-            Self::Cuda(buf) => Some(buf.cu_deviceptr()),
-            Self::Host(..) => None,
-        }
-    }
-
-    /// Get the TMA descriptor if this buffer has one attached.
-    pub fn tma_descriptor(&self) -> Option<TmaDescriptor> {
-        match self {
-            Self::DeviceTma(_, _, desc) => Some(*desc),
-            _ => None,
-        }
-    }
-
-    /// Check if this buffer is on the device (not host).
-    pub fn is_device(&self) -> bool {
-        matches!(
-            self,
-            Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..)
-        )
     }
 
     /// Allocate device memory and copy data from host.
@@ -193,16 +246,7 @@ impl<T> DeviceBuffer<T> {
             Self::Cuda(buf) => buf
                 .to_host_vec(stream)
                 .map_err(|e| DeviceBufferError::Transfer(e.to_string())),
-            Self::Host(v) => Ok(v.clone()),
-            Self::Device(..) | Self::DeviceTma(..) => Ok(vec![]), // Can't read from raw ptr
-        }
-    }
-
-    /// Get the underlying cuda-oxide buffer if this is a Cuda variant.
-    pub fn as_cuda(&self) -> Option<&Arc<cuda_core::DeviceBuffer<T>>> {
-        match self {
-            Self::Cuda(buf) => Some(buf),
-            _ => None,
+            Self::Device(..) | Self::DeviceTma(..) => Ok(vec![]),
         }
     }
 }
