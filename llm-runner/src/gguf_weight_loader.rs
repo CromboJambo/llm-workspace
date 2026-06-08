@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crabjar_gguf::parser::{parse_gguf, extract_tensor_bytes};
+use crabjar_gguf::parser::{extract_tensor_bytes, parse_gguf};
 use crabjar_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
 
 use crate::error::{Result, RunnerError};
@@ -63,13 +63,11 @@ pub fn load_gguf_weights(gguf_path: &Path) -> Result<GgufWeights> {
 pub fn load_gguf_tensor(gguf_path: &Path, tensor_name: &str) -> Result<(GgufHeader, Vec<u8>)> {
     let header = parse_gguf(gguf_path)?;
 
-    let tensor = header
-        .get_tensor(tensor_name)
-        .ok_or_else(|| {
-            RunnerError::Gguf(crabjar_gguf::GgufError::InvalidTensor(format!(
-                "tensor '{tensor_name}' not found in file"
-            )))
-        })?;
+    let tensor = header.get_tensor(tensor_name).ok_or_else(|| {
+        RunnerError::Gguf(crabjar_gguf::GgufError::InvalidTensor(format!(
+            "tensor '{tensor_name}' not found in file"
+        )))
+    })?;
 
     let stored_size = tensor.stored_size() as usize;
     let file_offset = header.data_section_start + tensor.offset;
@@ -99,21 +97,28 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
         GgufDtype::Q4_0 => {
             let dequantized = dequantize_q4_0(raw_data, element_count)
                 .map_err(|e| RunnerError::Internal(format!("Q4_0 dequant failed: {e}")))?;
-            Ok(dequantized.into_iter().flat_map(|v| v.to_le_bytes()).collect())
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
         }
         GgufDtype::Q4_1 => {
             let dequantized = dequantize_q4_1(raw_data, element_count)
                 .map_err(|e| RunnerError::Internal(format!("Q4_1 dequant failed: {e}")))?;
-            Ok(dequantized.into_iter().flat_map(|v| v.to_le_bytes()).collect())
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
         }
         GgufDtype::Q8_0 => {
             let dequantized = dequantize_q8_0(raw_data, element_count)
                 .map_err(|e| RunnerError::Internal(format!("Q8_0 dequant failed: {e}")))?;
-            Ok(dequantized.into_iter().flat_map(|v| v.to_le_bytes()).collect())
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
         }
-        GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => {
-            Ok(raw_data.to_vec())
-        }
+        GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => Ok(raw_data.to_vec()),
         GgufDtype::Unknown(_) => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
             "Unknown GGUF dtype {} for tensor '{}'",
             tensor.dtype, tensor.name
@@ -134,7 +139,12 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
 fn dequantize_q4_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
     let num_full_blocks = element_count / 32;
     let remaining = element_count % 32;
-    let expected_size = num_full_blocks * 18 + if remaining > 0 { 2 + remaining.div_ceil(2) } else { 0 };
+    let expected_size = num_full_blocks * 18
+        + if remaining > 0 {
+            2 + remaining.div_ceil(2)
+        } else {
+            0
+        };
 
     if data.len() < expected_size {
         return Err(RunnerError::Internal(format!(
@@ -182,7 +192,12 @@ fn dequantize_q4_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
 fn dequantize_q4_1(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
     let num_full_blocks = element_count / 32;
     let remaining = element_count % 32;
-    let expected_size = num_full_blocks * 20 + if remaining > 0 { 4 + remaining.div_ceil(2) } else { 0 };
+    let expected_size = num_full_blocks * 20
+        + if remaining > 0 {
+            4 + remaining.div_ceil(2)
+        } else {
+            0
+        };
 
     if data.len() < expected_size {
         return Err(RunnerError::Internal(format!(
@@ -350,11 +365,22 @@ mod tests {
 
         // Tensor metadata
         let tensors: Vec<crabjar_gguf::GgufTensorInfo> = vec![
-            crabjar_gguf::GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![8u64], offset: 0, dtype: 1 },
-            crabjar_gguf::GgufTensorInfo { name: "output.weight".to_string(), shape: vec![4u64, 8u64], offset: 32, dtype: 2 },
+            crabjar_gguf::GgufTensorInfo {
+                name: "tok_embeddings.weight".to_string(),
+                shape: vec![8u64],
+                offset: 0,
+                dtype: 1,
+            },
+            crabjar_gguf::GgufTensorInfo {
+                name: "output.weight".to_string(),
+                shape: vec![4u64, 8u64],
+                offset: 32,
+                dtype: 2,
+            },
         ];
 
-        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, Some(32));
+        let data_section_start =
+            crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, Some(32));
 
         // Write file
         let mut buf = Vec::new();
@@ -385,14 +411,14 @@ mod tests {
         }
 
         // Pad to data_section_start and write tensor data
-        let total_tensor_bytes: u64 = tensors[0].shape.iter().product::<u64>() * 2 + tensors[1].shape.iter().product::<u64>() / 16 * 18;
+        let total_tensor_bytes: u64 = tensors[0].shape.iter().product::<u64>() * 2
+            + tensors[1].shape.iter().product::<u64>() / 16 * 18;
         buf.resize((data_section_start + total_tensor_bytes) as usize, 0);
 
         // F16 tensor data: 8 elements of 1.0
-        let f16_ones: Vec<u8> = (0..8)
-            .flat_map(|_| pack_f16(1.0f32))
-            .collect();
-        buf[data_section_start as usize..data_section_start as usize + 16].copy_from_slice(&f16_ones);
+        let f16_ones: Vec<u8> = (0..8).flat_map(|_| pack_f16(1.0f32)).collect();
+        buf[data_section_start as usize..data_section_start as usize + 16]
+            .copy_from_slice(&f16_ones);
 
         // Q4_0 tensor data: 32 elements, 1 block (scale=1.0)
         let mut q4_block = Vec::with_capacity(18);
@@ -428,7 +454,12 @@ mod tests {
             dtype: 0u32,
         };
 
-        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], Some(32));
+        let data_section_start = crabjar_gguf::compute_data_section_start(
+            3,
+            &kv_pairs,
+            &[tensor_info.clone()],
+            Some(32),
+        );
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
@@ -453,11 +484,9 @@ mod tests {
 
         // F32 tensor data: [1.0, 2.0, 3.0, 4.0]
         let f32_vals: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
-        let f32_data: Vec<u8> = f32_vals
-            .into_iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        buf[data_section_start as usize..data_section_start as usize + 16].copy_from_slice(&f32_data);
+        let f32_data: Vec<u8> = f32_vals.into_iter().flat_map(|v| v.to_le_bytes()).collect();
+        buf[data_section_start as usize..data_section_start as usize + 16]
+            .copy_from_slice(&f32_data);
 
         std::fs::write(path, &buf).unwrap();
     }
@@ -482,7 +511,12 @@ mod tests {
             dtype: 2u32,
         };
 
-        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], Some(32));
+        let data_section_start = crabjar_gguf::compute_data_section_start(
+            3,
+            &kv_pairs,
+            &[tensor_info.clone()],
+            Some(32),
+        );
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
@@ -513,7 +547,8 @@ mod tests {
             let hi = ((i + 1) % 16) as u8;
             q4_block.push((hi << 4) | lo);
         }
-        buf[data_section_start as usize..data_section_start as usize + 18].copy_from_slice(&q4_block);
+        buf[data_section_start as usize..data_section_start as usize + 18]
+            .copy_from_slice(&q4_block);
 
         std::fs::write(path, &buf).unwrap();
     }
@@ -539,11 +574,17 @@ mod tests {
             crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
             crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
             crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int16(v) => {
+                buf.extend_from_slice(&(*v as i16).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int32(v) => {
+                buf.extend_from_slice(&(*v as i32).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Int64(v) => {
+                buf.extend_from_slice(&(*v as i64).to_le_bytes())
+            }
             crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
             crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
             crabjar_gguf::GgufKvValue::String(s) => {
@@ -570,7 +611,9 @@ mod tests {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            crabjar_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+            crabjar_gguf::GgufKvValue::Float16(v) => {
+                buf.extend_from_slice(&(*v as u16).to_le_bytes())
+            }
         }
     }
 
@@ -678,11 +721,23 @@ mod tests {
         // Q4_0 formula: dequantized = scale * (q - 8) + min
         // q values: 0,1,2,3,...,31 mapped to nibbles
         // element 0: q=0 → 1.0 * (0 - 8) + 0 = -8.0
-        assert!((f32_data[0] - (-8.0)).abs() < 1e-3, "expected -8.0, got {}", f32_data[0]);
+        assert!(
+            (f32_data[0] - (-8.0)).abs() < 1e-3,
+            "expected -8.0, got {}",
+            f32_data[0]
+        );
         // element 1: q=1 → 1.0 * (1 - 8) + 0 = -7.0
-        assert!((f32_data[1] - (-7.0)).abs() < 1e-3, "expected -7.0, got {}", f32_data[1]);
+        assert!(
+            (f32_data[1] - (-7.0)).abs() < 1e-3,
+            "expected -7.0, got {}",
+            f32_data[1]
+        );
         // element 2: q=2 → 1.0 * (2 - 8) + 0 = -6.0
-        assert!((f32_data[2] - (-6.0)).abs() < 1e-3, "expected -6.0, got {}", f32_data[2]);
+        assert!(
+            (f32_data[2] - (-6.0)).abs() < 1e-3,
+            "expected -6.0, got {}",
+            f32_data[2]
+        );
     }
 
     #[test]
@@ -737,9 +792,8 @@ mod tests {
     #[ignore] // Parser doesn't handle large string arrays in vocab GGUFs
     #[test]
     fn load_gguf_real_vocab_file() {
-        let path = std::path::PathBuf::from(
-            "/home/crombo/llama.cpp/models/ggml-vocab-llama-spm.gguf",
-        );
+        let path =
+            std::path::PathBuf::from("/home/crombo/llama.cpp/models/ggml-vocab-llama-spm.gguf");
         if !path.exists() {
             eprintln!("SKIP: llama.cpp vocab GGUF not found");
             return;
