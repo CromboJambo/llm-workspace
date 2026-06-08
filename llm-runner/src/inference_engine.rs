@@ -13,8 +13,8 @@ use std::sync::Arc;
 pub struct InferenceEngine {
     pub device: candle_core::Device,
     pub dtype: DType,
-    gemm: Box<dyn GemmKernel>,
-    attention: Box<dyn AttentionKernel>,
+    gemm: Box<dyn GemmKernel + Send + Sync>,
+    attention: Box<dyn AttentionKernel + Send + Sync>,
     /// CUDA runtime for device memory management (None = CPU-only mode).
     cuda_runtime: Option<Arc<CudaRuntime>>,
     /// CUDA stream for async operations.
@@ -24,7 +24,7 @@ pub struct InferenceEngine {
 impl InferenceEngine {
     pub fn new(device: Device, dtype: DType) -> Self {
         let gemm = GemmBuilder::new()
-            .with_arch(GemmArch::Tcgen05)
+            .with_arch(GemmArch::Wgmma)
             .with_config(GemmConfig::default())
             .build();
         let attention = Box::new(CpuAttentionKernel::new());
@@ -35,7 +35,7 @@ impl InferenceEngine {
                 Ok(rt) => {
                     let rt = Arc::new(rt);
                     match rt.new_stream() {
-                        Ok(stream) => (Some(rt), Some(stream)),
+                        Ok(stream) => (Some(rt), Some(Arc::new(stream))),
                         Err(_) => (Some(rt), None),
                     }
                 }
@@ -56,7 +56,7 @@ impl InferenceEngine {
     }
 
     /// Create engine with a specific GEMM kernel.
-    pub fn with_gemm(device: Device, dtype: DType, gemm: Box<dyn GemmKernel>) -> Self {
+    pub fn with_gemm(device: Device, dtype: DType, gemm: Box<dyn GemmKernel + Send + Sync>) -> Self {
         let attention = Box::new(CpuAttentionKernel::new());
 
         let (cuda_runtime, stream) = if is_available() {
@@ -64,7 +64,7 @@ impl InferenceEngine {
                 Ok(rt) => {
                     let rt = Arc::new(rt);
                     match rt.new_stream() {
-                        Ok(stream) => (Some(rt), Some(stream)),
+                        Ok(stream) => (Some(rt), Some(Arc::new(stream))),
                         Err(_) => (Some(rt), None),
                     }
                 }
