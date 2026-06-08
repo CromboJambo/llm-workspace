@@ -129,38 +129,39 @@ impl ModelLoader {
             .and_then(|s| s.parse::<u32>().ok())
             .map(GgufDtype::from_u32)
             .or_else(|| {
-                header
-                    .get_kv_str("general.file_type")
-                    .map(|s| match s {
-                        "F16" => GgufDtype::F16,
-                        "F32" => GgufDtype::F32,
-                        "Q4_0" => GgufDtype::Q4_0,
-                        "Q4_1" => GgufDtype::Q4_1,
-                        "Q5_0" => GgufDtype::Q5_0,
-                        "Q5_1" => GgufDtype::Q5_1,
-                        "Q8_0" => GgufDtype::Q8_0,
-                        "Q8_1" => GgufDtype::Q8_1,
-                        "Q2_K" => GgufDtype::Q2_K,
-                        "Q3_K" => GgufDtype::Q3_K,
-                        "Q4_K" => GgufDtype::Q4_K,
-                        "Q5_K" => GgufDtype::Q5_K,
-                        "Q6_K" => GgufDtype::Q6_K,
-                        "Q8_K" => GgufDtype::Q8_K,
-                        "BF16" => GgufDtype::BF16,
-                        _ => GgufDtype::Unknown(0),
-                    })
+                header.get_kv_str("general.file_type").map(|s| match s {
+                    "F16" => GgufDtype::F16,
+                    "F32" => GgufDtype::F32,
+                    "Q4_0" => GgufDtype::Q4_0,
+                    "Q4_1" => GgufDtype::Q4_1,
+                    "Q5_0" => GgufDtype::Q5_0,
+                    "Q5_1" => GgufDtype::Q5_1,
+                    "Q8_0" => GgufDtype::Q8_0,
+                    "Q8_1" => GgufDtype::Q8_1,
+                    "Q2_K" => GgufDtype::Q2_K,
+                    "Q3_K" => GgufDtype::Q3_K,
+                    "Q4_K" => GgufDtype::Q4_K,
+                    "Q5_K" => GgufDtype::Q5_K,
+                    "Q6_K" => GgufDtype::Q6_K,
+                    "Q8_K" => GgufDtype::Q8_K,
+                    "BF16" => GgufDtype::BF16,
+                    _ => GgufDtype::Unknown(0),
+                })
             })
     }
 
     /// Extract raw tensor bytes from a GGUF file by tensor name.
     pub fn extract_gguf_tensor(path: &Path, tensor_name: &str) -> Result<Vec<u8>, RunnerError> {
         let header = Self::load_gguf_header(path)?;
-        let tensor = header
-            .get_tensor(tensor_name)
-            .ok_or_else(|| RunnerError::Gguf(crabjar_gguf::GgufError::InvalidTensor(format!("tensor '{tensor_name}' not found"))))?;
+        let tensor = header.get_tensor(tensor_name).ok_or_else(|| {
+            RunnerError::Gguf(crabjar_gguf::GgufError::InvalidTensor(format!(
+                "tensor '{tensor_name}' not found"
+            )))
+        })?;
 
         let size = tensor.element_count() as usize;
-        crabjar_gguf::parser::extract_tensor_bytes(path, tensor.offset, size).map_err(RunnerError::Gguf)
+        crabjar_gguf::parser::extract_tensor_bytes(path, tensor.offset, size)
+            .map_err(RunnerError::Gguf)
     }
 
     /// Get architecture from a GGUF header.
@@ -207,9 +208,9 @@ impl ModelLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crabjar_gguf::{GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType};
-    use crabjar_gguf::compute_data_section_start;
     use crate::gguf_weight_loader::load_gguf_weights;
+    use crabjar_gguf::compute_data_section_start;
+    use crabjar_gguf::{GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -228,17 +229,72 @@ mod tests {
             kv_pair_u32("tokenizer.ggml.tokens", 32000),
         ];
         let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "output.weight".to_string(), shape: vec![32000u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wq.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wk.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wv.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention.wo.weight".to_string(), shape: vec![64u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.attention_norm.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.ffn_norm.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.feed_forward.w1.weight".to_string(), shape: vec![64u64, 128u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.feed_forward.w2.weight".to_string(), shape: vec![128u64, 64u64], offset: 0, dtype: 1 },
-            GgufTensorInfo { name: "layers.0.feed_forward.w3.weight".to_string(), shape: vec![64u64, 128u64], offset: 0, dtype: 1 },
+            GgufTensorInfo {
+                name: "tok_embeddings.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "output.weight".to_string(),
+                shape: vec![32000u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wq.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wk.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wv.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention.wo.weight".to_string(),
+                shape: vec![64u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.attention_norm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.ffn_norm.weight".to_string(),
+                shape: vec![64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.feed_forward.w1.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.feed_forward.w2.weight".to_string(),
+                shape: vec![128u64, 64u64],
+                offset: 0,
+                dtype: 1,
+            },
+            GgufTensorInfo {
+                name: "layers.0.feed_forward.w3.weight".to_string(),
+                shape: vec![64u64, 128u64],
+                offset: 0,
+                dtype: 1,
+            },
         ];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
@@ -264,10 +320,13 @@ mod tests {
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total_tensor_bytes: u64 = tensors.iter().map(|t| {
-            let elems: u64 = t.shape.iter().product();
-            elems * 2
-        }).sum();
+        let total_tensor_bytes: u64 = tensors
+            .iter()
+            .map(|t| {
+                let elems: u64 = t.shape.iter().product();
+                elems * 2
+            })
+            .sum();
         buf.resize((data_section_start + total_tensor_bytes) as usize, 0);
         for i in 0..total_tensor_bytes as usize {
             buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
@@ -276,16 +335,32 @@ mod tests {
     }
 
     fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
-        GgufKvPair { key: key.to_string(), value_type: GgufValueType::String, value: GgufKvValue::String(value.to_string()) }
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: GgufValueType::String,
+            value: GgufKvValue::String(value.to_string()),
+        }
     }
     fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
-        GgufKvPair { key: key.to_string(), value_type: GgufValueType::Uint32, value: GgufKvValue::Uint32(value) }
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: GgufValueType::Uint32,
+            value: GgufKvValue::Uint32(value),
+        }
     }
     fn kv_pair_f32(key: &str, value: f32) -> GgufKvPair {
-        GgufKvPair { key: key.to_string(), value_type: GgufValueType::Float32, value: GgufKvValue::Float32(value) }
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: GgufValueType::Float32,
+            value: GgufKvValue::Float32(value),
+        }
     }
     fn kv_pair_i32(key: &str, value: i32) -> GgufKvPair {
-        GgufKvPair { key: key.to_string(), value_type: GgufValueType::Int32, value: GgufKvValue::Int32(value) }
+        GgufKvPair {
+            key: key.to_string(),
+            value_type: GgufValueType::Int32,
+            value: GgufKvValue::Int32(value),
+        }
     }
     fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
         match value {
@@ -299,11 +374,30 @@ mod tests {
             GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
             GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
             GgufKvValue::Bool(v) => buf.push(*v as u8),
-            GgufKvValue::String(s) => { buf.extend_from_slice(&(s.len() as u64).to_le_bytes()); buf.extend_from_slice(s.as_bytes()); }
-            GgufKvValue::Int8Array(arr) => { let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect(); buf.extend_from_slice(&(arr.len() as u64).to_le_bytes()); buf.extend_from_slice(&bytes); }
-            GgufKvValue::Uint8Array(arr) => { buf.extend_from_slice(&(arr.len() as u64).to_le_bytes()); buf.extend_from_slice(arr); }
-            GgufKvValue::Array(arr) => { buf.extend_from_slice(&9u32.to_le_bytes()); buf.extend_from_slice(&(arr.len() as u64).to_le_bytes()); for elem in arr { write_kv_value(buf, elem); } }
-            GgufKvValue::Bfloat16(v) => { let raw = (*v as u32) << 16; buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes()); }
+            GgufKvValue::String(s) => {
+                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            GgufKvValue::Int8Array(arr) => {
+                let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                buf.extend_from_slice(&bytes);
+            }
+            GgufKvValue::Uint8Array(arr) => {
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                buf.extend_from_slice(arr);
+            }
+            GgufKvValue::Array(arr) => {
+                buf.extend_from_slice(&9u32.to_le_bytes());
+                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+                for elem in arr {
+                    write_kv_value(buf, elem);
+                }
+            }
+            GgufKvValue::Bfloat16(v) => {
+                let raw = (*v as u32) << 16;
+                buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
+            }
             GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
         }
     }
@@ -316,9 +410,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 1,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -337,15 +434,23 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        assert_eq!(ModelLoader::detect_quantization(&header), Some(GgufDtype::F16));
+        assert_eq!(
+            ModelLoader::detect_quantization(&header),
+            Some(GgufDtype::F16)
+        );
     }
 
     #[test]
@@ -356,9 +461,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "Q4_0"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -377,15 +485,23 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        assert_eq!(ModelLoader::detect_quantization(&header), Some(GgufDtype::Q4_0));
+        assert_eq!(
+            ModelLoader::detect_quantization(&header),
+            Some(GgufDtype::Q4_0)
+        );
     }
 
     #[test]
@@ -396,9 +512,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "Q8_0"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -417,15 +536,23 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        assert_eq!(ModelLoader::detect_quantization(&header), Some(GgufDtype::Q8_0));
+        assert_eq!(
+            ModelLoader::detect_quantization(&header),
+            Some(GgufDtype::Q8_0)
+        );
     }
 
     #[test]
@@ -436,9 +563,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "BF16"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -457,15 +587,23 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        assert_eq!(ModelLoader::detect_quantization(&header), Some(GgufDtype::BF16));
+        assert_eq!(
+            ModelLoader::detect_quantization(&header),
+            Some(GgufDtype::BF16)
+        );
     }
 
     #[test]
@@ -476,9 +614,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "UNKNOWN_X"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -497,27 +638,36 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        assert_eq!(ModelLoader::detect_quantization(&header), Some(GgufDtype::Unknown(0)));
+        assert_eq!(
+            ModelLoader::detect_quantization(&header),
+            Some(GgufDtype::Unknown(0))
+        );
     }
 
     #[test]
     fn detect_quantization_no_file_type_returns_none() {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "llama"),
-        ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let kv_pairs: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -536,11 +686,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
@@ -576,9 +731,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 1 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 1,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -597,11 +755,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = ModelLoader::load_gguf_header(&path).unwrap();
@@ -610,7 +773,8 @@ mod tests {
 
     #[test]
     fn load_gguf_header_nonexistent_file_fails() {
-        let path = PathBuf::from(tempdir().unwrap().path().to_str().unwrap()).join("nonexistent.gguf");
+        let path =
+            PathBuf::from(tempdir().unwrap().path().to_str().unwrap()).join("nonexistent.gguf");
         let result = ModelLoader::load_gguf_header(&path);
         assert!(result.is_err());
     }
@@ -619,12 +783,13 @@ mod tests {
     fn gguf_architecture_returns_value() {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "mistral"),
-        ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let kv_pairs: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "mistral")];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -643,11 +808,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = ModelLoader::load_gguf_header(&path).unwrap();
@@ -662,9 +832,12 @@ mod tests {
             kv_pair_str("general.architecture", "llama"),
             kv_pair_u32("llama.context_length", 8192),
         ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -683,11 +856,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = ModelLoader::load_gguf_header(&path).unwrap();
@@ -698,12 +876,13 @@ mod tests {
     fn gguf_helpers_return_none_when_missing() {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "llama"),
-        ];
-        let tensors: Vec<GgufTensorInfo> = vec![
-            GgufTensorInfo { name: "tok_embeddings.weight".to_string(), shape: vec![64u64], offset: 0, dtype: 0 },
-        ];
+        let kv_pairs: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
+        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
+            name: "tok_embeddings.weight".to_string(),
+            shape: vec![64u64],
+            offset: 0,
+            dtype: 0,
+        }];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
@@ -722,11 +901,16 @@ mod tests {
             buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape { buf.extend_from_slice(&dim.to_le_bytes()); }
+            for dim in &tensor.shape {
+                buf.extend_from_slice(&dim.to_le_bytes());
+            }
             buf.extend_from_slice(&tensor.dtype.to_le_bytes());
             buf.extend_from_slice(&tensor.offset.to_le_bytes());
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = ModelLoader::load_gguf_header(&path).unwrap();
@@ -773,7 +957,10 @@ mod tests {
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
-        let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
+        let total: u64 = tensors
+            .iter()
+            .map(|t| t.shape.iter().product::<u64>() * 2)
+            .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let result = load_gguf_weights(&path);
