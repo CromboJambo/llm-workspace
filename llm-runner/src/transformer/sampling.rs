@@ -16,6 +16,8 @@ pub struct SamplingConfig {
     pub top_p: f32,
     /// Top-k sampling threshold (0 = disabled).
     pub top_k: usize,
+    /// Seed for reproducible sampling (None = random seed from OS).
+    pub seed: Option<u64>,
 }
 
 impl Default for SamplingConfig {
@@ -24,6 +26,7 @@ impl Default for SamplingConfig {
             temperature: 0.7,
             top_p: 0.9,
             top_k: 0,
+            seed: None,
         }
     }
 }
