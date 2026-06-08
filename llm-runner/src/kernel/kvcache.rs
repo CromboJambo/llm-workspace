@@ -130,11 +130,7 @@ impl Kvcache {
     /// `key` and `value` must each have `num_heads * head_dim` elements.
     ///
     /// Returns `KvError::SeqLenExceeded` if `seq_len >= max_seq`.
-    pub fn append(
-        &mut self,
-        key: &[f16],
-        value: &[f16],
-    ) -> Result<(), KvError> {
+    pub fn append(&mut self, key: &[f16], value: &[f16]) -> Result<(), KvError> {
         if self.seq_len >= self.max_seq {
             return Err(KvError::SeqLenExceeded {
                 current: self.seq_len,
@@ -269,15 +265,15 @@ impl Kvcache {
         let desc = TmaDescriptor::new()
             .with_gmem_addr(byte_offset)
             .with_box(
-                self.head_dim as u16,              // box X
-                (self.head_dim as u16).min(255),   // gmem_x_stride (8-bit field, saturates at 255)
-                self.head_dim as u16,              // smem_x_stride
-                box_y,                             // box Y
-                head_stride as u16,                // gmem_y_stride
-                self.head_dim as u16,              // smem_y_stride
+                self.head_dim as u16,            // box X
+                (self.head_dim as u16).min(255), // gmem_x_stride (8-bit field, saturates at 255)
+                self.head_dim as u16,            // smem_x_stride
+                box_y,                           // box Y
+                head_stride as u16,              // gmem_y_stride
+                self.head_dim as u16,            // smem_y_stride
             )
-            .with_element_info(1)   // f16 = 2 bytes
-            .with_descriptor_type(1)   // global cache read
+            .with_element_info(1) // f16 = 2 bytes
+            .with_descriptor_type(1) // global cache read
             .with_smem_config(0)
             .with_cache_hint(0);
 
