@@ -362,8 +362,7 @@ mod tests {
     #[test]
     fn device_selector_new_creates_default() {
         let selector = DeviceSelector::new();
-        assert!(selector.priority.contains(&DeviceType::Cpu)
-            || !selector.priority.is_empty());
+        assert!(selector.priority.contains(&DeviceType::Cpu) || !selector.priority.is_empty());
     }
 
     #[test]
