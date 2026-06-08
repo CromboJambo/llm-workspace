@@ -29,7 +29,6 @@ pub struct SamplingConfig {
     pub kv_cache_type: KvCacheType,
 
     // ── Sampling parameters ──
-
     /// Sampling temperature. Higher = more random. 0 = greedy (deterministic).
     pub temperature: f64,
 
@@ -91,7 +90,7 @@ impl Default for SamplingConfig {
         Self {
             n_ctx: 4096,
             n_batch: 512,
-            n_threads: 0, // auto
+            n_threads: 0,     // auto
             n_gpu_layers: -1, // auto
             kv_cache_type: KvCacheType::F32,
             temperature: 0.7,
