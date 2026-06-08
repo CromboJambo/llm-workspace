@@ -413,7 +413,7 @@ impl AttentionKernel for CpuAttentionKernel {
         query: &DeviceBuffer<f16>,
         key_cache: &Kvcache,
         value_cache: &Kvcache,
-        _mask: Option<&DeviceBuffer<f32>>,
+        mask: Option<&DeviceBuffer<f32>>,
         config: &AttentionConfig,
     ) -> Result<DeviceBuffer<f32>, AttentionError> {
         let num_heads = config.num_heads;
