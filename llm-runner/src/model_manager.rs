@@ -266,10 +266,10 @@ impl ModelManager {
             .saturating_sub(current_loaded);
 
         for (model_name, score) in candidates_to_queue.iter().take(slots_available) {
-            if !queue.iter().any(|n| n == model_name) {
+            if !queue.iter().any(|n| n.as_str() == model_name.as_str()) {
                 queue.push_back(model_name.clone());
                 info!(
-                    model = model_name,
+                    model = model_name.as_str(),
                     score = score,
                     "Queued model for preloading"
                 );
