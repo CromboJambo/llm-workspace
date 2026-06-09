@@ -48,7 +48,7 @@ use llama_cpp_2::{
 };
 
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::info;
 
 pub use context::ContextConfig;
 pub use model::ModelInfo;
@@ -155,8 +155,8 @@ impl LlamaRunnerBuilder {
         info!("llama.cpp backend initialized");
 
         // Load the model
-        let model_params = LlamaModelParams::default().with_n_gpu_layers(self.n_gpu_layers);
-        let model = LlamaModel::load_from_file(&backend, &model_params, &self.model_path)?;
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(self.n_gpu_layers as u32);
+        let model = LlamaModel::load_from_file(&backend, &self.model_path, &model_params)?;
         info!(
             "Loaded model: {} params={} n_embd={} n_layer={} n_head={} n_head_kv={} n_ctx_train={}",
             self.model_path,
@@ -169,15 +169,20 @@ impl LlamaRunnerBuilder {
         );
 
         // Create the context
+        use std::num::NonZeroU32;
         let ctx_params = LlamaContextParams::default()
-            .with_seed(self.seed)
-            .with_n_ctx(self.n_ctx)
+            .with_n_ctx(NonZeroU32::new(self.n_ctx))
             .with_n_batch(self.n_batch)
             .with_n_ubatch(self.n_ubatch)
             .with_n_threads(self.n_threads)
-            .with_kv_cache_type(self.kv_cache_type.into());
+            .with_type_k(llama_cpp_2::context::params::KvCacheType::from(self.kv_cache_type))
+            .with_type_v(llama_cpp_2::context::params::KvCacheType::from(self.kv_cache_type));
 
-        let context = model.new_context(ctx_params)?;
+        // Leak model to satisfy 'static lifetime requirement of LlamaContext
+        let model = Box::leak(Box::new(model));
+        let model_ref: &LlamaModel = model;
+
+        let context = model_ref.new_context(&backend, ctx_params)?;
         info!(
             "Context created: n_ctx={} n_batch={} n_ubatch={}",
             context.n_ctx(),
@@ -194,7 +199,7 @@ impl LlamaRunnerBuilder {
 
 /// High-level llama.cpp runner. Wraps model loading, context management, and inference.
 pub struct LlamaRunner {
-    model: LlamaModel,
+    model: &'static LlamaModel,
     context: Rc<RefCell<LlamaContext<'static>>>,
 }
 
@@ -210,9 +215,9 @@ impl LlamaRunner {
         ModelInfo {
             n_params: self.model.n_params(),
             n_embd: self.model.n_embd(),
-            n_layer: self.model.n_layer(),
-            n_head: self.model.n_head(),
-            n_head_kv: self.model.n_head_kv(),
+            n_layer: self.model.n_layer() as i32,
+            n_head: self.model.n_head() as i32,
+            n_head_kv: self.model.n_head_kv() as i32,
             n_ctx_train: self.model.n_ctx_train(),
             n_vocab: self.model.n_vocab(),
             rope_type: format!("{:?}", rope),
@@ -233,19 +238,24 @@ impl LlamaRunner {
 
     /// Encode text to tokens using the model's built-in tokenizer.
     pub fn encode(&self, text: &str, add_bos: bool) -> Result<Vec<LlamaToken>> {
-        let tokens = self.model.tokens(text, add_bos.into())?;
-        Ok(tokens)
+        let add_bos = if add_bos {
+            llama_cpp_2::model::AddBos::Always
+        } else {
+            llama_cpp_2::model::AddBos::Never
+        };
+        self.model.str_to_token(text, add_bos).map_err(|e| anyhow::anyhow!(e))
     }
 
     /// Decode a single token to a string piece.
     pub fn token_to_piece(&self, token: LlamaToken) -> Result<String> {
-        let piece = self.model.token_to_piece(token, true)?;
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let piece = self.model.token_to_piece(token, &mut decoder, true, None)?;
         Ok(piece)
     }
 
     /// Decode a token to string.
     pub fn token_to_str(&self, token: LlamaToken) -> Result<String> {
-        let s = self.model.token_to_str(token)?;
+        let s = self.model.token_to_str(token, llama_cpp_2::model::Special::Tokenize)?;
         Ok(s)
     }
 
@@ -255,14 +265,15 @@ impl LlamaRunner {
         messages: &[LlamaChatMessage],
         add_generation_prompt: bool,
     ) -> Result<String> {
+        let tmpl = llama_cpp_2::model::LlamaChatTemplate::new("")?;
         let result = self
             .model
-            .apply_chat_template(messages, add_generation_prompt)?;
-        Ok(result.text)
+            .apply_chat_template(&tmpl, messages, add_generation_prompt)?;
+        Ok(result)
     }
 
     /// Run inference on a batch of tokens.
-    pub fn decode(&self, batch: &LlamaBatch) -> Result<()> {
+    pub fn decode(&self, batch: &mut LlamaBatch) -> Result<()> {
         let mut ctx = self.context.borrow_mut();
         ctx.decode(batch)?;
         Ok(())
@@ -292,21 +303,21 @@ impl LlamaRunner {
         info!("Prompt: {} tokens", prompt_len);
 
         // Create batch for prompt
-        let mut batch = LlamaBatch::new(prompt_len as i32, 0, 1);
+        let mut batch = LlamaBatch::new(prompt_len, 0);
         for (i, tok) in prompt_tokens.iter().enumerate() {
             batch.add(*tok, i as i32, &[0], true)?;
         }
 
         // Prefill
         let t_start = Instant::now();
-        self.decode(&batch)?;
+        self.decode(&mut batch)?;
         let prompt_time = t_start.elapsed().as_secs_f64() * 1000.0;
 
         // Sample first token
         let mut tokens: Vec<LlamaToken> = vec![];
         let mut ctx = self.context.borrow_mut();
         let logits = ctx.get_logits_ith((prompt_len - 1) as i32);
-        let token = sampler.sample(&ctx, (prompt_len - 1) as i32);
+        let mut token = sampler.sample(&ctx, (prompt_len - 1) as i32);
         tokens.push(token);
 
         info!("First token sampled: {:?}", token);
@@ -317,11 +328,11 @@ impl LlamaRunner {
 
         for pos in prompt_len..(prompt_len + config.max_tokens as usize) {
             // Create new batch for single token
-            let mut new_batch = LlamaBatch::new(1, pos as i32, 1);
+            let mut new_batch = LlamaBatch::new(1, pos as i32);
             new_batch.add(token, pos as i32, &[0], false)?;
 
             // Decode
-            self.decode(&new_batch)?;
+            self.decode(&mut new_batch)?;
 
             // Sample next token
             let logits = self.get_logits_ith(pos as i32)?;
@@ -349,7 +360,7 @@ impl LlamaRunner {
         // Decode tokens to text
         let text: String = tokens
             .iter()
-            .filter_map(|t| self.model.token_to_str(*t).ok())
+            .filter_map(|t| self.model.token_to_str(*t, llama_cpp_2::model::Special::Tokenize).ok())
             .collect();
 
         // Get timings
@@ -373,7 +384,7 @@ impl LlamaRunner {
             tokens,
             prompt_tokens: prompt_len,
             generated_tokens: gen_count,
-            load_time_ms: timings.load_ms,
+            load_time_ms: timings.t_load_ms(),
             prompt_eval_ms: prompt_time,
             eval_ms: gen_time,
         })
@@ -392,23 +403,24 @@ impl LlamaRunner {
     /// Compute embeddings for a prompt.
     pub fn embeddings(&self, prompt: &str) -> Result<Vec<f32>> {
         let tokens = self.encode(prompt, true)?;
-        let mut batch = LlamaBatch::new(tokens.len() as i32, 0, 1);
+        let mut batch = LlamaBatch::new(tokens.len(), 0);
 
         for (i, tok) in tokens.iter().enumerate() {
             batch.add(*tok, i as i32, &[0], false)?;
         }
 
-        self.decode(&batch)?;
+        self.decode(&mut batch)?;
 
         // Get embeddings from the last token of the sequence
-        let emb = self.context.borrow().embeddings_ith(tokens.len() - 1)?;
-        Ok(emb)
+        let ctx = self.context.borrow();
+        let emb = ctx.embeddings_ith((tokens.len() - 1) as i32)?;
+        Ok(emb.to_vec())
     }
 
     /// Clear the KV cache.
     pub fn clear_kv_cache(&self) -> Result<()> {
         let mut ctx = self.context.borrow_mut();
-        ctx.clear_kv_cache()?;
+        ctx.clear_kv_cache();
         Ok(())
     }
 
@@ -445,51 +457,55 @@ impl LlamaRunner {
 
     /// Convert a JSON schema to a grammar string for constrained decoding.
     pub fn schema_to_grammar(&self, schema: &str) -> Result<String> {
-        let grammar = json_schema_to_grammar(&self.model, schema)?;
+        let grammar = json_schema_to_grammar(schema)?;
         Ok(grammar)
     }
 
     /// Build a sampler from the sampling config.
     fn build_sampler(&self, config: &SamplingConfig) -> LlamaSampler {
-        let mut sampler = LlamaSampler::chain_simple([]);
+        let mut samplers = Vec::new();
 
         // Temperature
         if config.temperature > 0.0 {
-            sampler = sampler.temp(config.temperature as f32);
+            samplers.push(LlamaSampler::temp(config.temperature as f32));
         }
 
         // Top-k
         if config.top_k > 0 {
-            sampler = sampler.top_k(config.top_k);
+            samplers.push(LlamaSampler::top_k(config.top_k));
         }
 
         // Top-p
         if config.top_p > 0.0 {
-            sampler = sampler.top_p(config.top_p as f32, -100.0);
+            samplers.push(LlamaSampler::top_p(config.top_p as f32, 0));
         }
 
         // Min-p
         if config.min_p > 0.0 {
-            sampler = sampler.min_p(config.min_p as f32, 256);
+            samplers.push(LlamaSampler::min_p(config.min_p as f32, 256));
         }
 
         // TFS (tail free sampling)
         if config.tfs > 0.0 && config.tfs < 1.0 {
-            sampler = sampler.top_n_sigma(config.tfs as f32);
+            samplers.push(LlamaSampler::top_n_sigma(config.tfs as f32));
         }
 
         // Typical p
         if config.typical_p > 0.0 && config.typical_p < 1.0 {
-            sampler = sampler.typical(config.typical_p as f32);
+            samplers.push(LlamaSampler::typical(config.typical_p as f32, 0));
         }
 
         // Repetition penalty
         if config.repetition_penalty != 1.0 {
-            sampler =
-                sampler.penalties(config.repetition_penalty as f32, config.repeat_last_n, 0.0);
+            samplers.push(LlamaSampler::penalties(
+                config.repeat_last_n,
+                config.repetition_penalty as f32,
+                0.0,
+                0.0,
+            ));
         }
 
-        sampler
+        LlamaSampler::chain_simple(samplers)
     }
 }
 
@@ -522,13 +538,15 @@ impl SessionManager {
 
     /// Save the current context state to a file.
     pub fn save(&self, path: &str) -> Result<(), String> {
-        self.context.borrow().save_session_file(path)?;
+        self.context.borrow().state_save_file(path, &[])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
     /// Load context state from a file.
     pub fn load(&self, path: &str) -> Result<(), String> {
-        self.context.borrow().load_session_file(path)?;
+        self.context.borrow_mut().state_load_file(path, 0)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -594,17 +612,14 @@ pub fn inspect_gguf(path: &str) -> Result<String> {
     info.push_str(&format!("GGUF file: {}\n  n_tensors: {}\n  n_kv: {}\n", path, n_tensors, n_kv));
 
     // Read key KV metadata
-    let keys = unsafe { llama_cpp_sys_2::gguf_kv_get_all(gguf) };
-    if !keys.is_null() {
-        let n_keys = unsafe { llama_cpp_sys_2::gguf_n_keys(gguf) };
-        for i in 0..n_keys {
-            let key_ptr = unsafe { llama_cpp_sys_2::gguf_key_get_name(keys, i as i32) };
-            let key = unsafe { std::ffi::CStr::from_ptr(key_ptr) }
-                .to_string_lossy()
-                .to_string();
-            let val_type = unsafe { llama_cpp_sys_2::gguf_kv_get_type(gguf, key_ptr) };
-            info.push_str(&format!("  KV[{}]: {} (type={})\n", i, key, val_type));
-        }
+    let n_keys = unsafe { llama_cpp_sys_2::gguf_get_n_kv(gguf) };
+    for i in 0..n_keys {
+        let key_ptr = unsafe { llama_cpp_sys_2::gguf_get_key(gguf, i) };
+        let key = unsafe { std::ffi::CStr::from_ptr(key_ptr) }
+            .to_string_lossy()
+            .to_string();
+        let val_type = unsafe { llama_cpp_sys_2::gguf_get_kv_type(gguf, i) };
+        info.push_str(&format!("  KV[{}]: {} (type={:?})\n", i, key, val_type));
     }
 
     unsafe { llama_cpp_sys_2::gguf_free(gguf) };
