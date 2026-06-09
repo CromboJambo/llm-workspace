@@ -49,14 +49,14 @@ impl ModelInfo {
     }
 
     /// Human-readable model size label.
-    pub fn size_label(&self) -> &'static str {
+    pub fn size_label(&self) -> String {
         let gb = self.approx_size_gb();
         if gb < 1.0 {
-            format!("{}B params ({:.1} GB)", self.n_params / 1_000_000_000, gb).into()
+            format!("{}B params ({:.1} GB)", self.n_params / 1_000_000_000, gb)
         } else if gb < 10.0 {
-            format!("{}B params ({:.1} GB)", self.n_params / 1_000_000_000, gb).into()
+            format!("{}B params ({:.1} GB)", self.n_params / 1_000_000_000, gb)
         } else {
-            format!("{}B params ({:.0} GB)", self.n_params / 1_000_000_000, gb).into()
+            format!("{}B params ({:.0} GB)", self.n_params / 1_000_000_000, gb)
         }
     }
 }
