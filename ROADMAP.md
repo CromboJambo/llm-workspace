@@ -99,7 +99,7 @@
 
 ### Remaining
 
-- [ ] Fix compilation errors (77 errors) — cuda-oxide trait bounds, type mismatches, missing gguf functions
+- [x] Fix compilation errors (77 → 0 errors) — fixed missing GemmKernel/AttentionKernel traits, llama-cpp-2 API changes, type mismatches, DeviceCopy bounds
 - [ ] Implement real tcgen05 WGMMA matmul kernel (replace stub in `KernelFromPtx.matmul`)
 - [ ] Implement GPU attention kernel with TMA descriptor binding
 - [ ] Implement device memory allocation (`cuMemAlloc`/`cuMemFree`) via cuda-core `memory` module
