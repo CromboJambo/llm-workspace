@@ -18,7 +18,7 @@ use crate::transformer::rope::RopeConfig;
 use crate::transformer::tokenizer::{GgufTokenizerConfig, load_tokenizer_from_gguf};
 
 /// Model architecture family.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ModelArch {
     #[default]
     Llama,
@@ -49,7 +49,7 @@ pub struct LlamaConfig {
 
 impl LlamaConfig {
     /// Build config from a GGUF header.
-    pub fn from_gguf_header(header: &GgufHeader) -> Self {
+    pub fn from_gguf_header(header: &GgufHeader) -> Result<Self> {
         let arch_str = header.architecture().unwrap_or("llama");
         let arch = match arch_str {
             "gemma" => ModelArch::Gemma,
@@ -92,7 +92,7 @@ impl LlamaConfig {
 
         let actual_head_dim = if rope_dim > 0 { rope_dim } else { head_dim };
 
-        Self {
+        Ok(Self {
             arch,
             num_layers,
             num_heads,
@@ -105,7 +105,7 @@ impl LlamaConfig {
             rope_scaling_factor: None,
             rope_scaling_type: None,
             rms_norm_eps,
-        }
+        })
     }
 
     /// Get the layer prefix for this architecture.
@@ -201,7 +201,7 @@ impl LlamaModel {
     /// Build a model from already-loaded GGUF weights.
     pub fn from_gguf_weights(weights: GgufWeights) -> Result<Self> {
         let header = &weights.header;
-        let config = LlamaConfig::from_gguf_header(header);
+        let config = LlamaConfig::from_gguf_header(header)?;
 
         let vocab_size = header.vocab_size().unwrap_or(32000);
         let rope_config = RopeConfig::new(config.head_dim, config.rope_base, config.max_seq_len);
@@ -833,13 +833,13 @@ mod tests {
     }
 
     #[test]
-    fn llama_config_from_header() {
+    fn llama_config_from_header() -> () {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         make_test_gguf_llama(&path);
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
 
-        let config = LlamaConfig::from_gguf_header(&header);
+        let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.num_layers, 2);
         assert_eq!(config.num_heads, 4);
         assert_eq!(config.num_kv_heads, 2);
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn llama_model_config_defaults_on_missing_keys() {
+    fn llama_model_config_defaults_on_missing_keys() -> () {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         let kv_pairs: Vec<GgufKvPair> = vec![
@@ -943,7 +943,7 @@ mod tests {
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        let config = LlamaConfig::from_gguf_header(&header);
+        let config = LlamaConfig::from_gguf_header(&header).unwrap();
         // Should use defaults when keys are missing
         assert_eq!(config.num_layers, 32); // default block_count
         assert_eq!(config.num_heads, 32); // default attention_head_count
@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn llama_config_rope_dimension_fallback() {
+    fn llama_config_rope_dimension_fallback() -> () {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         let kv_pairs: Vec<GgufKvPair> = vec![
@@ -1065,13 +1065,13 @@ mod tests {
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        let config = LlamaConfig::from_gguf_header(&header);
+        let config = LlamaConfig::from_gguf_header(&header).unwrap();
         // Without rope.dimension_count, should fall back to head_dim (64/4 = 16)
         assert_eq!(config.head_dim, 16);
     }
 
     #[test]
-    fn llama_config_detects_gemma_architecture() {
+    fn llama_config_detects_gemma_architecture() -> () {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         let kv_pairs: Vec<GgufKvPair> = vec![
@@ -1185,7 +1185,7 @@ mod tests {
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        let config = LlamaConfig::from_gguf_header(&header);
+        let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.arch, ModelArch::Gemma);
         assert_eq!(config.layer_prefix(0), "model.layers.0.");
         assert_eq!(config.embedding_name(), "model.embed_tokens.weight");
@@ -1196,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn llama_config_detects_qwen2_architecture() {
+    fn llama_config_detects_qwen2_architecture() -> () {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         let kv_pairs: Vec<GgufKvPair> = vec![
@@ -1317,7 +1317,7 @@ mod tests {
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        let config = LlamaConfig::from_gguf_header(&header);
+        let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.arch, ModelArch::Qwen2);
         assert_eq!(config.layer_prefix(0), "model.layers.0.");
         assert_eq!(config.embedding_name(), "model.embed_tokens.weight");
@@ -1331,7 +1331,7 @@ mod tests {
     }
 
     #[test]
-    fn llama_config_detects_phi3_architecture() {
+    fn llama_config_detects_phi3_architecture() -> () {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         let kv_pairs: Vec<GgufKvPair> = vec![
@@ -1391,7 +1391,7 @@ mod tests {
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
         let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
-        let config = LlamaConfig::from_gguf_header(&header);
+        let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.arch, ModelArch::Phi3);
         assert_eq!(config.layer_prefix(0), "layers.0.");
         assert_eq!(config.embedding_name(), "tok_embeddings.weight");
@@ -1402,7 +1402,7 @@ mod tests {
     }
 
     #[test]
-    fn llama_config_layer_prefix_per_arch() {
+    fn llama_config_layer_prefix_per_arch() -> () {
         let kv_pairs: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
         let tensors: Vec<GgufTensorInfo> = vec![];
         let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
@@ -1446,7 +1446,7 @@ mod tests {
             data_section_start: 0,
         };
         assert_eq!(
-            LlamaConfig::from_gguf_header(&h_llama).layer_prefix(5),
+            LlamaConfig::from_gguf_header(&h_llama).unwrap().layer_prefix(5),
             "layers.5."
         );
 
@@ -1460,7 +1460,7 @@ mod tests {
             data_section_start: 0,
         };
         assert_eq!(
-            LlamaConfig::from_gguf_header(&h_gemma).layer_prefix(5),
+            LlamaConfig::from_gguf_header(&h_gemma).unwrap().layer_prefix(5),
             "model.layers.5."
         );
 
@@ -1474,7 +1474,7 @@ mod tests {
             data_section_start: 0,
         };
         assert_eq!(
-            LlamaConfig::from_gguf_header(&h_qwen).layer_prefix(5),
+            LlamaConfig::from_gguf_header(&h_qwen).unwrap().layer_prefix(5),
             "model.layers.5."
         );
 
@@ -1488,13 +1488,13 @@ mod tests {
             data_section_start: 0,
         };
         assert_eq!(
-            LlamaConfig::from_gguf_header(&h_phi3).layer_prefix(5),
+            LlamaConfig::from_gguf_header(&h_phi3).unwrap().layer_prefix(5),
             "layers.5."
         );
     }
 
     #[test]
-    fn llama_config_embedding_output_names_per_arch() {
+    fn llama_config_embedding_output_names_per_arch() -> () {
         let kv_llama: Vec<GgufKvPair> = vec![kv_pair_str("general.architecture", "llama")];
         let h_llama = GgufHeader {
             version: 3,
@@ -1503,7 +1503,7 @@ mod tests {
             data_alignment: None,
             data_section_start: 0,
         };
-        let c_llama = LlamaConfig::from_gguf_header(&h_llama);
+        let c_llama = LlamaConfig::from_gguf_header(&h_llama).unwrap();
         assert_eq!(c_llama.embedding_name(), "tok_embeddings.weight");
         assert_eq!(c_llama.output_name(), "output.weight");
 
@@ -1515,7 +1515,7 @@ mod tests {
             data_alignment: None,
             data_section_start: 0,
         };
-        let c_gemma = LlamaConfig::from_gguf_header(&h_gemma);
+        let c_gemma = LlamaConfig::from_gguf_header(&h_gemma).unwrap();
         assert_eq!(c_gemma.embedding_name(), "model.embed_tokens.weight");
         assert_eq!(c_gemma.output_name(), "lm_head.weight");
 
@@ -1527,7 +1527,7 @@ mod tests {
             data_alignment: None,
             data_section_start: 0,
         };
-        let c_qwen = LlamaConfig::from_gguf_header(&h_qwen);
+        let c_qwen = LlamaConfig::from_gguf_header(&h_qwen).unwrap();
         assert_eq!(c_qwen.embedding_name(), "model.embed_tokens.weight");
         assert_eq!(c_qwen.output_name(), "lm_head.weight");
     }
