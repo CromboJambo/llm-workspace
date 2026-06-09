@@ -12,7 +12,7 @@ use crate::kernel::device_buf::DeviceBuffer;
 use half::f16;
 
 /// Tensor core architecture selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum GemmArch {
     /// WGMMA — warp group matrix multiply (sm_120, consumer Blackwell)
     Wgmma,
@@ -86,6 +86,32 @@ impl GemmConfig {
         self.block_size = block_size;
         self
     }
+}
+
+// --- GemmKernel Trait ---
+
+/// Trait for GEMM (matrix multiply) kernels.
+///
+/// Both GPU (CUDA) and CPU implementations implement this trait.
+pub trait GemmKernel: Send + Sync {
+    /// Perform GEMM: C = alpha * A @ B + beta * C
+    fn matmul(
+        &self,
+        alpha: f32,
+        a: &DeviceBuffer<f16>,
+        b: &DeviceBuffer<f16>,
+        beta: f32,
+        c: &mut DeviceBuffer<f32>,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<(), GemmError>;
+
+    /// Target tensor core architecture
+    fn arch(&self) -> GemmArch;
+
+    /// Whether this kernel is available on the current system
+    fn is_available(&self) -> bool;
 }
 
 // --- GPU Implementations (Placeholder) ---
