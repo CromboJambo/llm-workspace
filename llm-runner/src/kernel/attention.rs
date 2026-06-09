@@ -673,11 +673,11 @@ mod tests {
         assert!(k_desc.is_some());
         assert!(v_desc.is_some());
 
-        // Both should be global cache read descriptors
+        // Both should be global cache read descriptors (descriptor_type = 1 at bit 112)
         let k = k_desc.unwrap();
         let v = v_desc.unwrap();
-        assert_eq!(((k.0 >> 72) & 0xFF), 1); // descriptor type = 1
-        assert_eq!(((v.0 >> 72) & 0xFF), 1);
+        assert_eq!(((k.0 >> 112) & 0xFF), 1); // descriptor type = 1
+        assert_eq!(((v.0 >> 112) & 0xFF), 1);
     }
 
     #[test]
