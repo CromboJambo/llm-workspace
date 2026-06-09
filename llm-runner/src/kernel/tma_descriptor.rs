@@ -84,7 +84,7 @@ impl TmaDescriptor {
 
     /// Set the element info field.
     pub const fn with_element_info(mut self, element_size: u8) -> Self {
-        self.0 |= (element_size as u128 & 0xF) << 112;
+        self.0 |= (element_size as u128 & 0xF) << 120;
         self
     }
 
