@@ -94,15 +94,15 @@ impl TmaDescriptor {
         self
     }
 
-    /// Set the SMEM config field.
+    /// Set the SMEM config field (bits 104-107, word[3] bits 8-11).
     pub const fn with_smem_config(mut self, config: u8) -> Self {
-        self.0 |= (config as u128) << 128;
+        self.0 |= (config as u128) << 104;
         self
     }
 
-    /// Set the cache hint.
+    /// Set the cache hint (bits 122-123, word[3] bits 26-27).
     pub const fn with_cache_hint(mut self, hint: u8) -> Self {
-        self.0 |= (hint as u128 & 0x3) << 130;
+        self.0 |= (hint as u128 & 0x3) << 122;
         self
     }
 
@@ -226,7 +226,7 @@ mod tests {
         let words = desc.as_u32_words();
         assert_eq!(words[0] & 0xFFFF, 64u32);
         assert_eq!(words[1] & 0xFFFF, 512u32);
-        assert_eq!((words[2] >> 8) & 0xFF, 1u32);
+        assert_eq!((words[3] >> 16) & 0xFF, 1u32);
     }
 
     #[test]
