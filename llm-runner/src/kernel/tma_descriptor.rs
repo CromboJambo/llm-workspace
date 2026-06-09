@@ -7,7 +7,7 @@
 //! - GMEM address offset (word 0)
 //! - Box dimensions (X and Y)
 //! - GMEM and SMEM strides
-//! - Element info, descriptor type, SMEM config, cache hint
+//! - Element info, descriptor type, SMEM config
 //!
 //! For the KV cache use case, the address offset is a byte offset from
 //! the buffer base (passed separately to the kernel). The box defines
@@ -100,11 +100,7 @@ impl TmaDescriptor {
         self
     }
 
-    /// Set the cache hint (bits 122-123, word[3] bits 26-27).
-    pub const fn with_cache_hint(mut self, hint: u8) -> Self {
-        self.0 |= (hint as u128 & 0x3) << 122;
-        self
-    }
+
 
     /// Unpack from [u32; 4] words received from a kernel.
     pub const fn from_u32_words(words: [u32; 4]) -> Self {
@@ -179,36 +175,33 @@ mod tests {
         let desc = TmaDescriptor::new().with_box(64, 500, 500, 256, 128, 128);
         let words = desc.as_u32_words();
 
-        assert_eq!((words[0] >> 16) & 0xFF, 255u32);
-        assert_eq!((words[0] >> 24) & 0xFF, 255u32);
+        // gmem_x_stride and smem_x_stride are in word 1 (bits 48-55 and 56-63)
+        assert_eq!((words[1] >> 16) & 0xFF, 255u32);
+        assert_eq!((words[1] >> 24) & 0xFF, 255u32);
     }
 
     #[test]
     fn descriptor_with_element_info() {
         let desc = TmaDescriptor::new().with_element_info(1);
         let words = desc.as_u32_words();
-        assert_eq!((words[3] >> 16) & 0xF, 1u32);
+        // element_info at bit 120 (word 3 bits 24-27)
+        assert_eq!((words[3] >> 24) & 0xF, 1u32);
     }
 
     #[test]
     fn descriptor_with_descriptor_type() {
         let desc = TmaDescriptor::new().with_descriptor_type(1);
         let words = desc.as_u32_words();
-        assert_eq!((words[2] >> 8) & 0xFF, 1u32);
+        // descriptor_type at bit 112 (word 3 bits 16-23)
+        assert_eq!((words[3] >> 16) & 0xFF, 1u32);
     }
 
     #[test]
     fn descriptor_with_smem_config() {
         let desc = TmaDescriptor::new().with_smem_config(0);
         let words = desc.as_u32_words();
+        // smem_config at bit 104 (word 3 bits 8-11)
         assert_eq!((words[3] >> 8) & 0xF, 0u32);
-    }
-
-    #[test]
-    fn descriptor_with_cache_hint() {
-        let desc = TmaDescriptor::new().with_cache_hint(0);
-        let words = desc.as_u32_words();
-        assert_eq!((words[3] >> 26) & 0x3, 0u32);
     }
 
     #[test]
@@ -219,14 +212,14 @@ mod tests {
             .with_box(64, 128, 128, 512, 128, 128)
             .with_element_info(1)
             .with_descriptor_type(1)
-            .with_smem_config(0)
-            .with_cache_hint(0);
+            .with_smem_config(0);
 
         assert_eq!(desc.gmem_addr(), addr);
         let words = desc.as_u32_words();
-        assert_eq!(words[0] & 0xFFFF, 64u32);
-        assert_eq!(words[1] & 0xFFFF, 512u32);
-        assert_eq!((words[3] >> 16) & 0xFF, 1u32);
+        assert_eq!(words[1] & 0xFFFF, 64u32);  // box_x
+        assert_eq!(words[2] & 0xFFFF, 512u32); // box_y
+        // element_info at word 3 bits 24-27
+        assert_eq!((words[3] >> 24) & 0xF, 1u32);
     }
 
     #[test]
