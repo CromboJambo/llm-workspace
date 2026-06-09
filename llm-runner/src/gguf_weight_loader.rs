@@ -166,11 +166,46 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
                 .flat_map(|v| v.to_le_bytes())
                 .collect())
         }
-        GgufDtype::Q1_K => dequantize_q1_k(raw_data, element_count),
-        GgufDtype::Q2_K_S => dequantize_q2_k(raw_data, element_count),
-        GgufDtype::Q3_K_S => dequantize_q3_k(raw_data, element_count),
-        GgufDtype::Q4_K_S => dequantize_q4_k(raw_data, element_count),
-        GgufDtype::Q2_K_M => dequantize_q2_k(raw_data, element_count),
+        GgufDtype::Q1_K => {
+            let dequantized = dequantize_q1_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q2_K_S => {
+            let dequantized = dequantize_q2_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q3_K_S => {
+            let dequantized = dequantize_q3_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q4_K_S => {
+            let dequantized = dequantize_q4_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
+        GgufDtype::Q2_K_M => {
+            let dequantized = dequantize_q2_k(raw_data, element_count)
+                .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
+            Ok(dequantized
+                .into_iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect())
+        }
         GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => Ok(raw_data.to_vec()),
         GgufDtype::Unknown(_) => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
             "Unknown GGUF dtype {} for tensor '{}'",
@@ -361,7 +396,7 @@ fn dequantize_q1_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         ];
 
         for i in 0..16usize {
-            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q1_val = (((q1 >> i) & 0x01) as u16) << 2;
             let q = q1_val as i32 - 4;
             let scale = if q1_val > 0 { h[i / 4] } else { 1.0 };
             result.push(d * (q as f32) * scale + d_min);
@@ -381,7 +416,7 @@ fn dequantize_q1_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         ];
 
         for i in 0..remaining {
-            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q1_val = (((q1 >> i) & 0x01) as u16) << 2;
             let q = q1_val as i32 - 4;
             let scale = if q1_val > 0 { h[i / 4] } else { 1.0 };
             result.push(d * (q as f32) * scale + d_min);
@@ -429,8 +464,8 @@ fn dequantize_q2_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         ];
 
         for i in 0..16usize {
-            let q2_val = (q2 >> (2 * i)) & 0x03;
-            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q2_val = ((q2 >> (2 * i)) & 0x03) as u16;
+            let q1_val = (((q1 >> i) & 0x01) as u16) << 2;
             let q = (q1_val | q2_val) as i32 - 4;
             let scale = if q2_val > 0 { h[i / 4] } else { 1.0 };
             result.push(d * (q as f32) * scale + d_min);
@@ -456,8 +491,8 @@ fn dequantize_q2_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         ];
 
         for i in 0..remaining {
-            let q2_val = (q2 >> (2 * i)) & 0x03;
-            let q1_val = ((q1 >> i) & 0x01) << 2;
+            let q2_val = ((q2 >> (2 * i)) & 0x03) as u16;
+            let q1_val = (((q1 >> i) & 0x01) as u16) << 2;
             let q = (q1_val | q2_val) as i32 - 4;
             let scale = if q2_val > 0 { h[i / 4] } else { 1.0 };
             result.push(d * (q as f32) * scale + d_min);
@@ -511,7 +546,7 @@ fn dequantize_q3_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         for i in 0..16usize {
             let q3_val = ((q3[i / 4] >> (3 * (i % 4))) & 0x07) as i32;
             let mask_bit = (mask >> i) & 1;
-            let q = q3_val - ((mask_bit << 2) | (mask_bit << 1));
+            let q = q3_val - (((mask_bit as i32) << 2) | ((mask_bit as i32) << 1));
             let scale = d * (k_scale[i / 4] as f32) / 4.0 + d_min;
             let h_scale = if mask_bit != 0 { h[i / 4] } else { h[i / 4] / 8.0 };
             result.push(scale * (q as f32 + delta as f32 / 64.0) * h_scale);
@@ -543,7 +578,7 @@ fn dequantize_q3_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         for i in 0..remaining {
             let q3_val = ((q3[i / 4] >> (3 * (i % 4))) & 0x07) as i32;
             let mask_bit = (mask >> i) & 1;
-            let q = q3_val - ((mask_bit << 2) | (mask_bit << 1));
+            let q = q3_val - (((mask_bit as i32) << 2) | ((mask_bit as i32) << 1));
             let scale = d * (k_scale[i / 4] as f32) / 4.0 + d_min;
             let h_scale = if mask_bit != 0 { h[i / 4] } else { h[i / 4] / 8.0 };
             result.push(scale * (q as f32 + delta as f32 / 64.0) * h_scale);
