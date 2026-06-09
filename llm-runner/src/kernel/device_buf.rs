@@ -171,7 +171,7 @@ impl<T> DeviceBuffer<T> {
         stream: &cuda_core::CudaStream,
     ) -> Result<Vec<T>, DeviceBufferError>
     where
-        T: Clone,
+        T: Clone + cuda_core::DeviceCopy,
     {
         match self {
             Self::Cuda(buf) => buf.to_host_vec(stream).map_err(|e| DeviceBufferError::Transfer(e.to_string())),
@@ -235,7 +235,7 @@ impl<T> DeviceBuffer<T> {
         data: &[T],
     ) -> Result<Self, DeviceBufferError>
     where
-        T: Clone + Default,
+        T: Clone + Default + cuda_core::DeviceCopy,
     {
         let buf = cuda_core::DeviceBuffer::from_host(stream, data)
             .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
@@ -248,7 +248,7 @@ impl<T> DeviceBuffer<T> {
         len: usize,
     ) -> Result<Self, DeviceBufferError>
     where
-        T: Clone + Default,
+        T: Clone + Default + cuda_core::DeviceCopy,
     {
         let buf = cuda_core::DeviceBuffer::zeroed(stream, len)
             .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
