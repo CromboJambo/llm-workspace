@@ -563,7 +563,7 @@ mod tests {
         let desc = slice.to_tma_descriptor();
         // gmem_addr returns the byte offset within the buffer (lower 32 bits)
         assert_eq!(desc.gmem_addr(), 0u64); // head_idx=0, is_key=true → offset 0
-        // descriptor type = 1 at word 3 [31:24]
-        assert_eq!((desc.0[3] >> 24) & 0xFF, 1u32);
+        // descriptor type = 1 at bits 72-79
+        assert_eq!((desc.0 >> 72) & 0xFF, 1u128);
     }
 }
