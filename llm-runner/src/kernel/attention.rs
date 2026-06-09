@@ -251,6 +251,29 @@ pub enum AttentionError {
     Tcgen05Constraint(usize),
 }
 
+// --- AttentionKernel Trait ---
+
+/// Trait for attention kernels.
+///
+/// Both GPU (CUDA) and CPU implementations implement this trait.
+pub trait AttentionKernel: Send + Sync {
+    /// Run scaled dot-product attention: softmax(Q @ K^T / sqrt(head_dim)) @ V
+    fn forward(
+        &self,
+        query: &DeviceBuffer<f16>,
+        key_cache: &Kvcache,
+        value_cache: &Kvcache,
+        mask: Option<&DeviceBuffer<f32>>,
+        config: &AttentionConfig,
+    ) -> Result<DeviceBuffer<f32>, AttentionError>;
+
+    /// Target tensor core architecture
+    fn arch(&self) -> AttentionArch;
+
+    /// Whether this kernel is available on the current system
+    fn is_available(&self) -> bool;
+}
+
 // --- GPU Implementations (Placeholder) ---
 
 /// CUDA implementation for Attention kernel.
@@ -287,7 +310,7 @@ impl AttentionKernel for CudaAttentionKernel {
         let _ = value_cache;
         let _ = mask;
         let _ = config;
-        Ok(DeviceBuffer::zeros_device(None, 1)) // Return a dummy device buffer of size 1
+        Ok(DeviceBuffer::zeros(1)) // Return a dummy device buffer of size 1
     }
 
     fn arch(&self) -> AttentionArch {
@@ -653,8 +676,8 @@ mod tests {
         // Both should be global cache read descriptors
         let k = k_desc.unwrap();
         let v = v_desc.unwrap();
-        assert_eq!((k.0[3] >> 24) & 0xFF, 1); // descriptor type = 1
-        assert_eq!((v.0[3] >> 24) & 0xFF, 1);
+        assert_eq!(((k.0 >> 72) & 0xFF), 1); // descriptor type = 1
+        assert_eq!(((v.0 >> 72) & 0xFF), 1);
     }
 
     #[test]
