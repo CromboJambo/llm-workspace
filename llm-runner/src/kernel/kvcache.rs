@@ -274,8 +274,7 @@ impl Kvcache {
             )
             .with_element_info(1) // f16 = 2 bytes
             .with_descriptor_type(1) // global cache read
-            .with_smem_config(0)
-            .with_cache_hint(0);
+            .with_smem_config(0);
 
         Ok(desc)
     }
@@ -380,7 +379,6 @@ impl KvcacheSlice {
             .with_element_info(1)
             .with_descriptor_type(1)
             .with_smem_config(0)
-            .with_cache_hint(0)
     }
 }
 
@@ -563,7 +561,7 @@ mod tests {
         let desc = slice.to_tma_descriptor();
         // gmem_addr returns the byte offset within the buffer (lower 32 bits)
         assert_eq!(desc.gmem_addr(), 0u64); // head_idx=0, is_key=true → offset 0
-        // descriptor type = 1 at bits 72-79
-        assert_eq!((desc.0 >> 72) & 0xFF, 1u128);
+        // descriptor type = 1 at bits 112-119
+        assert_eq!((desc.0 >> 112) & 0xFF, 1u128);
     }
 }
