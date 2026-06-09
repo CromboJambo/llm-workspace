@@ -403,32 +403,105 @@ impl Model {
         let config = self.attention_config();
         let mut last_output = DeviceBuffer::from_host(vec![0.0f32; out_dim]);
 
-        for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
-            // Compute attention for this layer
-            let output = if key_cache.seq_len() == 0 {
-                DeviceBuffer::from_host(
-                    query
-                        .as_slice()
+        // Use layer weights for proper Q/K/V projections if available
+        if let Some(ref llama_model) = self.llama_model {
+            for (layer_idx, (key_cache, value_cache)) in
+                self.kv_caches.iter_mut().enumerate()
+            {
+                let layer = &llama_model.layers[layer_idx];
+
+                // Extract Q, K, V from the input using layer weights
+                let q = layer.attention.w_q.forward(&query)?;
+                let k = layer.attention.w_k.forward(&query)?;
+                let v = layer.attention.w_v.forward(&query)?;
+
+                // Convert to f16 for the engine
+                let q_f16 = DeviceBuffer::from_host(
+                    q.as_slice()
                         .unwrap_or(&[])
                         .iter()
-                        .map(|&x| x.to_f32())
+                        .map(|&x| f16::from_f32(x))
                         .collect(),
-                )
-            } else {
-                self.engine
-                    .attention(&query, key_cache, value_cache, None, &config)?
-            };
+                );
+                let k_f16 = DeviceBuffer::from_host(
+                    k.as_slice()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|&x| f16::from_f32(x))
+                        .collect(),
+                );
+                let v_f16 = DeviceBuffer::from_host(
+                    v.as_slice()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|&x| f16::from_f32(x))
+                        .collect(),
+                );
 
-            last_output = output;
+                // Compute attention using proper Q, K, V
+                let output = if key_cache.seq_len() == 0 {
+                    DeviceBuffer::from_host(
+                        q_f16
+                            .as_slice()
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|&x| x.to_f32())
+                            .collect(),
+                    )
+                } else {
+                    self.engine
+                        .attention(&q_f16, key_cache, value_cache, None, &config)?
+                };
 
-            // Append the last row as new KV for this layer
-            // In a real model, this would come from the Q/K projection and V projection weights
-            if let Some(slice) = last_output.as_slice() {
-                let key: Vec<f16> = slice.iter().map(|&x| f16::from_f32(x)).collect();
-                let value: Vec<f16> = key.clone();
-                key_cache.append(&key, &value).map_err(|e| {
-                    RunnerError::Tensor(format!("Layer {} KV append failed: {e}", layer_idx))
-                })?;
+                last_output = output;
+
+                // Append the last row of K and V as new KV for this layer
+                let last_k: Vec<f16> = k_f16
+                    .as_slice()
+                    .map(|s| s.iter().map(|&x| f16::from_f32(x)).collect());
+                let last_v: Vec<f16> = v_f16
+                    .as_slice()
+                    .map(|s| s.iter().map(|&x| f16::from_f32(x)).collect());
+
+                if let (Some(ref k), Some(ref v)) = (&last_k, &last_v) {
+                    key_cache.append(k, v).map_err(|e| {
+                        RunnerError::Tensor(format!(
+                            "Layer {layer_idx} KV append failed: {e}"
+                        ))
+                    })?;
+                }
+            }
+        } else {
+            // Stub mode: no weights available, use query as output (identity projection)
+            for (layer_idx, (key_cache, value_cache)) in
+                self.kv_caches.iter_mut().enumerate()
+            {
+                let output = if key_cache.seq_len() == 0 {
+                    DeviceBuffer::from_host(
+                        query
+                            .as_slice()
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|&x| x.to_f32())
+                            .collect(),
+                    )
+                } else {
+                    self.engine
+                        .attention(&query, key_cache, value_cache, None, &config)?
+                };
+
+                last_output = output;
+
+                // Append the last row as new KV for this layer
+                if let Some(slice) = last_output.as_slice() {
+                    let key: Vec<f16> = slice.iter().map(|&x| f16::from_f32(x)).collect();
+                    let value: Vec<f16> = key.clone();
+                    key_cache.append(&key, &value).map_err(|e| {
+                        RunnerError::Tensor(format!(
+                            "Layer {layer_idx} KV append failed: {e}"
+                        ))
+                    })?;
+                }
             }
         }
 
