@@ -23,15 +23,15 @@ pub struct InferenceEngine {
 
 impl InferenceEngine {
     pub fn new(device: Device, dtype: DType) -> Self {
-        let gemm = if is_available() {
-            Box::new(kernel::CudaGemmKernel::new(GemmArch::Wgmma))
+        let gemm: Box<dyn GemmKernel + Send + Sync> = if is_available() {
+            Box::new(crate::kernel::CudaGemmKernel::new(GemmArch::Wgmma))
         } else {
-            Box::new(kernel::CpuGemmKernel::new())
+            Box::new(crate::kernel::CpuGemmKernel::new())
         };
-        let attention = if is_available() {
-            Box::new(kernel::CudaAttentionKernel::new(AttentionArch::Wgmma))
+        let attention: Box<dyn AttentionKernel + Send + Sync> = if is_available() {
+            Box::new(crate::kernel::CudaAttentionKernel::new(AttentionArch::Wgmma))
         } else {
-            Box::new(kernel::CpuAttentionKernel::new())
+            Box::new(crate::kernel::CpuAttentionKernel::new())
         };
 
         // Try to initialize CUDA if device preference is GPU
@@ -40,7 +40,7 @@ impl InferenceEngine {
                 Ok(rt) => {
                     let rt = Arc::new(rt);
                     match rt.new_stream() {
-                        Ok(stream) => (Some(rt), Some(Arc::new(stream))),
+                        Ok(stream) => (Some(rt), Some(stream)),
                         Err(_) => (Some(rt), None),
                     }
                 }
@@ -69,7 +69,7 @@ impl InferenceEngine {
                 Ok(rt) => {
                     let rt = Arc::new(rt);
                     match rt.new_stream() {
-                        Ok(stream) => (Some(rt), Some(Arc::new(stream))),
+                        Ok(stream) => (Some(rt), Some(stream)),
                         Err(_) => (Some(rt), None),
                     }
                 }
