@@ -44,6 +44,20 @@ pub struct ModelConfig {
     pub attention_arch: AttentionArch,
 }
 
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            num_layers: 32,
+            num_heads: 32,
+            head_dim: 64,
+            max_seq: 2048,
+            num_kv_heads: 32,
+            use_tma: true,
+            attention_arch: AttentionArch::default(),
+        }
+    }
+}
+
 impl ModelConfig {
     /// Create a model config from loaded GGUF weights.
     pub fn from_gguf(header: &crabjar_gguf::types::GgufHeader) -> Result<Self> {
@@ -257,29 +271,30 @@ impl Model {
                 let layer = &llama_model.layers[layer_idx];
 
                 // Extract Q, K, V from the input using layer weights
-                let q = layer.attention.w_q.forward(&query)?;
-                let k = layer.attention.w_k.forward(&query)?;
-                let v = layer.attention.w_v.forward(&query)?;
+                let query_host: Vec<f32> = query
+                    .as_slice()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|&x| x.to_f32())
+                    .collect();
+                let batch_size = query.len();
+                let q = layer.attention.wq.forward(&query_host, batch_size);
+                let k = layer.attention.wk.forward(&query_host, batch_size);
+                let v = layer.attention.wv.forward(&query_host, batch_size);
 
                 // Convert to f16 for the engine
                 let q_f16 = DeviceBuffer::from_host(
-                    q.as_slice()
-                        .unwrap_or(&[])
-                        .iter()
+                    q.iter()
                         .map(|&x| f16::from_f32(x))
                         .collect(),
                 );
                 let k_f16 = DeviceBuffer::from_host(
-                    k.as_slice()
-                        .unwrap_or(&[])
-                        .iter()
+                    k.iter()
                         .map(|&x| f16::from_f32(x))
                         .collect(),
                 );
                 let v_f16 = DeviceBuffer::from_host(
-                    v.as_slice()
-                        .unwrap_or(&[])
-                        .iter()
+                    v.iter()
                         .map(|&x| f16::from_f32(x))
                         .collect(),
                 );
@@ -411,29 +426,30 @@ impl Model {
                 let layer = &llama_model.layers[layer_idx];
 
                 // Extract Q, K, V from the input using layer weights
-                let q = layer.attention.w_q.forward(&query)?;
-                let k = layer.attention.w_k.forward(&query)?;
-                let v = layer.attention.w_v.forward(&query)?;
+                let query_host: Vec<f32> = query
+                    .as_slice()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|&x| x.to_f32())
+                    .collect();
+                let batch_size = query.len();
+                let q = layer.attention.wq.forward(&query_host, batch_size);
+                let k = layer.attention.wk.forward(&query_host, batch_size);
+                let v = layer.attention.wv.forward(&query_host, batch_size);
 
                 // Convert to f16 for the engine
                 let q_f16 = DeviceBuffer::from_host(
-                    q.as_slice()
-                        .unwrap_or(&[])
-                        .iter()
+                    q.iter()
                         .map(|&x| f16::from_f32(x))
                         .collect(),
                 );
                 let k_f16 = DeviceBuffer::from_host(
-                    k.as_slice()
-                        .unwrap_or(&[])
-                        .iter()
+                    k.iter()
                         .map(|&x| f16::from_f32(x))
                         .collect(),
                 );
                 let v_f16 = DeviceBuffer::from_host(
-                    v.as_slice()
-                        .unwrap_or(&[])
-                        .iter()
+                    v.iter()
                         .map(|&x| f16::from_f32(x))
                         .collect(),
                 );
@@ -458,13 +474,15 @@ impl Model {
                 // Append the last row of K and V as new KV for this layer
                 let last_k: Vec<f16> = k_f16
                     .as_slice()
-                    .map(|s| s.iter().map(|&x| f16::from_f32(x)).collect());
+                    .unwrap_or(&[])
+                    .to_vec();
                 let last_v: Vec<f16> = v_f16
                     .as_slice()
-                    .map(|s| s.iter().map(|&x| f16::from_f32(x)).collect());
+                    .unwrap_or(&[])
+                    .to_vec();
 
-                if let (Some(ref k), Some(ref v)) = (&last_k, &last_v) {
-                    key_cache.append(k, v).map_err(|e| {
+                if !last_k.is_empty() && !last_v.is_empty() {
+                    key_cache.append(&last_k, &last_v).map_err(|e| {
                         RunnerError::Tensor(format!(
                             "Layer {layer_idx} KV append failed: {e}"
                         ))
