@@ -247,27 +247,17 @@ impl ModelManager {
             let stats = self.usage_stats.read().await;
             let loaded_models = self.loaded_models.read().await;
 
-            let mut candidates: Vec<_> = stats
+            let candidates_vec: Vec<_> = stats
                 .iter()
                 .filter(|(name, stat)| {
                     stat.total_requests >= self.preload_config.min_usage_for_preload
                         && stat.popularity_score >= self.preload_config.preload_threshold_score
                         && !loaded_models.contains_key(*name)
                 })
-                .collect();
-
-            candidates.sort_by(|a, b| {
-                b.1.popularity_score
-                    .partial_cmp(&a.1.popularity_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            let current_loaded = loaded_models.len();
-            let candidates_vec: Vec<_> = candidates
-                .iter()
                 .map(|(name, stat)| (name.clone(), stat.popularity_score))
                 .collect();
 
+            let current_loaded = loaded_models.len();
             (candidates_vec, current_loaded)
         };
 
@@ -279,7 +269,7 @@ impl ModelManager {
 
         for (model_name, score) in candidates_to_queue.iter().take(slots_available) {
             if !queue.iter().any(|n| n.as_str() == model_name.as_str()) {
-                queue.push_back(model_name.clone());
+                queue.push_back(model_name.clone().into());
                 info!(
                     model = model_name.as_str(),
                     score = score,
@@ -361,7 +351,7 @@ impl ModelManager {
 
         let to_remove = current_count.saturating_sub(self.preload_config.max_preloaded_models);
         for (idx, name, _, _) in candidates.iter().take(to_remove) {
-            models.remove(*idx);
+            models.remove(name);
             info!(model = name, "Cleaned up unused model");
         }
     }
