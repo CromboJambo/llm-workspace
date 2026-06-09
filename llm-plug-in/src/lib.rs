@@ -479,6 +479,8 @@ mod tests {
             max_tokens_default: 2048,
             temperature_default: 0.9,
             configured_at: 12345,
+            device_priority: vec!["cuda".into(), "cpu".into()],
+            remote_endpoints: vec![],
         };
         let json = serde_json::to_string(&config).unwrap();
         let restored: RunnerConfig = serde_json::from_str(&json).unwrap();
