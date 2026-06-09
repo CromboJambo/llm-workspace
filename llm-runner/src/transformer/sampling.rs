@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn sample_with_zero_temperature_is_deterministic() {
         let logits = vec![0.1, 0.9, 0.3, 0.7];
-        let config = SamplingConfig {
+        let config = SamplingConfig { seed: None,
             temperature: 0.0,
             top_p: 0.0,
             top_k: 0,
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn sample_with_top_k() {
         let logits = vec![0.1, 0.9, 0.3, 0.7];
-        let config = SamplingConfig {
+        let config = SamplingConfig { seed: None,
             temperature: 1.0,
             top_p: 0.0,
             top_k: 2,
