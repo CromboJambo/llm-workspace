@@ -71,38 +71,38 @@ impl TmaDescriptor {
         gmem_y_stride: u16,
         smem_y_stride: u16,
     ) -> Self {
-        self.0 |= (box_x as u128) << 0;
+        self.0 |= (box_x as u128) << 32;
         let gmem_x = if gmem_x_stride > 255 { 255u16 } else { gmem_x_stride };
         let smem_x = if smem_x_stride > 255 { 255u16 } else { smem_x_stride };
-        self.0 |= (gmem_x as u128) << 16;
-        self.0 |= (smem_x as u128) << 24;
-        self.0 |= (box_y as u128) << 32;
-        self.0 |= ((gmem_y_stride as u128) << 48);
-        self.0 |= ((smem_y_stride as u128) << 64);
+        self.0 |= (gmem_x as u128) << 48;
+        self.0 |= (smem_x as u128) << 56;
+        self.0 |= (box_y as u128) << 64;
+        self.0 |= (gmem_y_stride as u128) << 80;
+        self.0 |= (smem_y_stride as u128) << 96;
         self
     }
 
     /// Set the element info field.
     pub const fn with_element_info(mut self, element_size: u8) -> Self {
-        self.0 |= ((element_size as u128 & 0xF) << 112);
+        self.0 |= (element_size as u128 & 0xF) << 112;
         self
     }
 
     /// Set the descriptor type.
     pub const fn with_descriptor_type(mut self, dtype: u8) -> Self {
-        self.0 |= ((dtype as u128) << 72);
+        self.0 |= (dtype as u128) << 112;
         self
     }
 
     /// Set the SMEM config field.
     pub const fn with_smem_config(mut self, config: u8) -> Self {
-        self.0 |= ((config as u128) << 104);
+        self.0 |= (config as u128) << 128;
         self
     }
 
     /// Set the cache hint.
     pub const fn with_cache_hint(mut self, hint: u8) -> Self {
-        self.0 |= ((hint as u128 & 0x3) << 122);
+        self.0 |= (hint as u128 & 0x3) << 130;
         self
     }
 
@@ -166,11 +166,11 @@ mod tests {
         let desc = TmaDescriptor::new().with_box(64, 128, 128, 256, 128, 128);
         let words = desc.as_u32_words();
 
-        assert_eq!(words[0] & 0xFFFF, 64u32);
-        assert_eq!((words[0] >> 16) & 0xFF, 128u32);
-        assert_eq!((words[0] >> 24) & 0xFF, 128u32);
-        assert_eq!(words[1] & 0xFFFF, 256u32);
-        assert_eq!((words[1] >> 16) & 0xFFFF, 128u32);
+        assert_eq!(words[0] & 0xFFFFFFFF, 0u32);
+        assert_eq!(words[1] & 0xFFFF, 64u32);
+        assert_eq!((words[1] >> 16) & 0xFF, 128u32);
+        assert_eq!((words[1] >> 24) & 0xFF, 128u32);
+        assert_eq!(words[2] & 0xFFFF, 256u32);
         assert_eq!((words[2] >> 16) & 0xFFFF, 128u32);
     }
 
@@ -187,28 +187,28 @@ mod tests {
     fn descriptor_with_element_info() {
         let desc = TmaDescriptor::new().with_element_info(1);
         let words = desc.as_u32_words();
-        assert_eq!((words[3] >> 28) & 0xF, 1u32);
+        assert_eq!((words[3] >> 16) & 0xF, 1u32);
     }
 
     #[test]
     fn descriptor_with_descriptor_type() {
         let desc = TmaDescriptor::new().with_descriptor_type(1);
         let words = desc.as_u32_words();
-        assert_eq!((words[2] >> 24) & 0xFF, 1u32);
+        assert_eq!((words[2] >> 8) & 0xFF, 1u32);
     }
 
     #[test]
     fn descriptor_with_smem_config() {
         let desc = TmaDescriptor::new().with_smem_config(0);
         let words = desc.as_u32_words();
-        assert_eq!((words[3] >> 28) & 0xF, 0u32);
+        assert_eq!((words[3] >> 8) & 0xF, 0u32);
     }
 
     #[test]
     fn descriptor_with_cache_hint() {
         let desc = TmaDescriptor::new().with_cache_hint(0);
         let words = desc.as_u32_words();
-        assert_eq!((words[3] >> 30) & 0x3, 0u32);
+        assert_eq!((words[3] >> 26) & 0x3, 0u32);
     }
 
     #[test]
@@ -226,7 +226,7 @@ mod tests {
         let words = desc.as_u32_words();
         assert_eq!(words[0] & 0xFFFF, 64u32);
         assert_eq!(words[1] & 0xFFFF, 512u32);
-        assert_eq!((words[2] >> 24) & 0xFF, 1u32);
+        assert_eq!((words[2] >> 8) & 0xFF, 1u32);
     }
 
     #[test]
