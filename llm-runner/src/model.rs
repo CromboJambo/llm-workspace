@@ -1114,7 +1114,9 @@ mod tests {
 
     #[test]
     fn model_kv_cache_info() {
-        let config = ModelConfig::default().with_num_layers(3);
+        let config = ModelConfig::default()
+            .with_num_layers(3)
+            .with_num_heads(8);
         let engine = InferenceEngine::new(Device::Cpu, DType::F32);
         let model = Model::new(config, engine, false);
 
@@ -1131,7 +1133,9 @@ mod tests {
 
     #[test]
     fn model_total_kv_elements() {
-        let config = ModelConfig::default().with_num_layers(2);
+        let config = ModelConfig::default()
+            .with_num_layers(2)
+            .with_num_heads(8);
         let engine = InferenceEngine::new(Device::Cpu, DType::F32);
         let model = Model::new(config, engine, false);
 
