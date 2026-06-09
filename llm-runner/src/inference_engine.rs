@@ -23,11 +23,16 @@ pub struct InferenceEngine {
 
 impl InferenceEngine {
     pub fn new(device: Device, dtype: DType) -> Self {
-        let gemm = GemmBuilder::new()
-            .with_arch(GemmArch::Wgmma)
-            .with_config(GemmConfig::default())
-            .build();
-        let attention = Box::new(CpuAttentionKernel::new());
+        let gemm = if is_available() {
+            Box::new(kernel::CudaGemmKernel::new(GemmArch::Wgmma))
+        } else {
+            Box::new(kernel::CpuGemmKernel::new())
+        };
+        let attention = if is_available() {
+            Box::new(kernel::CudaAttentionKernel::new(AttentionArch::Wgmma))
+        } else {
+            Box::new(kernel::CpuAttentionKernel::new())
+        };
 
         // Try to initialize CUDA if device preference is GPU
         let (cuda_runtime, stream) = if matches!(device, Device::Cuda(_)) || is_available() {
