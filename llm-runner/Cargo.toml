@@ -27,6 +27,7 @@ crabjar-llm-plug-in = { path = "../llm-plug-in" }
 crabjar-safetensors = { path = "../safetensors" }
 crabjar-gguf = { path = "../gguf" }
 cudarc.workspace = true
+encoding_rs = "0.8"
 intel-mkl-src.workspace = true
 gemm.workspace = true
 half.workspace = true
