@@ -9,7 +9,7 @@ members = [
 resolver = "2"
 
 [workspace.lints.rust]
-rust_2024_compatibility = "warn"
+rust_2024_compatibility = { level = "warn", priority = -1 }
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
@@ -74,7 +74,7 @@ rayon = "1.10.0"
 hf-hub = "0.4.1"
 zip = { version = "8.6.0", default-features = false }
 memmap2 = { version = "0.9.3", features = ["stable_deref_trait"] }
-safetensors = { version = "0.7.0", default-features = false }
+safetensors = { version = "0.7.0", default-features = false, features = ["std"] }
 
 # Regex
 regex = { version = "1.12.3", default-features = false, features = ["perf", "unicode"] }

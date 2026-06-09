@@ -1,19 +1,28 @@
 //! Blackwell TMA global cache read descriptor.
 //!
-//! The TMA global cache read descriptor is a 128-bit hardware structure
-//! that encodes the source of an asynchronous GMEM-to-SMEM copy.
+//! **SPECULATIVE — unverified bit layout.**
 //!
-//! The descriptor holds:
-//! - GMEM address offset (word 0)
+//! The 128-byte CUtensorMap structure is opaque per the CUDA driver API.
+//! `cuTensorMapEncodeTiled()` must be called on the host to create valid
+//! descriptors. The raw bit positions below are educated guesses from
+//! reverse-engineering cuda-oxide examples and the PTX `tensormap.replace`
+//! instruction fields. They have NOT been verified against actual hardware.
+//!
+//! For production use, see `tma_bridge.rs` which uses `cuTensorMapEncodeTiled`.
+//!
+//! The descriptor encodes the source of an asynchronous GMEM-to-SMEM copy:
+//! - GMEM address offset
 //! - Box dimensions (X and Y)
 //! - GMEM and SMEM strides
-//! - Element info, descriptor type, SMEM config
+//! - Element info, descriptor type, SMEM config, cache hint
 //!
 //! For the KV cache use case, the address offset is a byte offset from
 //! the buffer base (passed separately to the kernel). The box defines
 //! the region to copy, and strides define how to stride through GMEM/SMEM.
 
 /// 128-bit TMA descriptor packed as u128 for correct alignment and zero-copy casting.
+///
+/// **SPECULATIVE:** Bit positions are unverified guesses. See module-level docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C, align(16))]
 pub struct TmaDescriptor(pub u128);

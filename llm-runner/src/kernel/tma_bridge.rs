@@ -1,9 +1,12 @@
 //! Bridge between crabjar TmaDescriptor and cuda-oxide TMA infrastructure.
 //!
-//! crabjar's `TmaDescriptor` (64-byte `[u32; 4]`) is a hand-written bit layout
-//! designed for manual PTX `tmca_gcr_read` encoding. This module provides the
-//! bridge to cuda-oxide's 128-byte `TmaDescriptor` / `CUtensorMap` type used
+//! crabjar's `TmaDescriptor` (128-bit u128) is a **speculative** hand-written bit layout
+//! — the actual CUtensorMap encoding is opaque and not publicly documented.
+//! This module provides the bridge to cuda-oxide's 128-byte `TmaDescriptor` / `CUtensorMap` type used
 //! by `cp_async_bulk_tensor_2d_g2s` and the `#[kernel]` approach.
+//!
+//! **Production descriptors should be created via `cuTensorMapEncodeTiled` on the host**,
+//! as cuda-oxide does. Our host-side `HostTmaDescriptor` wraps that approach.
 //!
 //! Host-side TMA descriptors are created via `cuTensorMapEncodeTiled` and
 //! passed to kernels as `*const TmaDescriptor`.

@@ -13,7 +13,7 @@
 //!   device_buf.rs   - DeviceBuffer<T> (host Vec / device ptr abstraction)
 //!   gemm.rs         - GEMM trait, config, types, CPU fallback
 //!   builder.rs      - PTX builder, kernel registration, launch config
-//!   tma_descriptor.rs - Blackwell TMA global cache read descriptor (64-bit hand-packed)
+//!   tma_descriptor.rs - Blackwell TMA global cache read descriptor (speculative bit layout)
 //!   tma_bridge.rs   - Bridge to cuda-oxide 128-byte TmaDescriptor + host-side creation
 //!   kvcache.rs      - KV cache with TMA descriptor support
 //!   attention.rs    - Attention kernel trait, config, CPU fallback
