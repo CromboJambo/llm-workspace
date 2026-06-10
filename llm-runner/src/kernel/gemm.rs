@@ -114,16 +114,81 @@ pub trait GemmKernel: Send + Sync {
     fn is_available(&self) -> bool;
 }
 
-// --- GPU Implementations (Placeholder) ---
+// --- GPU Implementation (Real cuda-oxide backed) ---
 
-/// CUDA implementation for GEMM kernel.
+use std::sync::Arc;
+
+/// CUDA implementation for GEMM kernel using cuda-oxide.
 pub struct CudaGemmKernel {
     arch: GemmArch,
+    context: Arc<cuda_core::CudaContext>,
+    stream: Arc<cuda_core::CudaStream>,
+    module: Arc<cuda_core::CudaModule>,
+    function: cuda_core::CudaFunction,
+}
+
+/// Builder for CudaGemmKernel that handles PTX loading and kernel resolution.
+pub struct CudaGemmKernelBuilder {
+    arch: GemmArch,
+    context: Arc<cuda_core::CudaContext>,
+    stream: Arc<cuda_core::CudaStream>,
+}
+
+impl CudaGemmKernelBuilder {
+    pub fn new(
+        arch: GemmArch,
+        context: Arc<cuda_core::CudaContext>,
+        stream: Arc<cuda_core::CudaStream>,
+    ) -> Self {
+        Self {
+            arch,
+            context,
+            stream,
+        }
+    }
+
+    /// Build the kernel by loading PTX module and resolving function.
+    pub fn build(self) -> Result<CudaGemmKernel, GemmError> {
+        // Select PTX based on architecture
+        let ptx_src = match self.arch {
+            GemmArch::Wgmma => include_str!("ptx/gemm_wgmma.ptx"),
+            GemmArch::Tcgen05 => include_str!("ptx/gemm_tcgen05.ptx"),
+        };
+
+        // Load module from PTX source
+        let module = self
+            .context
+            .load_module_from_ptx_src(ptx_src)
+            .map_err(|e| GemmError::Cuda(format!("module load failed: {}", e)))?;
+
+        // Resolve kernel function
+        let kernel_name = match self.arch {
+            GemmArch::Wgmma => "gemm_wgmma_kernel",
+            GemmArch::Tcgen05 => "gemm_tcgen05_kernel",
+        };
+        let function = module
+            .load_function(kernel_name)
+            .map_err(|e| GemmError::Cuda(format!("function load failed: {}", e)))?;
+
+        Ok(CudaGemmKernel {
+            arch: self.arch,
+            context: self.context,
+            stream: self.stream,
+            module,
+            function,
+        })
+    }
 }
 
 impl CudaGemmKernel {
-    pub fn new(arch: GemmArch) -> Self {
-        Self { arch }
+    /// Get the cuda-oxide context for external operations
+    pub fn context(&self) -> &Arc<cuda_core::CudaContext> {
+        &self.context
+    }
+
+    /// Get the cuda-oxide stream
+    pub fn stream(&self) -> &Arc<cuda_core::CudaStream> {
+        &self.stream
     }
 }
 
@@ -139,18 +204,98 @@ impl GemmKernel for CudaGemmKernel {
         n: usize,
         k: usize,
     ) -> Result<(), GemmError> {
-        // TODO: Implement actual CUDA matmul call using cuda-oxide.
-        // This function should perform the GEMM operation on the GPU device (cuda_core::matmul).
-        if !self.is_available() {
-            return Err(GemmError::NotAvailable);
+        // Validate dimensions
+        if m == 0 || n == 0 || k == 0 {
+            return Err(GemmError::InvalidDimensions { m, n, k });
         }
 
-        println!("Running placeholder CUDA GEMM for arch: {}", self.arch.name());
+        // Validate input buffers have data on device
+        let a_ptr = a.device_ptr().ok_or(GemmError::BufferSizeMismatch {
+            expected: m * k,
+            got: 0,
+        })?;
+        let b_ptr = b.device_ptr().ok_or(GemmError::BufferSizeMismatch {
+            expected: k * n,
+            got: 0,
+        })?;
+        let c_ptr = c.device_ptr().ok_or(GemmError::BufferSizeMismatch {
+            expected: m * n,
+            got: 0,
+        })?;
 
-        // Placeholder logic to simulate success and prevent compilation failure:
-        let _ = a;
-        let _ = b;
-        let _ = c;
+        // Verify buffer sizes (DeviceBuffer::len() returns element count)
+        if a.len() < m * k {
+            return Err(GemmError::BufferSizeMismatch {
+                expected: m * k,
+                got: a.len(),
+            });
+        }
+        if b.len() < k * n {
+            return Err(GemmError::BufferSizeMismatch {
+                expected: k * n,
+                got: b.len(),
+            });
+        }
+        if c.len() < m * n {
+            return Err(GemmError::BufferSizeMismatch {
+                expected: m * n,
+                got: c.len(),
+            });
+        }
+
+        // Prepare kernel arguments
+        // Kernel signature: gemm_kernel(alpha, a, b, beta, c, m, n, k)
+        let mut alpha_f32 = alpha;
+        let mut beta_f32 = beta;
+        let mut m_i32 = m as i32;
+        let mut n_i32 = n as i32;
+        let mut k_i32 = k as i32;
+
+        let mut kernel_params: [*mut std::ffi::c_void; 8] = [
+            &mut alpha_f32 as *mut f32 as *mut std::ffi::c_void,
+            &a_ptr as *const u64 as *mut std::ffi::c_void,
+            &b_ptr as *const u64 as *mut std::ffi::c_void,
+            &mut beta_f32 as *mut f32 as *mut std::ffi::c_void,
+            &c_ptr as *const u64 as *mut std::ffi::c_void,
+            &mut m_i32 as *mut i32 as *mut std::ffi::c_void,
+            &mut n_i32 as *mut i32 as *mut std::ffi::c_void,
+            &mut k_i32 as *mut i32 as *mut std::ffi::c_void,
+        ];
+
+        // Compute grid/block dimensions
+        // Using 2D grid: (N/128, M/128) with blockDim (16, 16) = 256 threads
+        // For tcgen05 tile 128x128, block handles one tile
+        // For wgmma tile 64x64, block handles 4 tiles (2x2)
+        let (block_x, block_y) = match self.arch {
+            GemmArch::Wgmma => (16, 16),  // 256 threads, 64x64 tile
+            GemmArch::Tcgen05 => (16, 16), // 256 threads, 128x128 tile
+        };
+
+        let grid_x = (n + 127) / 128;
+        let grid_y = (m + 63) / 64;
+
+        // Bind context and launch kernel
+        self.context.bind_to_thread().map_err(|e| {
+            GemmError::Cuda(format!("context bind failed: {}", e))
+        })?;
+
+        unsafe {
+            cuda_core::launch_kernel_on_stream(
+                &self.function,
+                (grid_x as u32, grid_y as u32, 1),
+                (block_x as u32, block_y as u32, 1),
+                0, // shared_mem_bytes
+                &self.stream,
+                &mut kernel_params,
+            )
+        }
+        .map_err(|e| GemmError::LaunchFailed(e.to_string()))?;
+
+        // Synchronize to ensure completion (async version available later)
+        self.stream
+            .synchronize()
+            .map_err(|e| GemmError::LaunchFailed(format!("sync failed: {}", e)))?;
+
         Ok(())
     }
 
@@ -159,8 +304,8 @@ impl GemmKernel for CudaGemmKernel {
     }
 
     fn is_available(&self) -> bool {
-        // Actual check should verify CUDA context and compute capability support
-        matches!(self.arch, GemmArch::Wgmma | GemmArch::Tcgen05)
+        // Check that kernel function is valid (not zeroed)
+        unsafe { !self.function.cu_function().is_null() }
     }
 }
 

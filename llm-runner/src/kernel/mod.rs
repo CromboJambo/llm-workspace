@@ -79,7 +79,7 @@ pub use attention::{
 pub use builder::{GemmBuilder, KernelFromPtx, PtxSource};
 pub use device_buf::DeviceBuffer;
 pub use device_buf::DeviceBufferError;
-pub use gemm::{CpuGemmKernel, CudaGemmKernel, GemmArch, GemmConfig, GemmError, GemmKernel};
+pub use gemm::{CpuGemmKernel, CudaGemmKernel, CudaGemmKernelBuilder, GemmArch, GemmConfig, GemmError, GemmKernel};
 pub use kvcache::{KvError, Kvcache, KvcacheSlice};
 pub use tma_bridge::HostTmaDescriptor;
 pub use tma_descriptor::TmaDescriptor;
