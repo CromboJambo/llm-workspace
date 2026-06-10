@@ -501,6 +501,54 @@ mod tests {
     }
 
     #[test]
+    fn cpu_gemm_kernel_with_cpu_device_buffers() {
+        // This test exercises the CPU-fallback device buffer path through the
+        // GEMM kernel, verifying that the full resource abstraction layer works
+        // without requiring a working CUDA driver.
+        let kernel = CpuGemmKernel::new();
+
+        // Use CPU-fallback buffers instead of Host buffers
+        let a = DeviceBuffer::from_cpu_device(vec![f16::from_f32(2.0); 4]); // [2x2]
+        let b = DeviceBuffer::from_cpu_device(vec![f16::from_f32(3.0); 4]); // [2x2]
+        let mut c = DeviceBuffer::zeros_cpu_device(4); // [2x2]
+
+        // Verify buffers are correctly identified as "device"
+        assert!(a.is_device());
+        assert!(b.is_device());
+        assert!(c.is_device());
+        assert!(a.as_slice().is_some());
+        assert!(c.as_mut_slice().is_some());
+        assert_eq!(c.device_ptr(), Some(0xDEAD));
+
+        // Run GEMM: C = 1.0 * A @ B + 0.0 * C
+        // Each C[i][j] = sum_k(A[i][k] * B[k][j]) = 2.0*3.0 + 2.0*3.0 = 12.0
+        let result = kernel.matmul(1.0, &a, &b, 0.0, &mut c, 2, 2, 2);
+        assert!(result.is_ok());
+
+        let c_host = c.to_host();
+        assert_eq!(c_host[0], 12.0);
+        assert_eq!(c_host[1], 12.0);
+        assert_eq!(c_host[2], 12.0);
+        assert_eq!(c_host[3], 12.0);
+    }
+
+    #[test]
+    fn cpu_gemm_kernel_with_cpu_device_buffers_beta() {
+        // Test GEMM with beta != 0 using CPU-fallback buffers
+        let kernel = CpuGemmKernel::new();
+
+        let a = DeviceBuffer::from_cpu_device(vec![f16::from_f32(1.5); 1]); // [1x1]
+        let b = DeviceBuffer::from_cpu_device(vec![f16::from_f32(2.0); 1]); // [1x1]
+        let mut c = DeviceBuffer::from_cpu_device(vec![10.0f32; 1]); // [1x1]
+
+        // C = 1.0 * (1.5 * 2.0) + 0.5 * 10.0 = 3.0 + 5.0 = 8.0
+        let result = kernel.matmul(1.0, &a, &b, 0.5, &mut c, 1, 1, 1);
+        assert!(result.is_ok());
+
+        assert_eq!(c.to_host()[0], 8.0);
+    }
+
+    #[test]
     fn cpu_gemm_kernel_matmul_with_beta() {
         let kernel = CpuGemmKernel::new();
         let a = DeviceBuffer::from_host(vec![f16::from_f32(2.0); 1]); // [1x1]
