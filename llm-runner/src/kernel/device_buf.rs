@@ -39,6 +39,8 @@ pub enum DeviceBuffer<T> {
     DeviceTma(u64, usize, TmaDescriptor),
     /// Owned cuda-oxide device buffer (Phase 2 wiring).
     Cuda(Arc<cuda_core::DeviceBuffer<T>>),
+    /// CPU-backed "device" buffer for testing when CUDA is unavailable.
+    CpuDevice(Vec<T>),
 }
 
 impl<T> Drop for DeviceBuffer<T> {
@@ -64,6 +66,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
                 f.debug_tuple("DeviceTma").field(ptr).field(len).finish()
             }
             Self::Cuda(_) => f.debug_tuple("Cuda").field(&"<device-buffer>").finish(),
+            Self::CpuDevice(_) => f.debug_tuple("CpuDevice").field(&"<cpu-buffer>").finish(),
         }
     }
 }
@@ -134,6 +137,7 @@ impl<T> DeviceBuffer<T> {
             Self::Host(v) => v.len(),
             Self::Device(_, len) | Self::DeviceTma(_, len, _) => *len,
             Self::Cuda(buf) => buf.len(),
+            Self::CpuDevice(v) => v.len(),
         }
     }
 
@@ -144,6 +148,7 @@ impl<T> DeviceBuffer<T> {
     pub fn as_slice(&self) -> Option<&[T]> {
         match self {
             Self::Host(v) => Some(v.as_slice()),
+            Self::CpuDevice(v) => Some(v.as_slice()),
             Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => None,
         }
     }
@@ -151,6 +156,7 @@ impl<T> DeviceBuffer<T> {
     pub fn as_mut_slice(&mut self) -> Option<&mut [T]> {
         match self {
             Self::Host(v) => Some(v.as_mut_slice()),
+            Self::CpuDevice(v) => Some(v.as_mut_slice()),
             Self::Cuda(_) => None,
             Self::Device(..) | Self::DeviceTma(..) => None,
         }
@@ -162,6 +168,7 @@ impl<T> DeviceBuffer<T> {
     {
         match self {
             Self::Host(v) => v.clone(),
+            Self::CpuDevice(v) => v.clone(),
             Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => vec![],
         }
     }
@@ -174,8 +181,11 @@ impl<T> DeviceBuffer<T> {
         T: Clone + cuda_core::DeviceCopy,
     {
         match self {
-            Self::Cuda(buf) => buf.to_host_vec(stream).map_err(|e| DeviceBufferError::Transfer(e.to_string())),
+            Self::Cuda(buf) => buf
+                .to_host_vec(stream)
+                .map_err(|e| DeviceBufferError::Transfer(e.to_string())),
             Self::Host(v) => Ok(v.clone()),
+            Self::CpuDevice(v) => Ok(v.clone()),
             Self::Device(..) | Self::DeviceTma(..) => Ok(vec![]),
         }
     }
@@ -184,6 +194,7 @@ impl<T> DeviceBuffer<T> {
         match self {
             Self::Device(ptr, _) | Self::DeviceTma(ptr, _, _) => Some(*ptr),
             Self::Cuda(buf) => Some(buf.cu_deviceptr()),
+            Self::CpuDevice(_) => Some(0xDEAD), // Sentinel for CPU-fallback
             Self::Host(..) => None,
         }
     }
@@ -198,7 +209,7 @@ impl<T> DeviceBuffer<T> {
     pub fn is_device(&self) -> bool {
         matches!(
             self,
-            Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..)
+            Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..) | Self::CpuDevice(..)
         )
     }
 
@@ -253,6 +264,22 @@ impl<T> DeviceBuffer<T> {
         let buf = cuda_core::DeviceBuffer::zeroed(stream, len)
             .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
         Ok(Self::Cuda(Arc::new(buf)))
+    }
+
+    /// Create a CPU-fallback device buffer from a host Vec.
+    ///
+    /// Used when CUDA is unavailable for testing. Data stays on the CPU
+    /// but is treated as if it were on the device.
+    pub fn from_cpu_device(data: Vec<T>) -> Self {
+        Self::CpuDevice(data)
+    }
+
+    /// Create a zero-initialized CPU-fallback device buffer.
+    pub fn zeros_cpu_device(len: usize) -> Self
+    where
+        T: Default + Clone,
+    {
+        Self::CpuDevice(vec![T::default(); len])
     }
 }
 
@@ -310,5 +337,37 @@ mod tests {
     fn host_buffer_from_vec_trait() {
         let buf: HostBuffer<i32> = vec![7, 8, 9].into();
         assert_eq!(buf.to_host(), vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn cpu_device_buffer_from_vec() {
+        let buf = DeviceBuffer::from_cpu_device(vec![1, 2, 3]);
+        assert!(buf.is_device());
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.device_ptr(), Some(0xDEAD));
+        let slice: &[i32] = buf.as_slice().unwrap();
+        assert_eq!(slice, &[1, 2, 3]);
+        assert_eq!(buf.to_host(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn cpu_device_buffer_zeros() {
+        let buf: DeviceBuffer<i32> = DeviceBuffer::zeros_cpu_device(5);
+        assert!(buf.is_device());
+        assert_eq!(buf.len(), 5);
+        assert_eq!(buf.to_host(), vec![0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn cpu_device_buffer_as_mut_slice() {
+        let mut buf = DeviceBuffer::from_cpu_device(vec![1, 2, 3]);
+        buf.as_mut_slice().unwrap()[0] = 10;
+        assert_eq!(buf.to_host(), vec![10, 2, 3]);
+    }
+
+    #[test]
+    fn cpu_device_buffer_is_not_cuda() {
+        let buf = DeviceBuffer::from_cpu_device(vec![1, 2, 3]);
+        assert!(buf.as_cuda().is_none());
     }
 }
