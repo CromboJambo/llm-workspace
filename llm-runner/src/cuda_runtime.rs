@@ -385,7 +385,7 @@ pub fn allocate_device_memory(size_in_bytes: usize) -> Result<*mut u8, CudaError
     unsafe {
         cuda_sys::cuMemAlloc_v2(&mut dptr, size_in_bytes)
             .result()
-            .map_err(|_| CudaError::DriverError(0))?;
+            .map_err(|e| CudaError::DriverError(e as u32))?;
         Ok(dptr as *mut u8)
     }
 }
@@ -397,7 +397,7 @@ pub fn free_device_memory(ptr: *mut u8) -> Result<(), CudaError> {
     unsafe {
         cuda_sys::cuMemFree_v2(ptr as u64)
             .result()
-            .map_err(|_| CudaError::DriverError(0))?;
+            .map_err(|e| CudaError::DriverError(e as u32))?;
         Ok(())
     }
 }
@@ -417,7 +417,7 @@ pub fn copy_host_to_device(
             size_in_bytes,
         )
         .result()
-        .map_err(|_| CudaError::DriverError(0))?;
+        .map_err(|e| CudaError::DriverError(e as u32))?;
         Ok(())
     }
 }
@@ -437,7 +437,7 @@ pub fn copy_device_to_host(
             size_in_bytes,
         )
         .result()
-        .map_err(|_| CudaError::DriverError(0))?;
+        .map_err(|e| CudaError::DriverError(e as u32))?;
         Ok(())
     }
 }
