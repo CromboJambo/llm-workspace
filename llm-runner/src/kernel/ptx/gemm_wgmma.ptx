@@ -40,7 +40,7 @@
     // REGISTERS
     // ========================================================================
     .reg .pred  %p<32>;
-    .reg .f32   %f<64>;    // Accumulators (16 WGMMA * 2 regs each = 32, plus temps)
+    .reg .f32   %f<68>;    // Accumulators (32 WGMMA * 2 regs each = 64, plus temps)
     .reg .f16   %h<32>;    // ldmatrix loads
     .reg .b64   %rd<32>;
     .reg .u32   %u<64>;
@@ -103,11 +103,11 @@
     mov.u32  %u12, 6144;     // smem_B_s1
 
     // ========================================================================
-    // INIT ACCUMULATORS (16 WGMMA * 2 f32 regs = 32 regs)
-    // %f4-%f35 = 32 registers for 16x 2-register accumulators
+    // INIT ACCUMULATORS (32 WGMMA * 2 f32 regs = 64 regs)
+    // %f4-%f67 = 64 registers for 32x 2-register accumulators
     // ========================================================================
     mov.u32  %u13, 4;      // start reg index
-    mov.u32  %u14, 35;     // end reg index
+    mov.u32  %u14, 67;     // end reg index
 INIT_ACC:
     setp.lt.u32  %p4, %u13, %u14;
     @!%p4 bra    INIT_ACC_DONE;
@@ -118,7 +118,7 @@ INIT_ACC:
     add.u32  %u13, %u13, 1;
     bra      INIT_ACC;
 INIT_ACC_DONE:
-    // Explicitly zero accumulator registers %f4 through %f35
+    // Explicitly zero accumulator registers %f4 through %f67
     mov.f32  %f4,  0f00000000;  mov.f32  %f5,  0f00000000;
     mov.f32  %f6,  0f00000000;  mov.f32  %f7,  0f00000000;
     mov.f32  %f8,  0f00000000;  mov.f32  %f9,  0f00000000;
@@ -135,6 +135,22 @@ INIT_ACC_DONE:
     mov.f32  %f30, 0f00000000;  mov.f32  %f31, 0f00000000;
     mov.f32  %f32, 0f00000000;  mov.f32  %f33, 0f00000000;
     mov.f32  %f34, 0f00000000;  mov.f32  %f35, 0f00000000;
+    mov.f32  %f36, 0f00000000;  mov.f32  %f37, 0f00000000;
+    mov.f32  %f38, 0f00000000;  mov.f32  %f39, 0f00000000;
+    mov.f32  %f40, 0f00000000;  mov.f32  %f41, 0f00000000;
+    mov.f32  %f42, 0f00000000;  mov.f32  %f43, 0f00000000;
+    mov.f32  %f44, 0f00000000;  mov.f32  %f45, 0f00000000;
+    mov.f32  %f46, 0f00000000;  mov.f32  %f47, 0f00000000;
+    mov.f32  %f48, 0f00000000;  mov.f32  %f49, 0f00000000;
+    mov.f32  %f50, 0f00000000;  mov.f32  %f51, 0f00000000;
+    mov.f32  %f52, 0f00000000;  mov.f32  %f53, 0f00000000;
+    mov.f32  %f54, 0f00000000;  mov.f32  %f55, 0f00000000;
+    mov.f32  %f56, 0f00000000;  mov.f32  %f57, 0f00000000;
+    mov.f32  %f58, 0f00000000;  mov.f32  %f59, 0f00000000;
+    mov.f32  %f60, 0f00000000;  mov.f32  %f61, 0f00000000;
+    mov.f32  %f62, 0f00000000;  mov.f32  %f63, 0f00000000;
+    mov.f32  %f64, 0f00000000;  mov.f32  %f65, 0f00000000;
+    mov.f32  %f66, 0f00000000;  mov.f32  %f67, 0f00000000;
 
     // ========================================================================
     // MAIN K-LOOP (double buffered)
@@ -173,7 +189,7 @@ PREFETCH_NEXT:
     // Each thread loads 8 elements (16 bytes) via cp.async.v4.f16 x2
 
     // A tile: 64 rows x 16 cols = 1024 f16 elements
-    // 128 threads * 8 elements = 1024 ✓
+    // 128 threads * 8 elements = 1024
 
     // Compute thread's element index
     // element_id = warp_id * 32 + lane_id = %u4 * 32 + %u3
@@ -376,6 +392,102 @@ COMPUTE_CURRENT:
     wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
         {%f34, %f35}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f34, %f35};
 
+    // N4: acc[%f36,%f37] - B[0:16, 32:40]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 0];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 512];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f36, %f37}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f36, %f37};
+
+    // M1N4: acc[%f38,%f39]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 512];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 512];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f38, %f39}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f38, %f39};
+
+    // M2N4: acc[%f40,%f41]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1024];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 512];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f40, %f41}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f40, %f41};
+
+    // M3N4: acc[%f42,%f43]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1536];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 512];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f42, %f43}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f42, %f43};
+
+    // N5: acc[%f44,%f45] - B[0:16, 40:48]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 0];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 640];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f44, %f45}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f44, %f45};
+
+    // M1N5: acc[%f46,%f47]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 512];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 640];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f46, %f47}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f46, %f47};
+
+    // M2N5: acc[%f48,%f49]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1024];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 640];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f48, %f49}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f48, %f49};
+
+    // M3N5: acc[%f50,%f51]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1536];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 640];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f50, %f51}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f50, %f51};
+
+    // N6: acc[%f52,%f53] - B[0:16, 48:56]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 0];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 768];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f52, %f53}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f52, %f53};
+
+    // M1N6: acc[%f54,%f55]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 512];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 768];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f54, %f55}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f54, %f55};
+
+    // M2N6: acc[%f56,%f57]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1024];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 768];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f56, %f57}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f56, %f57};
+
+    // M3N6: acc[%f58,%f59]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1536];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 768];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f58, %f59}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f58, %f59};
+
+    // N7: acc[%f60,%f61] - B[0:16, 56:64]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 0];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 896];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f60, %f61}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f60, %f61};
+
+    // M1N7: acc[%f62,%f63]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 512];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 896];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f62, %f63}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f62, %f63};
+
+    // M2N7: acc[%f64,%f65]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1024];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 896];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f64, %f65}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f64, %f65};
+
+    // M3N7: acc[%f66,%f67]
+    ldmatrix.sync.aligned.x4.m8n8.shared.b16 {%h1, %h2, %h3, %h4}, [%u17 + 1536];
+    ldmatrix.sync.aligned.x2.m8n8.shared.b16 {%h5, %h6}, [%u18 + 896];
+    wgmma.mma_async.sync.aligned.m16n8k16.row.col.f16.f16.f16.f32
+        {%f66, %f67}, {%h1, %h2, %h3, %h4}, {%h5, %h6}, {%f66, %f67};
+
     // ------------------------------------------------------------
     // WAIT FOR ALL WGMMA TO COMPLETE
     // ------------------------------------------------------------
@@ -414,16 +526,8 @@ STORE_LOOP:
     @!%p8 bra    STORE_DONE;
 
     // Map element_idx to (m_subtile, n_subtile, m_in_subtile, n_in_subtile)
-    // 4x4 subtiles, each 16x16 (but N subtile is 8 wide for WGMMA)
-    // Actually each WGMMA is 16x8, so 4x8 subtiles in N? No, we did 4x4 with 16x8 each
-    // M: 4 subtiles x 16 = 64, N: 4 subtiles x 8 = 32? Wait, that's only 32 in N!
-    // BUG: WGMMA m16n8k16 produces 16x8. We need 64x64, so N needs 8 subtiles of 8.
-    // But we only did 4 N subtiles (32 cols). This kernel computes 64x32!
-    // For full 64x64, need 8 N subtiles. Let me fix to 64x32 for now (half tile per block).
-    // Or use two blocks in N dimension. For simplicity, compute 64x32.
-
-    // Thread mapping for 64x32 = 2048 elements, 128 threads = 16 elements each
-    // Actually let's do 64x64 with 32 elements per thread
+    // 4x8 subtiles, each 16x8 (WGMMA m16n8k16)
+    // M: 4 subtiles x 16 = 64, N: 8 subtiles x 8 = 64
 
     // Linear element index in 64x64 tile
     mul.u32  %u46, %u23, 32;        // base = tid * 32
@@ -445,19 +549,14 @@ STORE_LOOP:
     ld.global.f32 %f36, [%ul20];
 
     // Find correct accumulator register
-    // acc_reg_base = 4 + (row_subtile * 4 + col_subtile) * 2
-    // row_subtile = row / 16 (0..3), col_subtile = col / 16? No, col / 8 (0..7)
-    // Wait, we only have 4 N subtiles (0..3) covering 32 cols.
-    // For 64 cols, need 8 N subtiles. Let me adjust to 64x32 output.
-
-    // SIMPLIFIED: Just store using explicit mapping for first 32 cols
-    setp.lt.u32  %p9, %u49, 32;
-    @!%p9 bra    STORE_NEXT;
+    // acc_reg_base = 4 + (row_subtile * 8 + col_subtile) * 2
+    // row_subtile = row / 16 (0..3), col_subtile = col / 8 (0..7)
+    // Total subtile_idx = row_subtile * 8 + col_subtile (0..31)
 
     // Compute accumulator register index
     div.u32  %u50, %u48, 16;        // row_subtile 0..3
-    div.u32  %u51, %u49, 8;         // col_subtile 0..3
-    mad.lo.u32 %u52, %u50, 4, %u51; // subtile_idx 0..15
+    div.u32  %u51, %u49, 8;         // col_subtile 0..7
+    mad.lo.u32 %u52, %u50, 8, %u51; // subtile_idx = row_subtile * 8 + col_subtile
     mul.u32  %u53, %u52, 2;         // * 2 regs per subtile
     add.u32  %u54, %u53, 4;         // + base (f4)
 
