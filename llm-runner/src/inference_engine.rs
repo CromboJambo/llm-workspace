@@ -51,7 +51,7 @@ impl InferenceEngine {
                 GemmArch::Wgmma // fallback
             };
 
-            match CudaGemmKernelBuilder::new(arch, cuda_rt.context().clone(), s.clone()).build() {
+            match CudaGemmKernelBuilder::new(arch, cuda_rt.context().clone(), s.clone(), cuda_rt.device_info().clone()).build() {
                 Ok(kernel) => Box::new(kernel),
                 Err(e) => {
                     eprintln!("Failed to initialize CUDA GEMM kernel: {}. Falling back to CPU.", e);
