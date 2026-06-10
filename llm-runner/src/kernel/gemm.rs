@@ -262,29 +262,36 @@ impl GemmKernel for CudaGemmKernel {
             &mut k_i32 as *mut i32 as *mut std::ffi::c_void,
         ];
 
-        // Compute grid/block dimensions
-        // Using 2D grid: (N/128, M/128) with blockDim (16, 16) = 256 threads
-        // For tcgen05 tile 128x128, block handles one tile
-        // For wgmma tile 64x64, block handles 4 tiles (2x2)
-        let (block_x, block_y) = match self.arch {
-            GemmArch::Wgmma => (16, 16),  // 256 threads, 64x64 tile
-            GemmArch::Tcgen05 => (16, 16), // 256 threads, 128x128 tile
+        // Compute grid/block dimensions for WGMMA
+        // blockDim = (32, 4) = 128 threads (4 warps = 1 warp group)
+        // Each block computes one 64x64 output tile
+        // gridDim = (ceil(N/64), ceil(M/64))
+        let (grid_x, grid_y, block_x, block_y, shared_mem_bytes) = match self.arch {
+            GemmArch::Wgmma => {
+                // WGMMA: 64x64 tile, 128 threads, 8 KiB shared memory (double buffered)
+                let grid_x = (n + 63) / 64;
+                let grid_y = (m + 63) / 64;
+                (grid_x as u32, grid_y as u32, 32u32, 4u32, 8192u32) // 8 KiB shared mem
+            }
+            GemmArch::Tcgen05 => {
+                // tcgen05: 128x128 tile, 256 threads (placeholder)
+                let grid_x = (n + 127) / 128;
+                let grid_y = (m + 127) / 128;
+                (grid_x as u32, grid_y as u32, 16u32, 16u32, 0u32)
+            }
         };
 
-        let grid_x = (n + 127) / 128;
-        let grid_y = (m + 63) / 64;
-
         // Bind context and launch kernel
-        self.context.bind_to_thread().map_err(|e| {
-            GemmError::Cuda(format!("context bind failed: {}", e))
-        })?;
+        self.context
+            .bind_to_thread()
+            .map_err(|e| GemmError::Cuda(format!("context bind failed: {}", e)))?;
 
         unsafe {
             cuda_core::launch_kernel_on_stream(
                 &self.function,
-                (grid_x as u32, grid_y as u32, 1),
-                (block_x as u32, block_y as u32, 1),
-                0, // shared_mem_bytes
+                (grid_x, grid_y, 1),
+                (block_x, block_y, 1),
+                shared_mem_bytes,
                 &self.stream,
                 &mut kernel_params,
             )
