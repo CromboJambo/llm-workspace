@@ -1,12 +1,13 @@
-use crate::cuda_runtime::{CudaRuntime, enumerate_devices, is_available};
+use crate::cuda_runtime::{enumerate_devices, is_available, CudaRuntime};
 use crate::error::RunnerError;
-use crate::kernel::{AttentionArch, AttentionConfig, AttentionKernel, CpuAttentionKernel};
-use crate::kernel::{GemmArch, GemmBuilder, GemmConfig, GemmKernel};
+use crate::kernel::{
+    AttentionArch, AttentionConfig, AttentionKernel, CpuAttentionKernel,
+    CudaGemmKernelBuilder, GemmArch, GemmKernel,
+};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Module;
 use half::f16;
 use std::sync::Arc;
-
 /// Inference engine for tensor computation.
 ///
 /// actual tensor computation layer. separate from crabjar host.
@@ -23,17 +24,6 @@ pub struct InferenceEngine {
 
 impl InferenceEngine {
     pub fn new(device: Device, dtype: DType) -> Self {
-        let gemm: Box<dyn GemmKernel + Send + Sync> = if is_available() {
-            Box::new(crate::kernel::CudaGemmKernel::new(GemmArch::Wgmma))
-        } else {
-            Box::new(crate::kernel::CpuGemmKernel::new())
-        };
-        let attention: Box<dyn AttentionKernel + Send + Sync> = if is_available() {
-            Box::new(crate::kernel::CudaAttentionKernel::new(AttentionArch::Wgmma))
-        } else {
-            Box::new(crate::kernel::CpuAttentionKernel::new())
-        };
-
         // Try to initialize CUDA if device preference is GPU
         let (cuda_runtime, stream) = if matches!(device, Device::Cuda(_)) || is_available() {
             match CudaRuntime::for_default_device() {
@@ -48,6 +38,35 @@ impl InferenceEngine {
             }
         } else {
             (None, None)
+        };
+
+        // Initialize GEMM kernel
+        let gemm: Box<dyn GemmKernel + Send + Sync> = if let (Some(cuda_rt), Some(s)) = (&cuda_runtime, &stream) {
+            // Detect architecture from device compute capability
+            let arch = if cuda_rt.device_info().supports_wgmma() {
+                GemmArch::Wgmma
+            } else if cuda_rt.device_info().supports_tcgen05() {
+                GemmArch::Tcgen05
+            } else {
+                GemmArch::Wgmma // fallback
+            };
+
+            match CudaGemmKernelBuilder::new(arch, cuda_rt.context().clone(), s.clone()).build() {
+                Ok(kernel) => Box::new(kernel),
+                Err(e) => {
+                    eprintln!("Failed to initialize CUDA GEMM kernel: {}. Falling back to CPU.", e);
+                    Box::new(crate::kernel::CpuGemmKernel::new())
+                }
+            }
+        } else {
+            Box::new(crate::kernel::CpuGemmKernel::new())
+        };
+
+        // Initialize attention kernel
+        let attention: Box<dyn AttentionKernel + Send + Sync> = if is_available() {
+            Box::new(crate::kernel::CudaAttentionKernel::new(AttentionArch::Wgmma))
+        } else {
+            Box::new(crate::kernel::CpuAttentionKernel::new())
         };
 
         Self {
