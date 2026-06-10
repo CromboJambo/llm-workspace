@@ -130,25 +130,47 @@ pub struct CudaGemmKernel {
 /// Builder for CudaGemmKernel that handles PTX loading and kernel resolution.
 pub struct CudaGemmKernelBuilder {
     arch: GemmArch,
-    context: Arc<cuda_core::CudaContext>,
+    context: Arc<CudaContext>,
     stream: Arc<cuda_core::CudaStream>,
+    device_info: CudaDeviceInfo,
 }
 
 impl CudaGemmKernelBuilder {
     pub fn new(
         arch: GemmArch,
-        context: Arc<cuda_core::CudaContext>,
+        context: Arc<CudaContext>,
         stream: Arc<cuda_core::CudaStream>,
+        device_info: CudaDeviceInfo,
     ) -> Self {
         Self {
             arch,
             context,
             stream,
+            device_info,
         }
     }
 
     /// Build the kernel by loading PTX module and resolving function.
     pub fn build(self) -> Result<CudaGemmKernel, GemmError> {
+        // Pre-flight architecture check
+        match self.arch {
+            GemmArch::Wgmma if !self.device_info.supports_wgmma() => {
+                return Err(GemmError::UnsupportedArch(format!(
+                    "WGMMA requires sm_120+, but device is sm_{}.{}",
+                    self.device_info.compute_capability.0,
+                    self.device_info.compute_capability.1
+                )));
+            }
+            GemmArch::Tcgen05 if !self.device_info.supports_tcgen05() => {
+                return Err(GemmError::UnsupportedArch(format!(
+                    "tcgen05 requires sm_100+, but device is sm_{}.{}",
+                    self.device_info.compute_capability.0,
+                    self.device_info.compute_capability.1
+                )));
+            }
+            _ => {}
+        }
+
         // Select PTX based on architecture
         let ptx_src = match self.arch {
             GemmArch::Wgmma => include_str!("ptx/gemm_wgmma.ptx"),
@@ -623,7 +645,7 @@ mod tests {
         };
 
         // Build GPU kernel
-        let gpu_kernel = CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone())
+        let gpu_kernel = CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone(), rt.device_info().clone())
             .build()
             .map_err(|e| format!("Kernel build failed: {}", e))?;
 
@@ -769,7 +791,7 @@ mod tests {
             return;
         };
 
-        let gpu_kernel = match CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone())
+        let gpu_kernel = match CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone(), rt.device_info().clone())
             .build()
         {
             Ok(k) => k,
@@ -855,7 +877,7 @@ mod tests {
             return;
         };
 
-        let gpu_kernel = match CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone())
+        let gpu_kernel = match CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone(), rt.device_info().clone())
             .build()
         {
             Ok(k) => k,
