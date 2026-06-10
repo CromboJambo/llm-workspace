@@ -130,17 +130,17 @@ pub struct CudaGemmKernel {
 /// Builder for CudaGemmKernel that handles PTX loading and kernel resolution.
 pub struct CudaGemmKernelBuilder {
     arch: GemmArch,
-    context: Arc<CudaContext>,
+    context: Arc<cuda_core::CudaContext>,
     stream: Arc<cuda_core::CudaStream>,
-    device_info: CudaDeviceInfo,
+    device_info: crate::cuda_runtime::CudaDeviceInfo,
 }
 
 impl CudaGemmKernelBuilder {
     pub fn new(
         arch: GemmArch,
-        context: Arc<CudaContext>,
+        context: Arc<cuda_core::CudaContext>,
         stream: Arc<cuda_core::CudaStream>,
-        device_info: CudaDeviceInfo,
+        device_info: crate::cuda_runtime::CudaDeviceInfo,
     ) -> Self {
         Self {
             arch,
