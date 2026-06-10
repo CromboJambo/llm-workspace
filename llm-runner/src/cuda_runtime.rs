@@ -373,6 +373,75 @@ pub fn device_count() -> usize {
     }
 }
 
+// =============================================================================
+// Memory Allocation Wrappers (Phase 2)
+// =============================================================================
+
+/// Allocate device memory.
+///
+/// Wraps `cuMemAlloc_v2` to provide a safe interface for GPU buffer allocation.
+pub fn allocate_device_memory(size_in_bytes: usize) -> Result<*mut u8, CudaError> {
+    let mut dptr: u64 = 0;
+    unsafe {
+        cuda_sys::cuMemAlloc_v2(&mut dptr, size_in_bytes)
+            .result()
+            .map_err(|_| CudaError::DriverError(0))?;
+        Ok(dptr as *mut u8)
+    }
+}
+
+/// Free device memory.
+///
+/// Wraps `cuMemFree_v2` to release previously allocated GPU buffers.
+pub fn free_device_memory(ptr: *mut u8) -> Result<(), CudaError> {
+    unsafe {
+        cuda_sys::cuMemFree_v2(ptr as u64)
+            .result()
+            .map_err(|_| CudaError::DriverError(0))?;
+        Ok(())
+    }
+}
+
+/// Copy data from host to device.
+///
+/// Wraps `cuMemcpyHtoD_v2` for synchronous H2D transfers.
+pub fn copy_host_to_device(
+    dst_device_ptr: *mut u8,
+    src_host_ptr: *const u8,
+    size_in_bytes: usize,
+) -> Result<(), CudaError> {
+    unsafe {
+        cuda_sys::cuMemcpyHtoD_v2(
+            dst_device_ptr as u64,
+            src_host_ptr as *const std::os::raw::c_void,
+            size_in_bytes,
+        )
+        .result()
+        .map_err(|_| CudaError::DriverError(0))?;
+        Ok(())
+    }
+}
+
+/// Copy data from device to host.
+///
+/// Wraps `cuMemcpyDtoH_v2` for synchronous D2H transfers.
+pub fn copy_device_to_host(
+    dst_host_ptr: *mut u8,
+    src_device_ptr: *const u8,
+    size_in_bytes: usize,
+) -> Result<(), CudaError> {
+    unsafe {
+        cuda_sys::cuMemcpyDtoH_v2(
+            dst_host_ptr as *mut std::os::raw::c_void,
+            src_device_ptr as u64,
+            size_in_bytes,
+        )
+        .result()
+        .map_err(|_| CudaError::DriverError(0))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,5 +537,96 @@ mod tests {
     fn device_count_returns_non_negative() {
         let count = device_count();
         assert!(count >= 0);
+    }
+
+    // =============================================================================
+    // Phase 2: Memory Path Verification Tests
+    // =============================================================================
+
+    #[test]
+    fn test_device_memory_allocation_and_free() {
+        // Initialize CUDA driver
+        unsafe {
+            cuda_core::init(0).expect("Failed to initialize CUDA");
+        };
+
+        // Allocate 64 bytes of device memory
+        let d_ptr = allocate_device_memory(64).expect("Failed to allocate device memory");
+        assert!(!d_ptr.is_null(), "Device pointer should not be null");
+
+        // Verify it can be freed without error
+        free_device_memory(d_ptr).expect("Failed to free device memory");
+    }
+
+    #[test]
+    fn test_host_to_device_copy() {
+        // Initialize CUDA driver
+        unsafe {
+            cuda_core::init(0).expect("Failed to initialize CUDA");
+        };
+
+        let size = 64; // bytes
+        let mut host_data = vec![0u8; size];
+        for (i, val) in host_data.iter_mut().enumerate() {
+            *val = (i % 256) as u8;
+        }
+
+        // Allocate device memory
+        let d_ptr = allocate_device_memory(size).expect("Failed to allocate device memory");
+
+        // Copy host to device
+        copy_host_to_device(d_ptr, host_data.as_ptr(), size)
+            .expect("Failed to copy host to device");
+
+        // Copy back to a new buffer
+        let mut d2h_buffer = vec![0u8; size];
+        copy_device_to_host(d2h_buffer.as_mut_ptr(), d_ptr, size)
+            .expect("Failed to copy device to host");
+
+        // Verify against original
+        assert_eq!(host_data, d2h_buffer, "H2D/D2H copy mismatch");
+
+        // Cleanup
+        free_device_memory(d_ptr).expect("Failed to free device memory");
+    }
+
+    #[test]
+    fn test_f32_roundtrip_verification() {
+        // This test verifies the memory path using f32 values, comparable to CPU kernel outputs
+        unsafe {
+            cuda_core::init(0).expect("Failed to initialize CUDA");
+            // Ensure a context is active on device 0 for cuMemAlloc to work
+            let _ctx = cuda_core::CudaContext::new(0).expect("Failed to create CUDA context");
+        };
+
+        const N: usize = 1024;
+        let h_data: Vec<f32> = (0..N).map(|i| (i as f32) * 0.1).collect();
+        let size = N * std::mem::size_of::<f32>();
+
+        // Allocate device memory
+        let d_ptr = allocate_device_memory(size).expect("Failed to allocate device memory");
+
+        // Copy host to device
+        copy_host_to_device(d_ptr, h_data.as_ptr() as *const u8, size)
+            .expect("Failed to copy host to device");
+
+        // Copy back to a new buffer
+        let mut d2h_data = vec![0.0f32; N];
+        copy_device_to_host(d2h_data.as_mut_ptr() as *mut u8, d_ptr, size)
+            .expect("Failed to copy device to host");
+
+        // Verify against original (CPU known state)
+        for (i, (h, d)) in h_data.iter().zip(d2h_data.iter()).enumerate() {
+            assert!(
+                (h - d).abs() < 1e-5,
+                "Mismatch at index {}: h={}, d={}",
+                i,
+                h,
+                d
+            );
+        }
+
+        // Cleanup
+        free_device_memory(d_ptr).expect("Failed to free device memory");
     }
 }
