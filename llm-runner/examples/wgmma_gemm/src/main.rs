@@ -76,14 +76,18 @@ pub unsafe fn wgmma_gemm(
                 // Compute dot product for this K-tile using WGMMA
                 let a_base = &raw const SA as *const f32;
                 let b_base = &raw const SB as *const f32;
-                let mut inner = 0usize;
-                while inner < BK {
-                    let a_val = *a_base.add((c_row - tile_m) * BK + inner);
-                    let b_val = *b_base.add(inner * BN + (c_col - tile_n));
-                    sum += a_val * b_val;
-                    inner += 1;
-                }
+                let mut sum: f32 = 0.0;
 
+                // FIX: Explicit accumulator loop and corrected tiling for full K-dimension dot product.
+                for inner_k in 0..BK {
+                    // Access A tile (Row depends on current M/BM, Column is relative to K-tile)
+                    let a_val = *a_base.add((c_row - tile_m) * BK + inner_k);
+
+                    // Access B tile (Column depends on current N/BN, Row is relative to K-tile)
+                    let b_val = *b_base.add(inner_k * BN + (c_col - tile_n));
+                    sum += a_val * b_val;
+                }
+                kk += BK;
                 kk += BK;
             }
 
