@@ -20,7 +20,7 @@ nursery = "warn"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "AGPL 3 or Later"
 authors = ["CrabJar Contributors"]
 description = "LLM inference stack: runner, plug-in protocol, safetensors, GGUF parser"
 
