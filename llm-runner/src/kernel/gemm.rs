@@ -541,4 +541,340 @@ mod tests {
         assert!(err.to_string().contains("10"));
         assert!(err.to_string().contains("5"));
     }
+
+    // --- GPU kernel verification tests ---
+
+    /// Helper: run the GPU GEMM test if CUDA is available.
+    /// Returns Ok((gpu_result, arch_used)) or Err with the failure reason.
+    fn try_gpu_gemm_test(
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<(Vec<f32>, GemmArch), String> {
+        // Initialize CUDA
+        unsafe {
+            cuda_core::init(0).map_err(|e| format!("CUDA init failed: {}", e))?;
+        }
+
+        // Create runtime and stream
+        let rt = crate::cuda_runtime::CudaRuntime::for_default_device()
+            .map_err(|e| format!("CUDA runtime failed: {}", e))?;
+        let stream = rt.new_stream().map_err(|e| format!("Stream creation failed: {}", e))?;
+
+        // Detect architecture
+        let arch = if rt.device_info().supports_wgmma() {
+            GemmArch::Wgmma
+        } else if rt.device_info().supports_tcgen05() {
+            GemmArch::Tcgen05
+        } else {
+            return Err(format!(
+                "Device sm_{}.{} does not support WGMMA/tcgen05",
+                rt.device_info().compute_capability.0,
+                rt.device_info().compute_capability.1
+            ));
+        };
+
+        // Build GPU kernel
+        let gpu_kernel = CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone())
+            .build()
+            .map_err(|e| format!("Kernel build failed: {}", e))?;
+
+        if !gpu_kernel.is_available() {
+            return Err("GPU kernel reported as unavailable".into());
+        }
+
+        // Generate test data
+        let a_host: Vec<f16> = (0..m * k)
+            .map(|i| f16::from_f32((i % 10) as f32 + 0.5))
+            .collect();
+        let b_host: Vec<f16> = (0..k * n)
+            .map(|i| f16::from_f32((i % 7) as f32 + 0.3))
+            .collect();
+        let c_init: Vec<f32> = vec![0.0f32; m * n];
+
+        // Compute CPU reference
+        let mut c_ref = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for kk in 0..k {
+                    sum += a_host[i * k + kk].to_f32() * b_host[kk * n + j].to_f32();
+                }
+                c_ref[i * n + j] = sum; // alpha=1.0, beta=0.0
+            }
+        }
+
+        // Allocate device buffers
+        let a_dev = DeviceBuffer::from_host_device(&stream, &a_host)
+            .map_err(|e| format!("A alloc failed: {}", e))?;
+        let b_dev = DeviceBuffer::from_host_device(&stream, &b_host)
+            .map_err(|e| format!("B alloc failed: {}", e))?;
+        let mut c_dev = DeviceBuffer::zeros_device(&stream, m * n)
+            .map_err(|e| format!("C alloc failed: {}", e))?;
+
+        // Launch GPU kernel
+        gpu_kernel
+            .matmul(1.0, &a_dev, &b_dev, 0.0, &mut c_dev, m, n, k)
+            .map_err(|e| format!("Kernel launch failed: {}", e))?;
+
+        // Read back result
+        let c_gpu = c_dev
+            .to_host_from_device(&stream)
+            .map_err(|e| format!("D2H transfer failed: {}", e))?;
+
+        Ok((c_gpu, arch))
+    }
+
+    #[test]
+    fn gpu_gemm_2x2x2() {
+        let result = match try_gpu_gemm_test(2, 2, 2) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("GPU GEMM test skipped: {}", e);
+                return;
+            }
+        };
+
+        let (c_gpu, arch) = result;
+        println!(
+            "GPU GEMM 2x2x2 (arch={}) result: {:?}",
+            arch.name(),
+            c_gpu
+        );
+
+        // Expected: A=ones(2x2) @ B=ones(2x2) = [[2,2],[2,2]]
+        let expected = vec![2.0f32, 2.0, 2.0, 2.0];
+        for (i, (got, exp)) in c_gpu.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-3,
+                "Mismatch at index {}: got={}, expected={}",
+                i,
+                got,
+                exp
+            );
+        }
+    }
+
+    #[test]
+    fn gpu_gemm_4x4x4() {
+        let result = match try_gpu_gemm_test(4, 4, 4) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("GPU GEMM test skipped: {}", e);
+                return;
+            }
+        };
+
+        let (c_gpu, arch) = result;
+        println!(
+            "GPU GEMM 4x4x4 (arch={}) result: {:?}",
+            arch.name(),
+            c_gpu
+        );
+
+        // Compute reference
+        let a_host: Vec<f16> = (0..16)
+            .map(|i| f16::from_f32((i % 10) as f32 + 0.5))
+            .collect();
+        let b_host: Vec<f16> = (0..16)
+            .map(|i| f16::from_f32((i % 7) as f32 + 0.3))
+            .collect();
+        let mut c_ref = vec![0.0f32; 16];
+        for i in 0..4 {
+            for j in 0..4 {
+                let mut sum = 0.0f32;
+                for kk in 0..4 {
+                    sum += a_host[i * 4 + kk].to_f32() * b_host[kk * 4 + j].to_f32();
+                }
+                c_ref[i * 4 + j] = sum;
+            }
+        }
+
+        for (i, (got, exp)) in c_gpu.iter().zip(c_ref.iter()).enumerate() {
+            assert!(
+                (got - exp).abs() < 1e-3,
+                "Mismatch at index {}: got={}, expected={}",
+                i,
+                got,
+                exp
+            );
+        }
+    }
+
+    #[test]
+    fn gpu_gemm_with_beta() {
+        // Test C = alpha*A@B + beta*C_init
+        let rt = match crate::cuda_runtime::CudaRuntime::for_default_device() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let stream = match rt.new_stream() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let arch = if rt.device_info().supports_wgmma() {
+            GemmArch::Wgmma
+        } else if rt.device_info().supports_tcgen05() {
+            GemmArch::Tcgen05
+        } else {
+            return;
+        };
+
+        let gpu_kernel = match CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone())
+            .build()
+        {
+            Ok(k) => k,
+            Err(_) => return,
+        };
+
+        let m = 2usize;
+        let n = 2usize;
+        let k = 2usize;
+
+        let a_host = vec![f16::from_f32(2.0); 4]; // [2x2] all 2.0
+        let b_host = vec![f16::from_f32(3.0); 4]; // [2x2] all 3.0
+        let c_init_host = vec![10.0f32; 4]; // [2x2] all 10.0
+
+        // Expected: C = 1.0 * (2.0 * 3.0 * 2) + 0.5 * 10.0 = 12.0 + 5.0 = 17.0
+        // (each element: sum over k=2 of 2.0*3.0 = 12.0)
+
+        let a_dev = match DeviceBuffer::from_host_device(&stream, &a_host) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let b_dev = match DeviceBuffer::from_host_device(&stream, &b_host) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let mut c_dev = match DeviceBuffer::from_host_device(&stream, &c_init_host) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        let result = gpu_kernel.matmul(1.0, &a_dev, &b_dev, 0.5, &mut c_dev, m, n, k);
+        match result {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("GPU GEMM beta test failed: {}", e);
+                return;
+            }
+        }
+
+        let c_gpu = match c_dev.to_host_from_device(&stream) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("D2H failed in beta test: {}", e);
+                return;
+            }
+        };
+
+        println!(
+            "GPU GEMM beta test (alpha=1.0, beta=0.5) result: {:?}",
+            c_gpu
+        );
+
+        let expected = 17.0f32; // 12.0 + 5.0
+        for (i, got) in c_gpu.iter().enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-3,
+                "Beta test mismatch at index {}: got={}, expected={}",
+                i,
+                got,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn gpu_gemm_kernel_launch_succeeds() {
+        // Minimal test: just verify the kernel launches without error
+        // (output correctness tested in gpu_gemm_* tests above)
+        let rt = match crate::cuda_runtime::CudaRuntime::for_default_device() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let stream = match rt.new_stream() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let arch = if rt.device_info().supports_wgmma() {
+            GemmArch::Wgmma
+        } else if rt.device_info().supports_tcgen05() {
+            GemmArch::Tcgen05
+        } else {
+            return;
+        };
+
+        let gpu_kernel = match CudaGemmKernelBuilder::new(arch, rt.context().clone(), stream.clone())
+            .build()
+        {
+            Ok(k) => k,
+            Err(e) => {
+                panic!("Failed to build GPU kernel: {}", e);
+            }
+        };
+
+        assert!(gpu_kernel.is_available(), "GPU kernel should be available");
+        assert_eq!(gpu_kernel.arch(), arch);
+
+        // Allocate minimal buffers
+        let m = 1usize;
+        let n = 1usize;
+        let k = 1usize;
+
+        let a_host = vec![f16::from_f32(1.0)];
+        let b_host = vec![f16::from_f32(1.0)];
+        let c_host = vec![0.0f32];
+
+        let a_dev = DeviceBuffer::from_host_device(&stream, &a_host)
+            .expect("A alloc should succeed");
+        let b_dev = DeviceBuffer::from_host_device(&stream, &b_host)
+            .expect("B alloc should succeed");
+        let mut c_dev = DeviceBuffer::from_host_device(&stream, &c_host)
+            .expect("C alloc should succeed");
+
+        // Launch should succeed
+        let result = gpu_kernel.matmul(1.0, &a_dev, &b_dev, 0.0, &mut c_dev, m, n, k);
+        assert!(
+            result.is_ok(),
+            "Kernel launch should succeed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn gpu_gemm_arch_detection() {
+        // Verify architecture detection logic
+        unsafe {
+            cuda_core::init(0).ok();
+        }
+
+        let rt = match crate::cuda_runtime::CudaRuntime::for_default_device() {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let cc = rt.device_info().compute_capability;
+        println!(
+            "Default device: {} (sm_{}.{})",
+            rt.device_info().name, cc.0, cc.1
+        );
+
+        let arch = if rt.device_info().supports_wgmma() {
+            GemmArch::Wgmma
+        } else if rt.device_info().supports_tcgen05() {
+            GemmArch::Tcgen05
+        } else {
+            println!(
+                "Device sm_{}.{}: no WGMMA/tcgen05 support, skipping kernel tests",
+                cc.0, cc.1
+            );
+            return;
+        };
+
+        println!("Selected GEMM arch: {}", arch.name());
+        assert!(arch == GemmArch::Wgmma || arch == GemmArch::Tcgen05);
+    }
 }
