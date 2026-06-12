@@ -4,7 +4,7 @@ members = [
     "llm-plug-in",
     "safetensors",
     "gguf",
-    "gguf-cli",
+    "gguf-cli", "cuda-oxide",
 ]
 resolver = "2"
 
