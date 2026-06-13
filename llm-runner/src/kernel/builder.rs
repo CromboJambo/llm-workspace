@@ -300,51 +300,68 @@ impl GemmKernel for KernelFromPtx {
                     .map_err(|e| GemmError::LaunchFailed(e.to_string()))?;
 
                 // Convert device buffers to cuda-core format
-                let dev_a = match a {
-                    DeviceBuffer::Cuda(buf) => buf.clone(),
-                    _ => {
-                        // Host buffer — need to allocate on device first
-                        let buf = cuda_core::DeviceBuffer::from_host(
-                            stream,
-                            a.as_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
-                                expected: a_expected,
-                                got: 0,
-                            })?,
+                let dev_a = if a.is_backed() {
+                    let buf = unsafe {
+                        cuda_core::DeviceBuffer::from_raw_parts(
+                            a.device_ptr() as cuda_core::sys::CUdeviceptr,
+                            a.len(),
+                            stream.context().clone(),
                         )
-                        .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
-                        Arc::new(buf)
-                    }
+                    };
+                    Arc::new(buf)
+                } else {
+                    let buf = cuda_core::DeviceBuffer::from_host(
+                        stream,
+                        a.as_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
+                            expected: a_expected,
+                            got: 0,
+                        })?,
+                    )
+                    .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
+                    Arc::new(buf)
                 };
 
-                let dev_b = match b {
-                    DeviceBuffer::Cuda(buf) => buf.clone(),
-                    _ => {
-                        let buf = cuda_core::DeviceBuffer::from_host(
-                            stream,
-                            b.as_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
-                                expected: b_expected,
-                                got: 0,
-                            })?,
+                let dev_b = if b.is_backed() {
+                    let buf = unsafe {
+                        cuda_core::DeviceBuffer::from_raw_parts(
+                            b.device_ptr() as cuda_core::sys::CUdeviceptr,
+                            b.len(),
+                            stream.context().clone(),
                         )
-                        .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
-                        Arc::new(buf)
-                    }
+                    };
+                    Arc::new(buf)
+                } else {
+                    let buf = cuda_core::DeviceBuffer::from_host(
+                        stream,
+                        b.as_slice().ok_or_else(|| GemmError::BufferSizeMismatch {
+                            expected: b_expected,
+                            got: 0,
+                        })?,
+                    )
+                    .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
+                    Arc::new(buf)
                 };
 
-                let mut dev_c = match c {
-                    DeviceBuffer::Cuda(buf) => buf.clone(),
-                    _ => {
-                        let buf = cuda_core::DeviceBuffer::from_host(
-                            stream,
-                            c.as_mut_slice()
-                                .ok_or_else(|| GemmError::BufferSizeMismatch {
-                                    expected: c_expected,
-                                    got: 0,
-                                })?,
+                let mut dev_c = if c.is_backed() {
+                    let buf = unsafe {
+                        cuda_core::DeviceBuffer::from_raw_parts(
+                            c.device_ptr() as cuda_core::sys::CUdeviceptr,
+                            c.len(),
+                            stream.context().clone(),
                         )
-                        .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
-                        Arc::new(buf)
-                    }
+                    };
+                    Arc::new(buf)
+                } else {
+                    let buf = cuda_core::DeviceBuffer::from_host(
+                        stream,
+                        c.as_mut_slice()
+                            .ok_or_else(|| GemmError::BufferSizeMismatch {
+                                expected: c_expected,
+                                got: 0,
+                            })?,
+                    )
+                    .map_err(|e| GemmError::LaunchFailed(format!("H2D alloc failed: {e}")))?;
+                    Arc::new(buf)
                 };
 
                 // Calculate grid/block dimensions
@@ -386,7 +403,7 @@ impl GemmKernel for KernelFromPtx {
                     .map_err(|e| GemmError::LaunchFailed(format!("Synchronize failed: {e}")))?;
 
                 // Copy result back if c was a host buffer
-                if !matches!(c, DeviceBuffer::Cuda(..)) {
+                if !c.is_backed() {
                     if let Ok(host_c) = dev_c.to_host_vec(stream) {
                         if let Some(slice) = c.as_mut_slice() {
                             for (i, val) in host_c.iter().enumerate().take(slice.len()) {
