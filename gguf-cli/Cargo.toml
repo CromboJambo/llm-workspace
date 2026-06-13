@@ -3,7 +3,7 @@ name = "pesti-gguf-cli"
 publish = false
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-or-later"
 authors = ["PESTI Contributors"]
 description = "CLI tool to inspect GGUF model files: header, metadata, tensor list, quantization info"
 

@@ -126,4 +126,4 @@ llm-workspace/
 
 ## License
 
-MIT OR Apache-2.0 (except `gguf/` which is AGPL-3.0-or-later)
+AGPL-3.0-or-later
