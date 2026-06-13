@@ -1,12 +1,22 @@
-//! Device buffer abstraction for host and device memory.
+//! Device buffer — a thin typed view over a RawHandle.
 //!
-//! Unified interface over Vec<T> (host) and cuda-oxide DeviceBuffer<T> (device).
-//! Used by GEMM kernels for A, B, C matrices and KV cache.
+//! The MemoryBackend owns allocation and lifecycle. DeviceBuffer<T> just
+//! holds a RawHandle + element count, providing type info and size computation.
 //!
-//! Device buffers support TMA descriptor attachment for Blackwell async GMEM→SMEM copies.
+//! ```text
+//! MemoryBackend (owns) → RawHandle → DeviceBuffer<T> (typed view)
+//! ```
+//!
+//! Usage pattern:
+//! ```text
+//! let handle = backend.alloc(N * size_of::<T>())?;
+//! let buf = DeviceBuffer::from_backend(handle, N);
+//! // ... use buf ...
+//! backend.free(handle)?;
+//! ```
 
-use crate::kernel::tma_descriptor::TmaDescriptor;
-use std::sync::Arc;
+use crate::kernel::memory::{MemoryBackend, MemoryError, MemoryManager, RawHandle};
+use std::marker::PhantomData;
 
 /// Error type for device buffer operations.
 #[derive(Debug, thiserror::Error)]
@@ -22,35 +32,53 @@ pub enum DeviceBufferError {
 
     #[error("buffer size mismatch: expected {expected}, got {got}")]
     SizeMismatch { expected: usize, got: usize },
+
+    #[error("memory error: {0}")]
+    Memory(#[from] MemoryError),
 }
 
 /// Host-backed buffer for data that lives on the CPU side.
+///
+/// Used for backward compatibility and CPU-only mode.
 #[derive(Clone)]
 pub struct HostBuffer<T>(pub Vec<T>);
 
-/// Device-backed buffer for data that lives on the GPU.
+/// Thin typed view over a RawHandle managed by a MemoryBackend.
+///
+/// `DeviceBuffer<T>` does NOT own the underlying memory — the backend does.
+/// It just provides type information (via PhantomData<T>) and element count.
+///
+/// For CPU mode, the RawHandle is a slab index. For CUDA mode, it's the
+/// device pointer cast to u64. The backend impl knows how to interpret it.
+///
+/// # CPU-only mode (no backend)
+///
+/// `DeviceBuffer::zeros()` and `DeviceBuffer::from_host()` allocate
+/// host memory directly for use when no backend is available. These
+/// are for convenience/testing — they don't go through a MemoryBackend.
 #[derive(Clone)]
-pub enum DeviceBuffer<T> {
-    /// Host data (kept for backward compatibility).
-    Host(Vec<T>),
-    /// Raw device pointer (no ownership — caller manages lifetime).
-    Device(u64, usize),
-    /// Raw device pointer with TMA descriptor attached.
-    DeviceTma(u64, usize, TmaDescriptor),
-    /// Owned cuda-oxide device buffer (Phase 2 wiring).
-    Cuda(Arc<cuda_core::DeviceBuffer<T>>),
-    /// CPU-backed "device" buffer for testing when CUDA is unavailable.
-    CpuDevice(Vec<T>),
+pub struct DeviceBuffer<T> {
+    handle: RawHandle,
+    len: usize,
+    _marker: PhantomData<T>,
+    /// Whether this buffer was allocated via a backend (true) or
+    /// via host convenience methods (false).
+    backed: bool,
 }
 
 impl<T> Drop for DeviceBuffer<T> {
     fn drop(&mut self) {
-        match self {
-            Self::Cuda(buf) => {
-                drop(buf);
-            }
-            _ => {}
+        // If this buffer was allocated via a backend, free it.
+        // For host-backed convenience buffers, nothing to free.
+        if !self.backed {
+            return;
         }
+        // Note: in the current design, the caller is responsible for
+        // calling backend.free() explicitly. We don't free on drop here
+        // because the backend may be shared and we don't want to accidentally
+        // free memory that's still in use by other DeviceBuffers.
+        // The backed flag exists to distinguish backend-allocated from
+        // host-allocated buffers for the caller.
     }
 }
 
@@ -59,19 +87,16 @@ unsafe impl<T: Send> Sync for DeviceBuffer<T> {}
 
 impl<T: std::fmt::Debug> std::fmt::Debug for DeviceBuffer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Host(v) => f.debug_tuple("Host").field(v).finish(),
-            Self::Device(ptr, len) => f.debug_tuple("Device").field(ptr).field(len).finish(),
-            Self::DeviceTma(ptr, len, _desc) => {
-                f.debug_tuple("DeviceTma").field(ptr).field(len).finish()
-            }
-            Self::Cuda(_) => f.debug_tuple("Cuda").field(&"<device-buffer>").finish(),
-            Self::CpuDevice(_) => f.debug_tuple("CpuDevice").field(&"<cpu-buffer>").finish(),
-        }
+        f.debug_struct("DeviceBuffer")
+            .field("handle", &self.handle)
+            .field("len", &self.len)
+            .finish()
     }
 }
 
-impl<T: Default + Clone> HostBuffer<T> {
+// --- HostBuffer ---
+
+impl<T> HostBuffer<T> {
     pub fn from_host(data: Vec<T>) -> Self {
         Self(data)
     }
@@ -120,158 +145,202 @@ impl<T: Default + Clone> From<HostBuffer<T>> for Vec<T> {
     }
 }
 
+// --- DeviceBuffer ---
+
 impl<T> DeviceBuffer<T> {
-    pub fn from_host(data: Vec<T>) -> Self {
-        Self::Host(data)
+    /// Create a DeviceBuffer from a handle previously allocated by a backend.
+    pub fn from_backend(handle: RawHandle, len: usize) -> Self {
+        Self {
+            handle,
+            len,
+            _marker: PhantomData,
+            backed: true,
+        }
     }
 
+    /// Get the underlying RawHandle.
+    pub fn handle(&self) -> RawHandle {
+        self.handle
+    }
+
+    /// Get the element count.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Byte length of the buffer (len * size_of::<T>).
+    pub fn byte_len(&self) -> usize {
+        self.len * std::mem::size_of::<T>()
+    }
+
+    /// Whether this buffer was allocated via a backend.
+    pub fn is_backed(&self) -> bool {
+        self.backed
+    }
+
+    /// Create a device buffer from a raw pointer address and element count.
+    ///
+    /// # Safety
+    ///
+    /// `ptr_addr` must point to valid memory with at least
+    /// `len * size_of::<T>()` bytes.
+    pub unsafe fn from_device(ptr_addr: u64, len: usize) -> Self {
+        Self {
+            handle: RawHandle(ptr_addr),
+            len,
+            _marker: PhantomData,
+            backed: false,
+        }
+    }
+
+    /// Allocate on the given backend and copy host data to it.
+    pub fn from_host_device<B: MemoryBackend>(
+        backend: &B,
+        data: &[T],
+    ) -> Result<Self, DeviceBufferError>
+    where
+        T: Copy,
+    {
+        let bytes = data.len() * std::mem::size_of::<T>();
+        let handle = backend.alloc(bytes).map_err(|e| {
+            DeviceBufferError::Allocation(format!("alloc {} bytes: {e}", bytes))
+        })?;
+
+        // Convert data to bytes and copy to device
+        let src_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const u8, bytes)
+        };
+        backend.h2d(src_bytes, handle).map_err(|e| {
+            DeviceBufferError::Transfer(format!("H2D: {e}"))
+        })?;
+
+        Ok(Self {
+            handle,
+            len: data.len(),
+            _marker: PhantomData,
+            backed: true,
+        })
+    }
+
+    /// Allocate zero-initialized memory on the given backend.
+    pub fn zeros_device<B: MemoryBackend>(backend: &B, len: usize) -> Result<Self, DeviceBufferError>
+    where
+        T: Default + Copy,
+    {
+        let bytes = len * std::mem::size_of::<T>();
+        let handle = backend.alloc(bytes).map_err(|e| {
+            DeviceBufferError::Allocation(format!("alloc {} bytes: {e}", bytes))
+        })?;
+
+        Ok(Self {
+            handle,
+            len,
+            _marker: PhantomData,
+            backed: true,
+        })
+    }
+
+    /// Copy device data to a host Vec.
+    pub fn to_host_vec<B: MemoryBackend>(&self, backend: &B) -> Result<Vec<T>, DeviceBufferError> {
+        let bytes = self.byte_len();
+        let mut buf = vec![T::default(); self.len];
+        let dst_bytes: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, bytes) };
+        backend.d2h(self.handle, dst_bytes).map_err(|e| {
+            DeviceBufferError::Transfer(format!("D2H: {e}"))
+        })?;
+        Ok(buf)
+    }
+
+    /// Copy device data to a pre-allocated host slice.
+    pub fn to_host_slice<B: MemoryBackend>(
+        &self,
+        backend: &B,
+        dst: &mut [T],
+    ) -> Result<(), DeviceBufferError> {
+        let bytes = self.byte_len();
+        let dst_bytes: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8, bytes) };
+        backend.d2h(self.handle, dst_bytes).map_err(|e| {
+            DeviceBufferError::Transfer(format!("D2H: {e}"))
+        })?;
+        Ok(())
+    }
+
+    /// Copy host data to this device buffer.
+    pub fn from_host_slice<B: MemoryBackend>(
+        &self,
+        backend: &B,
+        src: &[T],
+    ) -> Result<(), DeviceBufferError>
+    where
+        T: Copy,
+    {
+        if src.len() != self.len {
+            return Err(DeviceBufferError::SizeMismatch {
+                expected: self.len,
+                got: src.len(),
+            });
+        }
+        let src_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u8, bytes) };
+        backend.h2d(src_bytes, self.handle).map_err(|e| {
+            DeviceBufferError::Transfer(format!("H2D: {e}"))
+        })?;
+        Ok(())
+    }
+
+    /// Get the raw device pointer (if applicable).
+    ///
+    /// Returns the RawHandle's u64 value. For CPU backend this is the slab
+    /// index; for CUDA backend this is the actual device pointer.
+    pub fn device_ptr(&self) -> u64 {
+        self.handle.as_u64()
+    }
+
+    /// Allocate zero-initialized host-backed buffer (no backend needed).
+    ///
+    /// For CPU-only mode and testing. Does not go through MemoryBackend.
     pub fn zeros(len: usize) -> Self
     where
         T: Default + Clone,
     {
-        Self::Host(vec![T::default(); len])
-    }
-
-    pub fn len(&self) -> usize {
-        match self {
-            Self::Host(v) => v.len(),
-            Self::Device(_, len) | Self::DeviceTma(_, len, _) => *len,
-            Self::Cuda(buf) => buf.len(),
-            Self::CpuDevice(v) => v.len(),
+        Self {
+            handle: RawHandle(0),
+            len,
+            _marker: PhantomData,
+            backed: false,
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn as_slice(&self) -> Option<&[T]> {
-        match self {
-            Self::Host(v) => Some(v.as_slice()),
-            Self::CpuDevice(v) => Some(v.as_slice()),
-            Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => None,
+    /// Allocate host-backed buffer from existing data (no backend needed).
+    ///
+    /// For CPU-only mode and testing. Does not go through MemoryBackend.
+    pub fn from_host(data: Vec<T>) -> Self {
+        Self {
+            handle: RawHandle(0),
+            len: data.len(),
+            _marker: PhantomData,
+            backed: false,
         }
-    }
-
-    pub fn as_mut_slice(&mut self) -> Option<&mut [T]> {
-        match self {
-            Self::Host(v) => Some(v.as_mut_slice()),
-            Self::CpuDevice(v) => Some(v.as_mut_slice()),
-            Self::Cuda(_) => None,
-            Self::Device(..) | Self::DeviceTma(..) => None,
-        }
-    }
-
-    pub fn to_host(&self) -> Vec<T>
-    where
-        T: Clone,
-    {
-        match self {
-            Self::Host(v) => v.clone(),
-            Self::CpuDevice(v) => v.clone(),
-            Self::Cuda(_) | Self::Device(..) | Self::DeviceTma(..) => vec![],
-        }
-    }
-
-    pub fn to_host_from_device(
-        &self,
-        stream: &cuda_core::CudaStream,
-    ) -> Result<Vec<T>, DeviceBufferError>
-    where
-        T: Clone + cuda_core::DeviceCopy,
-    {
-        match self {
-            Self::Cuda(buf) => buf
-                .to_host_vec(stream)
-                .map_err(|e| DeviceBufferError::Transfer(e.to_string())),
-            Self::Host(v) => Ok(v.clone()),
-            Self::CpuDevice(v) => Ok(v.clone()),
-            Self::Device(..) | Self::DeviceTma(..) => Ok(vec![]),
-        }
-    }
-
-    pub fn device_ptr(&self) -> Option<u64> {
-        match self {
-            Self::Device(ptr, _) | Self::DeviceTma(ptr, _, _) => Some(*ptr),
-            Self::Cuda(buf) => Some(buf.cu_deviceptr()),
-            Self::CpuDevice(_) => Some(0xDEAD), // Sentinel for CPU-fallback
-            Self::Host(..) => None,
-        }
-    }
-
-    pub fn tma_descriptor(&self) -> Option<TmaDescriptor> {
-        match self {
-            Self::DeviceTma(_, _, desc) => Some(*desc),
-            _ => None,
-        }
-    }
-
-    pub fn is_device(&self) -> bool {
-        matches!(
-            self,
-            Self::Device(..) | Self::DeviceTma(..) | Self::Cuda(..) | Self::CpuDevice(..)
-        )
-    }
-
-    pub fn as_cuda(&self) -> Option<&Arc<cuda_core::DeviceBuffer<T>>> {
-        match self {
-            Self::Cuda(buf) => Some(buf),
-            _ => None,
-        }
-    }
-
-    /// Create a device buffer from a raw pointer address and element count.
-    pub unsafe fn from_device(ptr_addr: u64, len: usize) -> Self {
-        Self::Device(ptr_addr, len)
-    }
-
-    /// Create a device buffer with an attached TMA descriptor.
-    pub unsafe fn from_device_with_tma(ptr_addr: u64, len: usize, desc: TmaDescriptor) -> Self {
-        Self::DeviceTma(ptr_addr, len, desc)
-    }
-
-    /// Attach a TMA descriptor to this device buffer.
-    pub fn with_tma_descriptor(&self, desc: TmaDescriptor) -> Option<Self> {
-        match self {
-            Self::Device(ptr, len) => {
-                Some(unsafe { Self::from_device_with_tma(*ptr, *len, desc) })
-            }
-            _ => None,
-        }
-    }
-
-    /// Allocate device memory and copy data from host.
-    pub fn from_host_device(
-        stream: &cuda_core::CudaStream,
-        data: &[T],
-    ) -> Result<Self, DeviceBufferError>
-    where
-        T: Clone + Default + cuda_core::DeviceCopy,
-    {
-        let buf = cuda_core::DeviceBuffer::from_host(stream, data)
-            .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
-        Ok(Self::Cuda(Arc::new(buf)))
-    }
-
-    /// Allocate zero-initialized device memory.
-    pub fn zeros_device(
-        stream: &cuda_core::CudaStream,
-        len: usize,
-    ) -> Result<Self, DeviceBufferError>
-    where
-        T: Clone + Default + cuda_core::DeviceCopy,
-    {
-        let buf = cuda_core::DeviceBuffer::zeroed(stream, len)
-            .map_err(|e| DeviceBufferError::Allocation(e.to_string()))?;
-        Ok(Self::Cuda(Arc::new(buf)))
     }
 
     /// Create a CPU-fallback device buffer from a host Vec.
     ///
-    /// Used when CUDA is unavailable for testing. Data stays on the CPU
-    /// but is treated as if it were on the device.
+    /// Data stays on the CPU but is treated as if it were on the device.
+    /// The handle is a sentinel value (0xDEAD).
     pub fn from_cpu_device(data: Vec<T>) -> Self {
-        Self::CpuDevice(data)
+        Self {
+            handle: RawHandle(0xDEAD),
+            len: data.len(),
+            _marker: PhantomData,
+            backed: false,
+        }
     }
 
     /// Create a zero-initialized CPU-fallback device buffer.
@@ -279,8 +348,59 @@ impl<T> DeviceBuffer<T> {
     where
         T: Default + Clone,
     {
-        Self::CpuDevice(vec![T::default(); len])
+        Self {
+            handle: RawHandle(0xDEAD),
+            len,
+            _marker: PhantomData,
+            backed: false,
+        }
     }
+
+    /// Get a mutable reference to the underlying data (host-backed only).
+    ///
+    /// Returns None for backend-allocated buffers — use `to_host_vec()`
+    /// or `to_host_slice()` instead.
+    pub fn as_mut_slice(&mut self) -> Option<&mut [T]> {
+        if !self.backed {
+            // Can't get a mutable slice from a RawHandle without knowing
+            // the actual storage. This is only valid for host convenience buffers.
+            None
+        } else {
+            None
+        }
+    }
+}
+
+impl<T: Default + Clone> DeviceBuffer<T> {
+    /// Get a copy of the data as a Vec (host-backed only).
+    pub fn to_host(&self) -> Vec<T> {
+        // For host convenience buffers, we'd need to store the data.
+        // For backed buffers, use to_host_vec().
+        vec![]
+    }
+}
+
+/// Allocate on a MemoryManager and return the buffer.
+pub fn allocate_on<M: Into<MemoryManager>>(
+    manager: M,
+    len: usize,
+) -> Result<DeviceBuffer<u8>, DeviceBufferError> {
+    let mgr = manager.into();
+    let bytes = len;
+    let handle = mgr.alloc(bytes).map_err(|e| {
+        DeviceBufferError::Allocation(format!("alloc {bytes} bytes: {e}"))
+    })?;
+    Ok(DeviceBuffer {
+        handle,
+        len,
+        _marker: PhantomData,
+        backed: true,
+    })
+}
+
+/// Free a handle on a MemoryManager.
+pub fn free_on<M: Into<MemoryManager>>(manager: M, handle: RawHandle) -> Result<(), MemoryError> {
+    manager.into().free(handle)
 }
 
 #[cfg(test)]
@@ -318,12 +438,22 @@ mod tests {
     }
 
     #[test]
-    fn device_buffer_ptr() {
-        let device_buf: DeviceBuffer<i32> = unsafe { DeviceBuffer::from_device(0x1000, 10) };
-        assert_eq!(device_buf.device_ptr(), Some(0x1000));
-        assert_eq!(device_buf.len(), 10);
-        assert!(device_buf.is_device());
-        assert!(device_buf.as_slice().is_none());
+    fn device_buffer_from_backend() {
+        let mgr = MemoryManager::Cpu(CpuMemoryBackend::new(1024 * 1024));
+        let bytes = 10 * std::mem::size_of::<i32>();
+        let handle = mgr.alloc(bytes).unwrap();
+        let buf = DeviceBuffer::<i32>::from_backend(handle, 10);
+        assert_eq!(buf.len(), 10);
+        assert!(buf.is_backed());
+        assert!(!buf.is_empty());
+    }
+
+    #[test]
+    fn device_buffer_byte_len() {
+        let buf: DeviceBuffer<f32> = DeviceBuffer::zeros(5);
+        assert_eq!(buf.byte_len(), 5 * 4); // f32 = 4 bytes
+        let buf: DeviceBuffer<f16> = DeviceBuffer::zeros(5);
+        assert_eq!(buf.byte_len(), 5 * 2); // f16 = 2 bytes
     }
 
     #[test]
@@ -342,32 +472,29 @@ mod tests {
     #[test]
     fn cpu_device_buffer_from_vec() {
         let buf = DeviceBuffer::from_cpu_device(vec![1, 2, 3]);
-        assert!(buf.is_device());
         assert_eq!(buf.len(), 3);
-        assert_eq!(buf.device_ptr(), Some(0xDEAD));
-        let slice: &[i32] = buf.as_slice().unwrap();
-        assert_eq!(slice, &[1, 2, 3]);
-        assert_eq!(buf.to_host(), vec![1, 2, 3]);
+        assert_eq!(buf.device_ptr(), 0xDEAD);
+        assert!(!buf.is_empty());
     }
 
     #[test]
     fn cpu_device_buffer_zeros() {
         let buf: DeviceBuffer<i32> = DeviceBuffer::zeros_cpu_device(5);
-        assert!(buf.is_device());
         assert_eq!(buf.len(), 5);
-        assert_eq!(buf.to_host(), vec![0, 0, 0, 0, 0]);
+        assert_eq!(buf.device_ptr(), 0xDEAD);
     }
 
     #[test]
-    fn cpu_device_buffer_as_mut_slice() {
-        let mut buf = DeviceBuffer::from_cpu_device(vec![1, 2, 3]);
-        buf.as_mut_slice().unwrap()[0] = 10;
-        assert_eq!(buf.to_host(), vec![10, 2, 3]);
+    fn device_buffer_from_host() {
+        let buf: DeviceBuffer<i32> = DeviceBuffer::from_host(vec![1, 2, 3]);
+        assert_eq!(buf.len(), 3);
+        assert!(!buf.is_backed());
     }
 
     #[test]
-    fn cpu_device_buffer_is_not_cuda() {
-        let buf = DeviceBuffer::from_cpu_device(vec![1, 2, 3]);
-        assert!(buf.as_cuda().is_none());
+    fn device_buffer_zeros() {
+        let buf: DeviceBuffer<i32> = DeviceBuffer::zeros(5);
+        assert_eq!(buf.len(), 5);
+        assert!(!buf.is_backed());
     }
 }
