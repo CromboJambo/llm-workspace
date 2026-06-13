@@ -1,46 +1,58 @@
 # llm-workspace
 
-LLM inference stack: runner, plug-in protocol, safetensors, GGUF parser.
+A backend-agnostic Rust inference runtime with clean GGUF, SafeTensors, and execution abstractions.
+
+## What This Is
+
+llm-workspace is an inference runtime that separates model representation from execution. It provides:
+
+- **Format layers** — GGUF parser (all 29+ quantization types) and SafeTensors storage
+- **Execution paths** — pure-Rust CPU transformer + llama.cpp FFI wrapper
+- **Device routing** — priority-based GPU → remote → CPU dispatch
+- **Backend abstraction** — CUDA as one backend among others, not the center
+
+The lasting contribution is the runtime, the abstractions, and the tensor interfaces — not any specific model.
 
 ## Workspace Members
 
-| Crate | Description | Status |
-|-------|-------------|--------|
-| `gguf` | GGUF model weight file parser: header, tensor metadata, KV config, quantization type detection | Working |
-| `gguf-cli` | CLI tool to inspect GGUF model files | Working |
-| `safetensors` | SQLite-backed weight storage, safetensors parser, GGUF-to-safetensors conversion | Working |
-| `llm-plug-in` | Weight manifest generation, inference request/response protocol, prompt templates | Working |
-| `llm-runner` | Inference engine with two paths: pure-Rust transformer + llama.cpp FFI | Partial |
+| Crate | Description |
+|-------|-------------|
+| `gguf` | GGUF model weight file parser: header, tensor metadata, KV config, quantization types |
+| `gguf-cli` | CLI tool to inspect GGUF model files |
+| `safetensors` | SQLite-backed weight storage, SafeTensors parser, GGUF-to-SafeTensors conversion |
+| `llm-plug-in` | Weight manifest generation, inference protocol, prompt templates |
+| `llm-runner` | Inference engine with CPU transformer + llama.cpp FFI + device routing |
 
-## Two Inference Paths
+## Inference Paths
 
-### 1. Pure-Rust Transformer Path (`transformer/`)
-Full Llama-style model implementation in pure Rust:
-- Q/K/V linear projections, multi-head attention (CPU)
-- FFN with SwiGLU, RMSNorm, RoPE positional embeddings
+### Pure-Rust Transformer (CPU)
+
+Full Llama-style model in pure Rust:
+- Q/K/V projections, multi-head attention, FFN with SwiGLU
+- RMSNorm, RoPE positional embeddings
 - LM head, token sampling (temperature, top-p, top-k)
 - Architecture-aware weight loading (llama, mistral, gemma, qwen2, phi3, mixtral, starcoder2)
 - `LlamaModel::generate()` — autoregressive generation loop
 
-### 2. llama.cpp FFI Path (`llama/`)
+### llama.cpp FFI
+
 High-level wrapper over llama-cpp-2:
 - `LlamaRunner` with builder pattern for context/model config
-- Full generation with timing (prompt eval, token eval)
-- Chat template application, grammar-constrained decoding
-- Session save/load, embeddings
-- Configurable sampling (top-k, top-p, min-p, TFS, typical p, repetition penalty)
+- Full generation with timing, chat templates, grammar-constrained decoding
+- Session save/load, embeddings, configurable sampling
 
-## GGUF Weight Loading
+## Device Routing
 
-Full K-family dequantization support:
-- Q4_0, Q4_1, Q8_0 — classic quantization
-- Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K — K-family (including Q4_K_M, Q5_K_M, Q5_K_S, Q6_K_S, Q8_K_M, Q1_K)
-- F32, F16, BF16, I8, I16, I32, I64 — passthrough/conversion
+`DeviceRouter` combines discovery with priority-based routing:
+
+1. **Local GPU** — CUDA via cuda-oxide (stubbed kernels, CPU fallback)
+2. **Remote LM Studio** — HTTP transport via `RunnerBridge` (health-checked)
+3. **CPU** — fallback
 
 ## Requirements
 
-- Rust nightly (pinned in `rust-toolchain.toml`) — required for cuda-oxide integration
-- CUDA Toolkit (for GPU path; CPU fallback available)
+- Rust nightly (pinned in `rust-toolchain.toml`)
+- CUDA Toolkit (optional; CPU inference works without it)
 - llama.cpp (via llama-cpp-2 crate; FFI path)
 
 ## Building
@@ -60,59 +72,43 @@ cargo run -p crabjar-gguf-cli -- tensor <file.gguf> -t
 cargo run -p crabjar-gguf-cli -- tensor <file.gguf> -e <name>
 ```
 
-## Device Routing
+## Architecture
 
-Hybrid device selector with priority-based routing:
-- **Local GPU** → CUDA via candle-core/cudarc
-- **Remote LM Studio** → HTTP transport via `RunnerBridge` (health-checked)
-- **CPU** → fallback
-
-`DeviceRouter` combines `DeviceSelector` (discovery + priority) with `RunnerBridge` (remote transport) into a single execution pipeline.
-
-## CUDA-Oxide Dependencies
-
-Workspace includes path dependencies to cuda-oxide crates (not published):
-
-- `cuda-core` — safe RAII wrappers around CUDA driver API
-- `cuda-device` — device-side intrinsics and types for CUDA kernels
-- `cuda-host` — host-side utilities for CUDA kernel development
-- `cuda-macros` — procedural macros for CUDA kernels
-- `cuda-bindings` — raw FFI bindings to CUDA driver API
-- `cuda-async` — async execution layer for CUDA device operations
-- `libnvvm-sys` — runtime bindings to NVIDIA libNVVM
-- `nvjitlink-sys` — runtime bindings to NVIDIA nvJitLink
-- `reserved-oxide-symbols` — internal symbol-name contract
-
-`rustc-codegen-cuda` is excluded from the workspace — it requires `#![feature(rustc_private)]` and is built as a dylib rustc codegen backend.
+```
+llm-workspace/
+├── gguf/                    GGUF parser (all 29+ quant types)
+├── gguf-cli/                CLI inspector
+├── safetensors/             SQLite-backed weight storage, SafeTensors parser
+├── llm-plug-in/             Protocol + templates
+├── llm-runner/              Inference engine
+│   ├── transformer/         Pure-Rust LlamaModel ✅
+│   ├── llama/               llama.cpp FFI ✅
+│   ├── device.rs            DeviceSelector + DeviceRouter ✅
+│   ├── device_discovery.rs  Local GPU enumeration ✅
+│   ├── remote_discovery.rs  Remote LM Studio health checks ✅
+│   ├── runner.rs            RunnerBridge + DeviceRouter ✅
+│   ├── model_manager.rs     Popularity scoring, smart preloading ✅
+│   ├── registry.rs          Model discovery ✅
+│   ├── kernel/              Buffers, TMA, KV cache
+│   │   ├── gemm.rs          CPU GEMM working, GPU stubbed
+│   │   ├── attention.rs     CPU attention working, GPU stubbed
+│   │   ├── kvcache.rs       Per-layer KV cache ✅
+│   │   ├── tma_bridge.rs    TMA descriptor → device buffer ✅
+│   │   └── tma_descriptor.rs TMA binding (SPECULATIVE) ⚠️
+│   └── model_loader.rs      SafeTensors weight loading
+├── cuda-oxide/              CUDA host/device crates (one backend)
+└── rust-toolchain.toml      Pinned nightly
+```
 
 ## Current State
 
-**Phase 1 (CPU Inference): ✅ Complete**
-- Pure-Rust transformer path: full LlamaModel with Q/K/V projections, attention, FFN, RMSNorm, RoPE, sampling, tokenizer — all wired end-to-end
-- llama.cpp FFI path: complete `LlamaRunner` with generation, chat, embeddings, grammar, sessions
-- GGUF weight loading: all 29+ quantization types implemented (Q1_K through Q8_K_M)
+**Phase 1 (CPU Inference): ✅ Complete** — Pure-Rust transformer + llama.cpp FFI, all GGUF quant types.
 
-**Phase 1.5 (Hybrid Routing): ✅ Complete**
-- `DeviceSelector` with GPU → Remote → CPU priority routing
-- `RemoteDevice` discovery via health checks
-- `RunnerBridge` for remote LM Studio HTTP transport
-- `DeviceRouter` combining discovery + transport
-- `ModelManager` with popularity scoring and smart preloading
-- `Registry` with in-memory + filesystem model discovery
+**Phase 1.5 (Hybrid Routing): ✅ Complete** — GPU → Remote → CPU device selector with health checks.
 
-**Phase 2 (GPU Acceleration): 🟡 In Progress**
-- CUDA runtime wired: context management, device enumeration, compute capability detection
-- `InferenceEngine` with CUDA integration (`gpu_available()`, `full_device_info()`)
-- KV cache, TMA descriptor binding, TMA bridge implemented
-- GEMM and attention GPU kernels: stubbed (cpu path works)
-- **Blocker**: 77 compilation errors (cuda-oxide trait bounds, type mismatches, missing gguf functions)
+**Phase 2 (GPU Acceleration): 🟡 In Progress** — CUDA runtime wired, kernels stubbed. See `ROADMAP.md`.
 
-**Phase 3 (Production): 🔴 Not Started**
-- Runner bridge stub exists, streaming unimplemented
-- Safetensors weight loading available, GGUF file writer missing
-- HuggingFace model download integration (hf-hub present, unused)
-
-See `ROADMAP.md` for the detailed implementation plan.
+**Phase 3 (Production): 🔴 Not Started** — Runner bridge, streaming, model download.
 
 ## License
 
