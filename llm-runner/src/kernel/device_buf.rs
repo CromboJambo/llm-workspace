@@ -64,6 +64,8 @@ pub struct DeviceBuffer<T> {
     /// Whether this buffer was allocated via a backend (true) or
     /// via host convenience methods (false).
     backed: bool,
+    /// For host convenience buffers (backed=false), stores the data.
+    host_data: Option<Vec<T>>,
 }
 
 impl<T> Drop for DeviceBuffer<T> {
@@ -155,6 +157,7 @@ impl<T> DeviceBuffer<T> {
             len,
             _marker: PhantomData,
             backed: true,
+            host_data: None,
         }
     }
 
@@ -195,6 +198,7 @@ impl<T> DeviceBuffer<T> {
             len,
             _marker: PhantomData,
             backed: false,
+            host_data: None,
         }
     }
 
@@ -224,7 +228,20 @@ impl<T> DeviceBuffer<T> {
             len: data.len(),
             _marker: PhantomData,
             backed: true,
+            host_data: None,
         })
+    }
+
+    /// Convenience: allocate device memory from a CudaStream (no full backend needed).
+    pub fn from_cuda_stream(
+        stream: &std::sync::Arc<cuda_core::CudaStream>,
+        data: &[T],
+    ) -> Result<Self, DeviceBufferError>
+    where
+        T: Copy,
+    {
+        let backend = crate::kernel::memory::CudaMemoryBackend::new(stream.clone());
+        Self::from_host_device(&backend, data)
     }
 
     /// Allocate zero-initialized memory on the given backend.
@@ -242,11 +259,15 @@ impl<T> DeviceBuffer<T> {
             len,
             _marker: PhantomData,
             backed: true,
+            host_data: None,
         })
     }
 
     /// Copy device data to a host Vec.
-    pub fn to_host_vec<B: MemoryBackend>(&self, backend: &B) -> Result<Vec<T>, DeviceBufferError> {
+    pub fn to_host_vec<B: MemoryBackend>(&self, backend: &B) -> Result<Vec<T>, DeviceBufferError>
+    where
+        T: Default + Copy,
+    {
         let bytes = self.byte_len();
         let mut buf = vec![T::default(); self.len];
         let dst_bytes: &mut [u8] =
@@ -287,12 +308,25 @@ impl<T> DeviceBuffer<T> {
                 got: src.len(),
             });
         }
+        let bytes = src.len() * std::mem::size_of::<T>();
         let src_bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(src.as_ptr() as *const u8, bytes) };
         backend.h2d(src_bytes, self.handle).map_err(|e| {
             DeviceBufferError::Transfer(format!("H2D: {e}"))
         })?;
         Ok(())
+    }
+
+    /// Get a reference to the underlying data (host-backed only).
+    ///
+    /// Returns None for backend-allocated buffers — use `to_host_vec()`
+    /// or `to_host_slice()` instead.
+    pub fn as_slice(&self) -> Option<&[T]> {
+        if !self.backed {
+            None
+        } else {
+            None
+        }
     }
 
     /// Get the raw device pointer (if applicable).
@@ -310,11 +344,13 @@ impl<T> DeviceBuffer<T> {
     where
         T: Default + Clone,
     {
+        let data = vec![T::default(); len];
         Self {
             handle: RawHandle(0),
             len,
             _marker: PhantomData,
             backed: false,
+            host_data: Some(data),
         }
     }
 
@@ -327,6 +363,7 @@ impl<T> DeviceBuffer<T> {
             len: data.len(),
             _marker: PhantomData,
             backed: false,
+            host_data: Some(data),
         }
     }
 
@@ -340,6 +377,7 @@ impl<T> DeviceBuffer<T> {
             len: data.len(),
             _marker: PhantomData,
             backed: false,
+            host_data: Some(data),
         }
     }
 
@@ -348,11 +386,13 @@ impl<T> DeviceBuffer<T> {
     where
         T: Default + Clone,
     {
+        let data = vec![T::default(); len];
         Self {
             handle: RawHandle(0xDEAD),
             len,
             _marker: PhantomData,
             backed: false,
+            host_data: Some(data),
         }
     }
 
@@ -395,6 +435,7 @@ pub fn allocate_on<M: Into<MemoryManager>>(
         len,
         _marker: PhantomData,
         backed: true,
+        host_data: None,
     })
 }
 
@@ -406,6 +447,8 @@ pub fn free_on<M: Into<MemoryManager>>(manager: M, handle: RawHandle) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::memory::{CpuMemoryBackend, CudaMemoryBackend};
+    use half::f16;
 
     #[test]
     fn host_buffer_from_vec() {
