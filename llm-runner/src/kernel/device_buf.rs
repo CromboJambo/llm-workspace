@@ -322,11 +322,7 @@ impl<T> DeviceBuffer<T> {
     /// Returns None for backend-allocated buffers — use `to_host_vec()`
     /// or `to_host_slice()` instead.
     pub fn as_slice(&self) -> Option<&[T]> {
-        if !self.backed {
-            None
-        } else {
-            None
-        }
+        self.host_data.as_ref().map(|v| v.as_slice())
     }
 
     /// Get the raw device pointer (if applicable).
@@ -376,7 +372,7 @@ impl<T> DeviceBuffer<T> {
             handle: RawHandle(0xDEAD),
             len: data.len(),
             _marker: PhantomData,
-            backed: false,
+            backed: true,
             host_data: Some(data),
         }
     }
@@ -391,7 +387,7 @@ impl<T> DeviceBuffer<T> {
             handle: RawHandle(0xDEAD),
             len,
             _marker: PhantomData,
-            backed: false,
+            backed: true,
             host_data: Some(data),
         }
     }
@@ -401,22 +397,14 @@ impl<T> DeviceBuffer<T> {
     /// Returns None for backend-allocated buffers — use `to_host_vec()`
     /// or `to_host_slice()` instead.
     pub fn as_mut_slice(&mut self) -> Option<&mut [T]> {
-        if !self.backed {
-            // Can't get a mutable slice from a RawHandle without knowing
-            // the actual storage. This is only valid for host convenience buffers.
-            None
-        } else {
-            None
-        }
+        self.host_data.as_mut().map(|v| v.as_mut_slice())
     }
 }
 
 impl<T: Default + Clone> DeviceBuffer<T> {
     /// Get a copy of the data as a Vec (host-backed only).
     pub fn to_host(&self) -> Vec<T> {
-        // For host convenience buffers, we'd need to store the data.
-        // For backed buffers, use to_host_vec().
-        vec![]
+        self.host_data.clone().unwrap_or_default()
     }
 }
 
