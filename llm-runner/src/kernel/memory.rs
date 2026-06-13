@@ -178,7 +178,8 @@ impl MemoryBackend for CpuMemoryBackend {
             return Err(MemoryError::InvalidHandle(dst));
         }
         let copy_len = bytes.min(slab[src_idx].data.len()).min(slab[dst_idx].data.len());
-        slab[dst_idx].data[..copy_len].copy_from_slice(&slab[src_idx].data[..copy_len]);
+        let src_data = slab[src_idx].data[..copy_len].to_vec();
+        slab[dst_idx].data[..copy_len].copy_from_slice(&src_data);
         Ok(())
     }
 
@@ -230,87 +231,69 @@ impl MemoryBackend for CudaMemoryBackend {
             });
         }
 
-        let buf = cuda_core::DeviceBuffer::zeroed(&self.stream, bytes)
-            .map_err(|e| MemoryError::Cuda(format!("cuMemAlloc failed: {e}")))?;
+        let ptr = unsafe {
+            cuda_core::memory::malloc_async(self.stream.cu_stream(), bytes)
+        }
+        .map_err(|e| MemoryError::Cuda(format!("cuMemAllocAsync failed: {e}")))?;
 
-        Ok(RawHandle(buf.cu_deviceptr() as u64))
+        Ok(RawHandle(ptr as u64))
     }
 
     fn free(&self, handle: RawHandle) -> Result<(), MemoryError> {
-        let ptr = handle.as_ptr();
-        if ptr.is_null() {
+        let ptr = handle.as_u64() as cuda_core::sys::CUdeviceptr;
+        if ptr == 0 {
             return Ok(());
         }
-
-        // cuda-oxide doesn't expose a direct free API — we rely on DeviceBuffer
-        // dropping to free. For raw pointers, the caller must have a way to free.
-        // This is a limitation: we can only free buffers we allocated via this
-        // backend's DeviceBuffer wrapper. For now, return Ok for non-null handles
-        // (the cuda-core runtime handles cleanup on context drop).
+        unsafe {
+            cuda_core::memory::free_async(ptr, self.stream.cu_stream())
+        }
+        .map_err(|e| MemoryError::Cuda(format!("cuMemFreeAsync failed: {e}")))?;
         Ok(())
     }
 
     fn h2d(&self, src: &[u8], dst: RawHandle) -> Result<(), MemoryError> {
-        let buf = unsafe {
-            cuda_core::DeviceBuffer::from_raw_parts(
-                cuda_core::sys::CUdeviceptr(dst.as_u64()),
+        let dst_ptr = dst.as_u64() as cuda_core::sys::CUdeviceptr;
+        unsafe {
+            cuda_core::memory::memcpy_htod_async::<u8>(
+                dst_ptr,
+                src.as_ptr(),
                 src.len(),
-                self.stream.context().clone(),
+                self.stream.cu_stream(),
             )
         }
-        .map_err(|e| MemoryError::Transfer(format!("H2D device buffer wrap: {e}")))?;
-
-        buf.copy_from_host(&self.stream, src)
-            .map_err(|e| MemoryError::Transfer(format!("H2D copy failed: {e}")))?;
-
+        .map_err(|e| MemoryError::Transfer(format!("H2D copy failed: {e}")))?;
         Ok(())
     }
 
     fn d2h(&self, src: RawHandle, dst: &mut [u8]) -> Result<(), MemoryError> {
-        let buf = unsafe {
-            cuda_core::DeviceBuffer::from_raw_parts(
-                cuda_core::sys::CUdeviceptr(src.as_u64()),
+        let src_ptr = src.as_u64() as cuda_core::sys::CUdeviceptr;
+        unsafe {
+            cuda_core::memory::memcpy_dtoh_async::<u8>(
+                dst.as_mut_ptr(),
+                src_ptr,
                 dst.len(),
-                self.stream.context().clone(),
+                self.stream.cu_stream(),
             )
         }
-        .map_err(|e| MemoryError::Transfer(format!("D2H device buffer wrap: {e}")))?;
-
-        buf.copy_to_host(&self.stream, dst)
-            .map_err(|e| MemoryError::Transfer(format!("D2H copy failed: {e}")))?;
-
+        .map_err(|e| MemoryError::Transfer(format!("D2H copy failed: {e}")))?;
         Ok(())
     }
 
     fn d2d(&self, src: RawHandle, dst: RawHandle, bytes: usize) -> Result<(), MemoryError> {
-        let src_buf = unsafe {
-            cuda_core::DeviceBuffer::from_raw_parts(
-                cuda_core::sys::CUdeviceptr(src.as_u64()),
-                bytes,
-                self.stream.context().clone(),
-            )
+        let src_ptr = src.as_u64() as cuda_core::sys::CUdeviceptr;
+        let dst_ptr = dst.as_u64() as cuda_core::sys::CUdeviceptr;
+        unsafe {
+            cuda_core::memory::memcpy_dtod_async(dst_ptr, src_ptr, bytes, self.stream.cu_stream())
         }
-        .map_err(|e| MemoryError::Transfer(format!("D2D src wrap: {e}")))?;
-
-        let dst_buf = unsafe {
-            cuda_core::DeviceBuffer::from_raw_parts(
-                cuda_core::sys::CUdeviceptr(dst.as_u64()),
-                bytes,
-                self.stream.context().clone(),
-            )
-        }
-        .map_err(|e| MemoryError::Transfer(format!("D2D dst wrap: {e}")))?;
-
-        dst_buf
-            .copy_from_device(&self.stream, &src_buf)
-            .map_err(|e| MemoryError::Transfer(format!("D2D copy failed: {e}")))?;
-
+        .map_err(|e| MemoryError::Transfer(format!("D2D copy failed: {e}")))?;
         Ok(())
     }
+
     fn sync(&self) -> Result<(), MemoryError> {
         self.stream
             .synchronize()
-            .map_err(|e| MemoryError::Sync(format!("CUDA sync failed: {e}")))
+            .map_err(|e| MemoryError::Cuda(format!("Stream sync failed: {e}")))?;
+        Ok(())
     }
 }
 
@@ -326,9 +309,9 @@ impl MemoryManager {
     /// Create a MemoryManager, preferring CUDA if available.
     pub fn new() -> Self {
         if crate::cuda_runtime::is_available() {
-            match cuda_core::init(0) {
-                Ok(_) => {
-                    match cuda_core::CudaContext::new(0) {
+            unsafe {
+                match cuda_core::init(0) {
+                    Ok(_) => match cuda_core::CudaContext::new(0) {
                         Ok(ctx) => match ctx.new_stream() {
                             Ok(stream) => {
                                 let rt = crate::cuda_runtime::CudaRuntime::for_default_device();
@@ -346,9 +329,9 @@ impl MemoryManager {
                             Err(_) => {}
                         },
                         Err(_) => {}
-                    }
+                    },
+                    Err(_) => {}
                 }
-                Err(_) => {}
             }
         }
         Self::Cpu(CpuMemoryBackend::new(usize::MAX))
