@@ -1,9 +1,9 @@
-use crabjar_gguf::GgufDtype;
-use crabjar_gguf::GgufHeader;
-use crabjar_llm_plug_in::manifest::WeightManifest;
+use pesti_gguf::GgufDtype;
+use pesti_gguf::GgufHeader;
+use pesti_plug_in::manifest::WeightManifest;
 
 use crate::error::RunnerError;
-use crabjar_safetensors::error::SafetensorsSchemaError;
+use pesti_safetensors::error::SafetensorsSchemaError;
 use std::path::Path;
 use tracing::debug;
 
@@ -33,7 +33,7 @@ impl ModelLoader {
                 let metadata: serde_json::Value =
                     serde_json::from_str(&metadata_str).unwrap_or_default();
 
-                Ok(crabjar_llm_plug_in::manifest::ModelWeightRow {
+                Ok(pesti_plug_in::manifest::ModelWeightRow {
                     id: row.get(0)?,
                     model_name: row.get(1)?,
                     repo_id: row.get(2)?,
@@ -56,9 +56,9 @@ impl ModelLoader {
              WHERE weight_id = ?1",
         )?;
 
-        let tensors: Vec<crabjar_llm_plug_in::manifest::TensorMetadataRow> = tensor_stmt
+        let tensors: Vec<pesti_plug_in::manifest::TensorMetadataRow> = tensor_stmt
             .query_map(rusqlite::params![row.id], |row| {
-                Ok(crabjar_llm_plug_in::manifest::TensorMetadataRow {
+                Ok(pesti_plug_in::manifest::TensorMetadataRow {
                     id: row.get(0)?,
                     weight_id: row.get(1)?,
                     tensor_name: row.get(2)?,
@@ -96,7 +96,7 @@ impl ModelLoader {
 
     /// Verify weight checksum integrity.
     pub fn verify_checksum(&self, weight_id: &str, expected: &str) -> Result<bool, RunnerError> {
-        crabjar_safetensors::schema::verify_weight_checksum(&self.conn, weight_id, expected)
+        pesti_safetensors::schema::verify_weight_checksum(&self.conn, weight_id, expected)
             .map_err(|_: SafetensorsSchemaError| {
                 RunnerError::Sqlite(rusqlite::Error::QueryReturnedNoRows)
             })
@@ -106,8 +106,8 @@ impl ModelLoader {
     pub fn list_active(
         &self,
         limit: usize,
-    ) -> Result<Vec<crabjar_safetensors::schema::ModelWeightRow>, RunnerError> {
-        crabjar_safetensors::schema::list_active_weights(&self.conn, limit).map_err(
+    ) -> Result<Vec<pesti_safetensors::schema::ModelWeightRow>, RunnerError> {
+        pesti_safetensors::schema::list_active_weights(&self.conn, limit).map_err(
             |e: SafetensorsSchemaError| {
                 RunnerError::Sqlite(match e {
                     SafetensorsSchemaError::Sqlite(r) => r,
@@ -119,7 +119,7 @@ impl ModelLoader {
 
     /// Parse a GGUF file and return its header (metadata only, no tensor data).
     pub fn load_gguf_header(path: &Path) -> Result<GgufHeader, RunnerError> {
-        crabjar_gguf::parser::parse_gguf(path).map_err(RunnerError::Gguf)
+        pesti_gguf::parser::parse_gguf(path).map_err(RunnerError::Gguf)
     }
 
     /// Detect the quantization type from a GGUF header.
@@ -154,13 +154,13 @@ impl ModelLoader {
     pub fn extract_gguf_tensor(path: &Path, tensor_name: &str) -> Result<Vec<u8>, RunnerError> {
         let header = Self::load_gguf_header(path)?;
         let tensor = header.get_tensor(tensor_name).ok_or_else(|| {
-            RunnerError::Gguf(crabjar_gguf::GgufError::InvalidTensor(format!(
+            RunnerError::Gguf(pesti_gguf::GgufError::InvalidTensor(format!(
                 "tensor '{tensor_name}' not found"
             )))
         })?;
 
         let size = tensor.element_count() as usize;
-        crabjar_gguf::parser::extract_tensor_bytes(path, tensor.offset, size)
+        pesti_gguf::parser::extract_tensor_bytes(path, tensor.offset, size)
             .map_err(RunnerError::Gguf)
     }
 
@@ -209,8 +209,8 @@ impl ModelLoader {
 mod tests {
     use super::*;
     use crate::gguf_weight_loader::load_gguf_weights;
-    use crabjar_gguf::compute_data_section_start;
-    use crabjar_gguf::{GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType};
+    use pesti_gguf::compute_data_section_start;
+    use pesti_gguf::{GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -446,7 +446,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         assert_eq!(
             ModelLoader::detect_quantization(&header),
             Some(GgufDtype::F16)
@@ -497,7 +497,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         assert_eq!(
             ModelLoader::detect_quantization(&header),
             Some(GgufDtype::Q4_0)
@@ -548,7 +548,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         assert_eq!(
             ModelLoader::detect_quantization(&header),
             Some(GgufDtype::Q8_0)
@@ -599,7 +599,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         assert_eq!(
             ModelLoader::detect_quantization(&header),
             Some(GgufDtype::BF16)
@@ -650,7 +650,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         assert_eq!(
             ModelLoader::detect_quantization(&header),
             Some(GgufDtype::Unknown(0))
@@ -698,7 +698,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         // No file_type key → returns None
         assert_eq!(ModelLoader::detect_quantization(&header), None);
     }

@@ -5,7 +5,7 @@
 
 use crate::device::{DeviceSelection, DeviceSelector};
 use crate::error::RunnerError;
-use crabjar_llm_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
+use pesti_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
 use tracing::debug;
 
 /// Runner bridge for external LLM runtime.

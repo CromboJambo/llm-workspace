@@ -1,10 +1,24 @@
-# llm-workspace
+```
+▄▄▄▄▄▄▄▄▄▄     ▄▄▄▄▄▄▄▄▄         ▄▄▄▄▄     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄
+█████ ▀█████▄  █████ ▀████▄   ▄▓▓▓▓▀▓▓▓▓▄  ▐▓█▓█▀▓███▓▀▓▓█▓▌ █▓█▓█
+▓███▓  ▐█▓██▓▌ ▓█▓█▓  ▐▓█▓▓▌ ▐▓▓▓▓▌ ▐▓▓▓▓▌ ▐▓▓▓▌ ▓▓▓▓▓ ▐▓▓▓▌ ▓▓▓▓▓
+▓▓▓▓▓   ▓▓▓▓▓▓ ▓▓▓▓▓   ▒▓▒▒░ ▓▒▓▒▒   ▒▒▓▒▓ ▀     ▒▓▒▓▓     ▀ ▓▓▓▒▓
+▓▓▓▒▓   ▒▒▒▒▒▒ ▒▓▓▒▓         ▓▒▓▓▒▄              ▒▒▒▒▓       ▓▒▓▓▒
+▒▓▒▓▒ ▄▒▒▒▒▒▒▌ ░▓▒▓▒▓▒       ▀▀▀▓▒▓▒░▒▒▀▄        ▒░▒▓▒       ░▒░▓▒
+▓░▓▒▒▓▒▒▒░▒░▀  ░░▒░░   ░░░░░        ▀░▒░▒▒       ░░░░░       ░░░░░
+░▀█░▀          ▀░▀░░   ▀░▀░▀ ░░▀░░   ▀░░░▄       ░░░▀░       ▀░▀░░
+  ▀               ▀     ▀     ▀  ▀   ▒▀ ▀░       ▀ ▀          ▀  ▀
+▓ ▓▄▀          ▄▓ ▄▓   ▓ ▄▓▄ ▓▄ ▓▄   ▓▄▄▓▓       █ ▄▓        ▓▄ ▓▄
+▒▄▒▒▒          ▒▒▄░▒  ▓▒▒▒▒▓ ▄▒▓▒▄  ▄▄▒▒▒▒       ▓▓▓▒▒       ▄▒▓▒▄
+░░░░░          ░░░▒░▄░░░░░░▀ ▀▄░░░░░░░░░▄▀      ▄▒▒▒░░▄      ░░░░░
+```
+Portable Execution Substrate for Transformer Inference.
 
 A backend-agnostic Rust inference runtime with clean GGUF, SafeTensors, and execution abstractions.
 
 ## What This Is
 
-llm-workspace is an inference runtime that separates model representation from execution. It provides:
+PESTI is an inference runtime that separates model representation from execution. It provides:
 
 - **Format layers** — GGUF parser (all 29+ quantization types) and SafeTensors storage
 - **Execution paths** — pure-Rust CPU transformer + llama.cpp FFI wrapper
@@ -59,17 +73,17 @@ High-level wrapper over llama-cpp-2:
 
 ```bash
 cargo check --workspace
-cargo build -p crabjar-llm-runner
+cargo build -p pesti-runner
 cargo test --workspace
 ```
 
 ## GGUF CLI
 
 ```bash
-cargo run -p crabjar-gguf-cli -- inspect <file.gguf>
-cargo run -p crabjar-gguf-cli -- list <file.gguf>
-cargo run -p crabjar-gguf-cli -- tensor <file.gguf> -t
-cargo run -p crabjar-gguf-cli -- tensor <file.gguf> -e <name>
+cargo run -p pesti-gguf-cli -- inspect <file.gguf>
+cargo run -p pesti-gguf-cli -- list <file.gguf>
+cargo run -p pesti-gguf-cli -- tensor <file.gguf> -t
+cargo run -p pesti-gguf-cli -- tensor <file.gguf> -e <name>
 ```
 
 ## Architecture

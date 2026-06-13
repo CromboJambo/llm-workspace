@@ -10,7 +10,7 @@ use half::f16;
 use std::sync::Arc;
 /// Inference engine for tensor computation.
 ///
-/// actual tensor computation layer. separate from crabjar host.
+/// actual tensor computation layer. separate from PESTI host.
 pub struct InferenceEngine {
     pub device: candle_core::Device,
     pub dtype: DType,

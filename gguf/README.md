@@ -1,4 +1,4 @@
-# crabjar-gguf
+# pesti-gguf
 
 GGUF model weight file parser for Rust.
 
@@ -8,11 +8,11 @@ Parses GGUF v1/v2/v3 headers, tensor metadata, KV config, and quantization type 
 
 ```toml
 [dependencies]
-crabjar-gguf = "0.1"
+pesti-gguf = "0.1"
 ```
 
 ```rust
-use crabjar_gguf::parse_gguf;
+use pesti_gguf::parse_gguf;
 
 let header = parse_gguf(&path).unwrap();
 println!("architecture: {}", header.architecture().unwrap());

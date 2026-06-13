@@ -15,7 +15,7 @@ pub enum RunnerError {
     Device(String),
 
     #[error("plug-in protocol error: {0}")]
-    Protocol(#[from] crabjar_llm_plug_in::PlugInError),
+    Protocol(#[from] pesti_plug_in::PlugInError),
 
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
@@ -24,7 +24,7 @@ pub enum RunnerError {
     Json(#[from] serde_json::Error),
 
     #[error("GGUF parse error: {0}")]
-    Gguf(#[from] crabjar_gguf::GgufError),
+    Gguf(#[from] pesti_gguf::GgufError),
 
     #[error("asset loading error: {0}")]
     Asset(String),

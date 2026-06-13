@@ -31,7 +31,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let header = match crabjar_gguf::parser::parse_gguf(&args.gguf_path) {
+    let header = match pesti_gguf::parser::parse_gguf(&args.gguf_path) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("error: failed to parse GGUF: {e}");
@@ -86,21 +86,21 @@ fn main() {
     for key in &common_keys {
         if let Some(val) = config.get(*key) {
             let display = match val {
-                crabjar_gguf::GgufKvValue::String(s) => s.clone(),
-                crabjar_gguf::GgufKvValue::Uint32(v) => v.to_string(),
-                crabjar_gguf::GgufKvValue::Uint64(v) => v.to_string(),
-                crabjar_gguf::GgufKvValue::Int32(v) => v.to_string(),
-                crabjar_gguf::GgufKvValue::Int64(v) => v.to_string(),
-                crabjar_gguf::GgufKvValue::Float32(v) => v.to_string(),
-                crabjar_gguf::GgufKvValue::Bool(b) => b.to_string(),
-                crabjar_gguf::GgufKvValue::Array(arr) => {
+                pesti_gguf::GgufKvValue::String(s) => s.clone(),
+                pesti_gguf::GgufKvValue::Uint32(v) => v.to_string(),
+                pesti_gguf::GgufKvValue::Uint64(v) => v.to_string(),
+                pesti_gguf::GgufKvValue::Int32(v) => v.to_string(),
+                pesti_gguf::GgufKvValue::Int64(v) => v.to_string(),
+                pesti_gguf::GgufKvValue::Float32(v) => v.to_string(),
+                pesti_gguf::GgufKvValue::Bool(b) => b.to_string(),
+                pesti_gguf::GgufKvValue::Array(arr) => {
                     format!("[{}]", arr.iter().map(|v| {
                         match v {
-                            crabjar_gguf::GgufKvValue::String(s) => s.clone(),
-                            crabjar_gguf::GgufKvValue::Uint32(v) => v.to_string(),
-                            crabjar_gguf::GgufKvValue::Int32(v) => v.to_string(),
-                            crabjar_gguf::GgufKvValue::Float32(v) => v.to_string(),
-                            crabjar_gguf::GgufKvValue::Bool(b) => b.to_string(),
+                            pesti_gguf::GgufKvValue::String(s) => s.clone(),
+                            pesti_gguf::GgufKvValue::Uint32(v) => v.to_string(),
+                            pesti_gguf::GgufKvValue::Int32(v) => v.to_string(),
+                            pesti_gguf::GgufKvValue::Float32(v) => v.to_string(),
+                            pesti_gguf::GgufKvValue::Bool(b) => b.to_string(),
                             _ => v.type_name().to_string(),
                         }
                     }).collect::<Vec<_>>().join(", "))
@@ -129,7 +129,7 @@ fn main() {
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
                 .join("x");
-            let dtype = crabjar_gguf::GgufDtype::from_u32(tensor.dtype);
+            let dtype = pesti_gguf::GgufDtype::from_u32(tensor.dtype);
             println!(
                 "    {:60}  [{}]  dtype={:<6}  stored={:>12}  offset={}",
                 tensor.name, shape_str, dtype.name(), tensor.stored_size(), tensor.offset
@@ -143,7 +143,7 @@ fn main() {
         if let Some(tensor) = header.get_tensor(tensor_name) {
             let stored = tensor.stored_size();
             println!("  extracting {} ({} bytes stored, {} dequantized)...", tensor_name, stored, tensor.element_count());
-            match crabjar_gguf::parser::extract_tensor_bytes(
+            match pesti_gguf::parser::extract_tensor_bytes(
                 &args.gguf_path,
                 tensor.offset,
                 stored as usize,

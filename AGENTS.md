@@ -1,8 +1,8 @@
-# LLM-Workspace Agent Rules
+# PESTI Agent Rules
 
 ## Status
 
-Phase 1 complete (CPU inference). Phase 1.5 in progress (hybrid device routing). Phase 2 pending (GPU kernels).
+Phase 1 complete (CPU inference). Phase 1.5 complete (hybrid device routing). Phase 2 in progress (backend abstraction).
 
 ## Key Files
 
@@ -16,7 +16,7 @@ Phase 1 complete (CPU inference). Phase 1.5 in progress (hybrid device routing).
 ## Architecture
 
 ```
-llm-workspace/
+pesti/
 ├── llm-runner/          Inference engine (CPU kernels operational, GPU stubbed)
 ├── gguf/                GGUF parser (all 29+ quantization types)
 ├── safetensors/         Weight storage + parsing

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crabjar_gguf::types::GgufHeader;
+use pesti_gguf::types::GgufHeader;
 use tracing::debug;
 
 use crate::error::{Result, RunnerError};
@@ -181,7 +181,7 @@ pub struct LlamaModel {
 impl LlamaModel {
     /// Load a Llama-style model from a GGUF file.
     pub fn load_gguf(path: &Path) -> Result<Self> {
-        let _header = crabjar_gguf::parser::parse_gguf(path)
+        let _header = pesti_gguf::parser::parse_gguf(path)
             .map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
         let weights = load_gguf_weights(path).map_err(|e| RunnerError::ModelLoad(e.to_string()))?;
         let mut model = Self::from_gguf_weights(weights)?;
@@ -569,7 +569,7 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crabjar_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
+    use pesti_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -706,7 +706,7 @@ mod tests {
         ];
 
         let data_section_start =
-            crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
+            pesti_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
 
         // Write file
         let mut buf = Vec::new();
@@ -755,78 +755,78 @@ mod tests {
     fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::String,
-            value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+            value_type: pesti_gguf::GgufValueType::String,
+            value: pesti_gguf::GgufKvValue::String(value.to_string()),
         }
     }
 
     fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::Uint32,
-            value: crabjar_gguf::GgufKvValue::Uint32(value),
+            value_type: pesti_gguf::GgufValueType::Uint32,
+            value: pesti_gguf::GgufKvValue::Uint32(value),
         }
     }
 
     fn kv_pair_f32(key: &str, value: f32) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::Float32,
-            value: crabjar_gguf::GgufKvValue::Float32(value),
+            value_type: pesti_gguf::GgufValueType::Float32,
+            value: pesti_gguf::GgufKvValue::Float32(value),
         }
     }
 
     fn kv_pair_i32(key: &str, value: i32) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::Int32,
-            value: crabjar_gguf::GgufKvValue::Int32(value),
+            value_type: pesti_gguf::GgufValueType::Int32,
+            value: pesti_gguf::GgufKvValue::Int32(value),
         }
     }
 
-    fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
+    fn write_kv_value(buf: &mut Vec<u8>, value: &pesti_gguf::GgufKvValue) {
         match value {
-            crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
-            crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
-            crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int16(v) => {
+            pesti_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
+            pesti_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
+            pesti_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int16(v) => {
                 buf.extend_from_slice(&(*v as i16).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int32(v) => {
+            pesti_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int32(v) => {
                 buf.extend_from_slice(&(*v as i32).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int64(v) => {
+            pesti_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int64(v) => {
                 buf.extend_from_slice(&(*v as i64).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
-            crabjar_gguf::GgufKvValue::String(s) => {
+            pesti_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
+            pesti_gguf::GgufKvValue::String(s) => {
                 buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
                 buf.extend_from_slice(s.as_bytes());
             }
-            crabjar_gguf::GgufKvValue::Int8Array(arr) => {
+            pesti_gguf::GgufKvValue::Int8Array(arr) => {
                 let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 buf.extend_from_slice(&bytes);
             }
-            crabjar_gguf::GgufKvValue::Uint8Array(arr) => {
+            pesti_gguf::GgufKvValue::Uint8Array(arr) => {
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 buf.extend_from_slice(arr);
             }
-            crabjar_gguf::GgufKvValue::Array(arr) => {
+            pesti_gguf::GgufKvValue::Array(arr) => {
                 buf.extend_from_slice(&9u32.to_le_bytes());
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 for elem in arr {
                     write_kv_value(buf, elem);
                 }
             }
-            crabjar_gguf::GgufKvValue::Bfloat16(v) => {
+            pesti_gguf::GgufKvValue::Bfloat16(v) => {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            crabjar_gguf::GgufKvValue::Float16(v) => {
+            pesti_gguf::GgufKvValue::Float16(v) => {
                 buf.extend_from_slice(&(*v as u16).to_le_bytes())
             }
         }
@@ -837,7 +837,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         make_test_gguf_llama(&path);
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
 
         let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.num_layers, 2);
@@ -945,7 +945,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = LlamaConfig::from_gguf_header(&header).unwrap();
         // Should use defaults when optional keys are missing
         assert_eq!(config.num_layers, 32); // default block_count
@@ -1011,7 +1011,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         assert_eq!(LlamaModel::architecture(&header), Some("phi3"));
     }
 
@@ -1067,7 +1067,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = LlamaConfig::from_gguf_header(&header).unwrap();
         // Without rope.dimension_count, should fall back to head_dim (64/4 = 16)
         assert_eq!(config.head_dim, 16);
@@ -1189,7 +1189,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.arch, ModelArch::Gemma);
         assert_eq!(config.layer_prefix(0), "model.layers.0.");
@@ -1324,7 +1324,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.arch, ModelArch::Qwen2);
         assert_eq!(config.layer_prefix(0), "model.layers.0.");
@@ -1401,7 +1401,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = LlamaConfig::from_gguf_header(&header).unwrap();
         assert_eq!(config.arch, ModelArch::Phi3);
         assert_eq!(config.layer_prefix(0), "layers.0.");

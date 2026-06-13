@@ -2,7 +2,7 @@
 name = "wgmma_gemm"
 version = "0.1.0"
 edition = "2024"
-authors = ["crabjar"]
+authors = ["PESTI"]
 license = "Apache-2.0"
 
 [workspace]

@@ -1,6 +1,6 @@
-//! Bridge between crabjar TmaDescriptor and cuda-oxide TMA infrastructure.
+//! Bridge between PESTI TmaDescriptor and cuda-oxide TMA infrastructure.
 //!
-//! crabjar's `TmaDescriptor` (128-bit u128) is a **speculative** hand-written bit layout
+//! PESTI's `TmaDescriptor` (128-bit u128) is a **speculative** hand-written bit layout
 //! — the actual CUtensorMap encoding is opaque and not publicly documented.
 //! This module provides the bridge to cuda-oxide's 128-byte `TmaDescriptor` / `CUtensorMap` type used
 //! by `cp_async_bulk_tensor_2d_g2s` and the `#[kernel]` approach.

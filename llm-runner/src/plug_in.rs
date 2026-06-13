@@ -1,13 +1,13 @@
 use crate::error::RunnerError;
-use crabjar_llm_plug_in::manifest::WeightManifest;
-use crabjar_llm_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
-use crabjar_safetensors::error::SafetensorsSchemaError;
-use crabjar_safetensors::schema::query_model_weights;
+use pesti_plug_in::manifest::WeightManifest;
+use pesti_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
+use pesti_safetensors::error::SafetensorsSchemaError;
+use pesti_safetensors::schema::query_model_weights;
 
-/// Plug-in protocol implementation for llm-runner → crabjar interface.
+/// Plug-in protocol implementation for llm-runner → PESTI interface.
 ///
 /// implements WeightManifest output, InferenceRequest/Response protocol.
-/// interface boundary: only interface with crabjar via plug-in protocol.
+/// interface boundary: only interface with PESTI via plug-in protocol.
 pub struct PlugInProtocol {
     pub conn: rusqlite::Connection,
     pub runner_config: RunnerConfig,
@@ -25,8 +25,8 @@ impl PlugInProtocol {
     pub fn generate_manifest(
         &self,
         model_name: &str,
-    ) -> Result<WeightManifest, crabjar_llm_plug_in::PlugInError> {
-        crabjar_llm_plug_in::manifest::generate_weight_manifest(&self.conn, model_name)
+    ) -> Result<WeightManifest, pesti_plug_in::PlugInError> {
+        pesti_plug_in::manifest::generate_weight_manifest(&self.conn, model_name)
     }
 
     /// Create inference request from model manifest.
@@ -65,7 +65,7 @@ impl PlugInProtocol {
         &self,
         model_name: &str,
         limit: usize,
-    ) -> Result<Vec<crabjar_safetensors::schema::ModelWeightRow>, RunnerError> {
+    ) -> Result<Vec<pesti_safetensors::schema::ModelWeightRow>, RunnerError> {
         query_model_weights(&self.conn, model_name, limit).map_err(|e: SafetensorsSchemaError| {
             RunnerError::Sqlite(match e {
                 SafetensorsSchemaError::Sqlite(r) => r,
@@ -78,7 +78,7 @@ impl PlugInProtocol {
     pub fn update_config(
         &mut self,
         config: RunnerConfig,
-    ) -> Result<(), crabjar_llm_plug_in::PlugInError> {
+    ) -> Result<(), pesti_plug_in::PlugInError> {
         self.runner_config = config;
         Ok(())
     }

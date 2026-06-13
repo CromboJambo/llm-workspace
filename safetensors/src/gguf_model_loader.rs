@@ -2,8 +2,8 @@ use crate::error::SafetensorsError;
 use crate::gguf_converter::{convert_gguf_to_safetensors, GgufConversionResult};
 use crate::safetensors_store::SafetensorsStore;
 use crate::schema::TensorMetadataRow;
-use crabjar_gguf::parser::{parse_gguf, extract_tensor_bytes};
-use crabjar_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
+use pesti_gguf::parser::{parse_gguf, extract_tensor_bytes};
+use pesti_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -238,7 +238,7 @@ pub fn get_tensor_byte_range(header: &GgufHeader, tensor: &GgufTensorInfo) -> (u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crabjar_gguf::types::{GgufKvPair, GgufKvValue, GgufValueType};
+    use pesti_gguf::types::{GgufKvPair, GgufKvValue, GgufValueType};
     use std::path::PathBuf;
     use tempfile::tempdir;
 

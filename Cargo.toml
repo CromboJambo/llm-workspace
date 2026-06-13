@@ -21,8 +21,8 @@ nursery = "warn"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL 3 or Later"
-authors = ["CrabJar Contributors"]
-description = "LLM inference stack: runner, plug-in protocol, safetensors, GGUF parser"
+  authors = ["PESTI Contributors"]
+  description = "Portable Execution Substrate for Transformer Inference"
 
 [workspace.dependencies]
 # LLM inference (FFI path)

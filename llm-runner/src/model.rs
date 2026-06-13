@@ -60,7 +60,7 @@ impl Default for ModelConfig {
 
 impl ModelConfig {
     /// Create a model config from loaded GGUF weights.
-    pub fn from_gguf(header: &crabjar_gguf::types::GgufHeader) -> Result<Self> {
+    pub fn from_gguf(header: &pesti_gguf::types::GgufHeader) -> Result<Self> {
         let embed_dim = header.embedding_length().ok_or_else(|| {
             RunnerError::MissingHeaderField("embedding_length".to_string())
         })? as usize;
@@ -851,7 +851,7 @@ mod tests {
     fn model_config_from_gguf_header() {
         let dir = tempfile::tempdir().unwrap();
         let path = std::path::PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
-        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+        let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_u32("llama.context_length", 2048),
             kv_pair_u32("llama.embedding_length", 64),
@@ -859,13 +859,13 @@ mod tests {
             kv_pair_u32("llama.attention.head_count", 8),
             kv_pair_u32("llama.attention.head_count_kv", 4),
         ];
-        let tensors: Vec<crabjar_gguf::GgufTensorInfo> = vec![crabjar_gguf::GgufTensorInfo {
+        let tensors: Vec<pesti_gguf::GgufTensorInfo> = vec![pesti_gguf::GgufTensorInfo {
             name: "tok_embeddings.weight".to_string(),
             shape: vec![64u64],
             offset: 0,
             dtype: 1,
         }];
-        let data_section_start = crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
+        let data_section_start = pesti_gguf::compute_data_section_start(3, &kv_pairs, &tensors, None);
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GGUF");
         buf.extend_from_slice(&3u32.to_le_bytes());
@@ -892,7 +892,7 @@ mod tests {
         let total: u64 = tensors.iter().map(|t| t.shape.iter().product::<u64>() * 2).sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = ModelConfig::from_gguf(&header).unwrap();
         assert_eq!(config.num_layers, 4);
         assert_eq!(config.num_heads, 8);
@@ -1212,24 +1212,24 @@ mod tests {
 
 // ── Test helpers ─────────────────────────────────────────────────────
 
-fn kv_pair_str(key: &str, value: &str) -> crabjar_gguf::GgufKvPair {
-    crabjar_gguf::GgufKvPair {
+fn kv_pair_str(key: &str, value: &str) -> pesti_gguf::GgufKvPair {
+    pesti_gguf::GgufKvPair {
         key: key.to_string(),
-        value_type: crabjar_gguf::GgufValueType::String,
-        value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+        value_type: pesti_gguf::GgufValueType::String,
+        value: pesti_gguf::GgufKvValue::String(value.to_string()),
     }
 }
 
-fn kv_pair_u32(key: &str, value: u32) -> crabjar_gguf::GgufKvPair {
-    crabjar_gguf::GgufKvPair {
+fn kv_pair_u32(key: &str, value: u32) -> pesti_gguf::GgufKvPair {
+    pesti_gguf::GgufKvPair {
         key: key.to_string(),
-        value_type: crabjar_gguf::GgufValueType::Uint32,
-        value: crabjar_gguf::GgufKvValue::Uint32(value),
+        value_type: pesti_gguf::GgufValueType::Uint32,
+        value: pesti_gguf::GgufKvValue::Uint32(value),
     }
 }
 
-fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
-    use crabjar_gguf::GgufKvValue;
+fn write_kv_value(buf: &mut Vec<u8>, value: &pesti_gguf::GgufKvValue) {
+    use pesti_gguf::GgufKvValue;
     match value {
         GgufKvValue::Uint8(v) => buf.push(*v),
         GgufKvValue::Int8(v) => buf.push(*v as u8),

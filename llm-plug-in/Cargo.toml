@@ -1,5 +1,5 @@
 [package]
-name = "crabjar-llm-plug-in"
+name = "pesti-plug-in"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -16,7 +16,7 @@ rusqlite.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 safetensors.workspace = true
-crabjar-safetensors = { path = "../safetensors" }
+pesti-safetensors = { path = "../safetensors" }
 
 [dev-dependencies]
 tempfile.workspace = true

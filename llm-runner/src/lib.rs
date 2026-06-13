@@ -1,4 +1,4 @@
-//! crabjar-llm-runner: LLM inference engine for tensor computation and model loading.
+//! pesti-runner: Portable Execution Substrate for Transformer Inference.
 //!
 //! Separate workspace member that eventually becomes independent.
 //! Interface boundary: consumes WeightManifest from safetensors, emits InferenceResponse to guard.
@@ -62,7 +62,7 @@ pub mod llama;
 mod tests {
     use super::*;
     use candle_core::DType;
-    use crabjar_llm_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
+    use pesti_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
     use tempfile::tempdir;
 
     // ── DeviceBackend ──────────────────────────────────────────────────
@@ -282,7 +282,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
         let loader = ModelLoader::new(conn);
         let result = loader.load_manifest("nonexistent");
@@ -294,7 +294,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
         let loader = ModelLoader::new(conn);
         let result = loader.verify_checksum("nonexistent-id", "abc123");
@@ -307,9 +307,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
-        let weight_id = crabjar_safetensors::schema::insert_model_weights(
+        let weight_id = pesti_safetensors::schema::insert_model_weights(
             &conn,
             "test-model",
             "test/repo",
@@ -333,9 +333,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
-        let weight_id = crabjar_safetensors::schema::insert_model_weights(
+        let weight_id = pesti_safetensors::schema::insert_model_weights(
             &conn,
             "test-model",
             "test/repo",
@@ -359,9 +359,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
-        crabjar_safetensors::schema::insert_model_weights(
+        pesti_safetensors::schema::insert_model_weights(
             &conn,
             "model-a",
             "test/repo",
@@ -388,7 +388,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
         let config = RunnerConfig::default();
         let plugin = PlugInProtocol::new(conn, config.clone());
@@ -400,7 +400,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
         let config = RunnerConfig::default();
         let plugin = PlugInProtocol::new(conn, config);
@@ -420,7 +420,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
         let config = RunnerConfig::default();
         let plugin = PlugInProtocol::new(conn, config);
@@ -439,7 +439,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crabjar_safetensors::schema::init_db(&conn).unwrap();
+        pesti_safetensors::schema::init_db(&conn).unwrap();
 
         let mut plugin = PlugInProtocol::new(
             conn,

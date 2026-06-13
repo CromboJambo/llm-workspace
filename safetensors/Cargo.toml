@@ -1,5 +1,5 @@
 [package]
-name = "crabjar-safetensors"
+name = "pesti-safetensors"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -20,7 +20,7 @@ path-absolutize.workspace = true
 sha2.workspace = true
 hex.workspace = true
 safetensors.workspace = true
-crabjar-gguf = { path = "../gguf" }
+pesti-gguf = { path = "../gguf" }
 
 [dev-dependencies]
 tempfile.workspace = true

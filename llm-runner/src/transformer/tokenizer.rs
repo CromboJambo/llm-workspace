@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crabjar_gguf::types::GgufHeader;
+use pesti_gguf::types::GgufHeader;
 use tokenizers::tokenizer::{Result, Tokenizer};
 use tracing::debug;
 
@@ -174,7 +174,7 @@ impl GgufTokenizerConfig {
 
 /// Load a tokenizer from a GGUF file.
 pub fn load_tokenizer_from_gguf(path: &Path) -> Result<(GgufTokenizerConfig, Tokenizer)> {
-    let header = crabjar_gguf::parser::parse_gguf(path)
+    let header = pesti_gguf::parser::parse_gguf(path)
         .map_err(|e| RunnerError::Tokenizer(e.to_string()))?;
 
     let config = GgufTokenizerConfig::from_gguf_header(&header);
@@ -198,7 +198,7 @@ pub fn tokenizer_config_from_header(header: &GgufHeader) -> GgufTokenizerConfig 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crabjar_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
+    use pesti_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
     use tempfile::tempdir;
 
     fn make_test_gguf_with_vocab(path: &Path) {
@@ -211,7 +211,7 @@ mod tests {
         ];
 
         // Tensor metadata
-        let tensor_info = crabjar_gguf::GgufTensorInfo {
+        let tensor_info = pesti_gguf::GgufTensorInfo {
             name: "test.weight".to_string(),
             shape: vec![4u64],
             offset: 0,
@@ -220,7 +220,7 @@ mod tests {
 
         // Compute data_section_start with BOTH kv_pairs and tensor_info
         let data_section_start =
-            crabjar_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], None);
+            pesti_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], None);
 
         // Write file
         let mut buf = Vec::new();
@@ -259,62 +259,62 @@ mod tests {
     fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::String,
-            value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+            value_type: pesti_gguf::GgufValueType::String,
+            value: pesti_gguf::GgufKvValue::String(value.to_string()),
         }
     }
 
     fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::Uint32,
-            value: crabjar_gguf::GgufKvValue::Uint32(value),
+            value_type: pesti_gguf::GgufValueType::Uint32,
+            value: pesti_gguf::GgufKvValue::Uint32(value),
         }
     }
 
-    fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
+    fn write_kv_value(buf: &mut Vec<u8>, value: &pesti_gguf::GgufKvValue) {
         match value {
-            crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
-            crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
-            crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int16(v) => {
+            pesti_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
+            pesti_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
+            pesti_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int16(v) => {
                 buf.extend_from_slice(&(*v as i16).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int32(v) => {
+            pesti_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int32(v) => {
                 buf.extend_from_slice(&(*v as i32).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int64(v) => {
+            pesti_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int64(v) => {
                 buf.extend_from_slice(&(*v as i64).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
-            crabjar_gguf::GgufKvValue::String(s) => {
+            pesti_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
+            pesti_gguf::GgufKvValue::String(s) => {
                 buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
                 buf.extend_from_slice(s.as_bytes());
             }
-            crabjar_gguf::GgufKvValue::Int8Array(arr) => {
+            pesti_gguf::GgufKvValue::Int8Array(arr) => {
                 let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 buf.extend_from_slice(&bytes);
             }
-            crabjar_gguf::GgufKvValue::Uint8Array(arr) => {
+            pesti_gguf::GgufKvValue::Uint8Array(arr) => {
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 buf.extend_from_slice(arr);
             }
-            crabjar_gguf::GgufKvValue::Array(arr) => {
+            pesti_gguf::GgufKvValue::Array(arr) => {
                 buf.extend_from_slice(&9u32.to_le_bytes()); // element type = ARRAY
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 for elem in arr {
                     write_kv_value(buf, elem);
                 }
             }
-            crabjar_gguf::GgufKvValue::Bfloat16(v) => {
+            pesti_gguf::GgufKvValue::Bfloat16(v) => {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            crabjar_gguf::GgufKvValue::Float16(v) => {
+            pesti_gguf::GgufKvValue::Float16(v) => {
                 buf.extend_from_slice(&(*v as u16).to_le_bytes())
             }
         }
@@ -325,7 +325,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.gguf");
         make_test_gguf_with_vocab(&path);
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
 
         let config = GgufTokenizerConfig::from_gguf_header(&header);
         assert_eq!(config.model_type, "llama");
@@ -337,7 +337,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.gguf");
         make_test_gguf_with_vocab(&path);
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
 
         let config = tokenizer_config_from_header(&header);
         assert_eq!(config.model_type, "llama");
@@ -349,7 +349,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.gguf");
         make_test_gguf_with_vocab(&path);
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = GgufTokenizerConfig::from_gguf_header(&header);
         let tokenizer = config.to_tokenizer();
         // Should produce a valid tokenizer (may be empty if JSON is invalid)
@@ -499,7 +499,7 @@ mod tests {
             .sum();
         buf.resize((data_section_start + total) as usize, 0);
         std::fs::write(&path, &buf).unwrap();
-        let header = crabjar_gguf::parser::parse_gguf(&path).unwrap();
+        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
         let config = tokenizer_config_from_header(&header);
         assert_eq!(config.model_type, "llama");
         assert_eq!(config.vocab_size, 3);

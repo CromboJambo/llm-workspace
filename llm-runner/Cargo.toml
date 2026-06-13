@@ -1,5 +1,5 @@
 [package]
-name = "crabjar-llm-runner"
+name = "pesti-runner"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -23,9 +23,9 @@ tracing.workspace = true
 tracing-appender.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
-crabjar-llm-plug-in = { path = "../llm-plug-in" }
-crabjar-safetensors = { path = "../safetensors" }
-crabjar-gguf = { path = "../gguf" }
+pesti-plug-in = { path = "../llm-plug-in" }
+pesti-safetensors = { path = "../safetensors" }
+pesti-gguf = { path = "../gguf" }
 cudarc.workspace = true
 encoding_rs = "0.8"
 intel-mkl-src.workspace = true

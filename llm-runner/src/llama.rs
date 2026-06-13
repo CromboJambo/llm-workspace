@@ -14,7 +14,7 @@
 //! ## Quick Start
 //!
 //! ```rust,ignore
-//! use crabjar_llm_runner::llama::{LlamaRunner, SamplingConfig};
+//! use pesti_runner::llama::{LlamaRunner, SamplingConfig};
 //!
 //! let runner = LlamaRunner::builder("/path/to/model.gguf")
 //!     .n_ctx(4096)

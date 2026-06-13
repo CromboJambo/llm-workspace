@@ -17,8 +17,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crabjar_gguf::parser::{extract_tensor_bytes, parse_gguf};
-use crabjar_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
+use pesti_gguf::parser::{extract_tensor_bytes, parse_gguf};
+use pesti_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
 
 use crate::error::{Result, RunnerError};
 
@@ -64,7 +64,7 @@ pub fn load_gguf_tensor(gguf_path: &Path, tensor_name: &str) -> Result<(GgufHead
     let header = parse_gguf(gguf_path)?;
 
     let tensor = header.get_tensor(tensor_name).ok_or_else(|| {
-        RunnerError::Gguf(crabjar_gguf::GgufError::InvalidTensor(format!(
+        RunnerError::Gguf(pesti_gguf::GgufError::InvalidTensor(format!(
             "tensor '{tensor_name}' not found in file"
         )))
     })?;
@@ -207,11 +207,11 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
                 .collect())
         }
         GgufDtype::I8 | GgufDtype::I16 | GgufDtype::I32 | GgufDtype::I64 => Ok(raw_data.to_vec()),
-        GgufDtype::Unknown(_) => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
+        GgufDtype::Unknown(_) => Err(RunnerError::Gguf(pesti_gguf::GgufError::Io(format!(
             "Unknown GGUF dtype {} for tensor '{}'",
             tensor.dtype, tensor.name
         )))),
-        _ => Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
+        _ => Err(RunnerError::Gguf(pesti_gguf::GgufError::Io(format!(
             "Unsupported GGUF dtype {} for tensor '{}'. Use load_gguf_model() for full conversion pipeline.",
             tensor.dtype, tensor.name
         )))),
@@ -369,7 +369,7 @@ fn dequantize_q1_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
     let expected_size = num_full_blocks * 20 + if remaining > 0 { 2 + remaining.div_ceil(2) } else { 0 };
 
     if data.len() < expected_size {
-        return Err(RunnerError::Gguf(crabjar_gguf::GgufError::Io(format!(
+        return Err(RunnerError::Gguf(pesti_gguf::GgufError::Io(format!(
             "Q1_K data too small: got {} bytes, need {}",
             data.len(), expected_size
         ))));
@@ -958,21 +958,21 @@ mod tests {
         buf.extend_from_slice(&3u64.to_le_bytes());
 
         // KV pairs
-        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+        let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "Q4_0"),
             kv_pair_u32("general.alignment", 32),
         ];
 
         // Tensor metadata
-        let tensors: Vec<crabjar_gguf::GgufTensorInfo> = vec![
-            crabjar_gguf::GgufTensorInfo {
+        let tensors: Vec<pesti_gguf::GgufTensorInfo> = vec![
+            pesti_gguf::GgufTensorInfo {
                 name: "tok_embeddings.weight".to_string(),
                 shape: vec![8u64],
                 offset: 0,
                 dtype: 1,
             },
-            crabjar_gguf::GgufTensorInfo {
+            pesti_gguf::GgufTensorInfo {
                 name: "output.weight".to_string(),
                 shape: vec![4u64, 8u64],
                 offset: 32,
@@ -981,7 +981,7 @@ mod tests {
         ];
 
         let data_section_start =
-            crabjar_gguf::compute_data_section_start(3, &kv_pairs, &tensors, Some(32));
+            pesti_gguf::compute_data_section_start(3, &kv_pairs, &tensors, Some(32));
 
         // Write file
         let mut buf = Vec::new();
@@ -1043,19 +1043,19 @@ mod tests {
         buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
         buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
 
-        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+        let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_u32("general.alignment", 32),
         ];
 
-        let tensor_info = crabjar_gguf::GgufTensorInfo {
+        let tensor_info = pesti_gguf::GgufTensorInfo {
             name: "test.weight".to_string(),
             shape: vec![4u64],
             offset: 0,
             dtype: 0u32,
         };
 
-        let data_section_start = crabjar_gguf::compute_data_section_start(
+        let data_section_start = pesti_gguf::compute_data_section_start(
             3,
             &kv_pairs,
             &[tensor_info.clone()],
@@ -1100,19 +1100,19 @@ mod tests {
         buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
         buf.extend_from_slice(&2u64.to_le_bytes()); // kv count
 
-        let kv_pairs: Vec<crabjar_gguf::GgufKvPair> = vec![
+        let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_u32("general.alignment", 32),
         ];
 
-        let tensor_info = crabjar_gguf::GgufTensorInfo {
+        let tensor_info = pesti_gguf::GgufTensorInfo {
             name: "q4_tensor".to_string(),
             shape: vec![32u64],
             offset: 0,
             dtype: 2u32,
         };
 
-        let data_section_start = crabjar_gguf::compute_data_section_start(
+        let data_section_start = pesti_gguf::compute_data_section_start(
             3,
             &kv_pairs,
             &[tensor_info.clone()],
@@ -1154,65 +1154,65 @@ mod tests {
         std::fs::write(path, &buf).unwrap();
     }
 
-    fn kv_pair_str(key: &str, value: &str) -> crabjar_gguf::GgufKvPair {
-        crabjar_gguf::GgufKvPair {
+    fn kv_pair_str(key: &str, value: &str) -> pesti_gguf::GgufKvPair {
+        pesti_gguf::GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::String,
-            value: crabjar_gguf::GgufKvValue::String(value.to_string()),
+            value_type: pesti_gguf::GgufValueType::String,
+            value: pesti_gguf::GgufKvValue::String(value.to_string()),
         }
     }
 
-    fn kv_pair_u32(key: &str, value: u32) -> crabjar_gguf::GgufKvPair {
-        crabjar_gguf::GgufKvPair {
+    fn kv_pair_u32(key: &str, value: u32) -> pesti_gguf::GgufKvPair {
+        pesti_gguf::GgufKvPair {
             key: key.to_string(),
-            value_type: crabjar_gguf::GgufValueType::Uint32,
-            value: crabjar_gguf::GgufKvValue::Uint32(value),
+            value_type: pesti_gguf::GgufValueType::Uint32,
+            value: pesti_gguf::GgufKvValue::Uint32(value),
         }
     }
 
-    fn write_kv_value(buf: &mut Vec<u8>, value: &crabjar_gguf::GgufKvValue) {
+    fn write_kv_value(buf: &mut Vec<u8>, value: &pesti_gguf::GgufKvValue) {
         match value {
-            crabjar_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
-            crabjar_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
-            crabjar_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int16(v) => {
+            pesti_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
+            pesti_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
+            pesti_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int16(v) => {
                 buf.extend_from_slice(&(*v as i16).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int32(v) => {
+            pesti_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int32(v) => {
                 buf.extend_from_slice(&(*v as i32).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Int64(v) => {
+            pesti_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Int64(v) => {
                 buf.extend_from_slice(&(*v as i64).to_le_bytes())
             }
-            crabjar_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            crabjar_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
-            crabjar_gguf::GgufKvValue::String(s) => {
+            pesti_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+            pesti_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
+            pesti_gguf::GgufKvValue::String(s) => {
                 buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
                 buf.extend_from_slice(s.as_bytes());
             }
-            crabjar_gguf::GgufKvValue::Int8Array(arr) => {
+            pesti_gguf::GgufKvValue::Int8Array(arr) => {
                 let bytes: Vec<u8> = arr.iter().map(|b| *b as u8).collect();
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 buf.extend_from_slice(&bytes);
             }
-            crabjar_gguf::GgufKvValue::Uint8Array(arr) => {
+            pesti_gguf::GgufKvValue::Uint8Array(arr) => {
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 buf.extend_from_slice(arr);
             }
-            crabjar_gguf::GgufKvValue::Array(arr) => {
+            pesti_gguf::GgufKvValue::Array(arr) => {
                 buf.extend_from_slice(&9u32.to_le_bytes());
                 buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
                 for elem in arr {
                     write_kv_value(buf, elem);
                 }
             }
-            crabjar_gguf::GgufKvValue::Bfloat16(v) => {
+            pesti_gguf::GgufKvValue::Bfloat16(v) => {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            crabjar_gguf::GgufKvValue::Float16(v) => {
+            pesti_gguf::GgufKvValue::Float16(v) => {
                 buf.extend_from_slice(&(*v as u16).to_le_bytes())
             }
         }

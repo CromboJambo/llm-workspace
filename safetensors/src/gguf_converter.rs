@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::io::{Read, Seek};
 use std::path::Path;
 
-use crabjar_gguf::parser::parse_gguf;
-use crabjar_gguf::types::{GgufDtype, GgufTensorInfo};
+use pesti_gguf::parser::parse_gguf;
+use pesti_gguf::types::{GgufDtype, GgufTensorInfo};
 use safetensors::tensor::{Dtype, TensorView};
 use safetensors::serialize;
 
@@ -1168,7 +1168,7 @@ pub fn convert_gguf_tensor_to_safetensors(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crabjar_gguf::types::GgufTensorInfo;
+    use pesti_gguf::types::GgufTensorInfo;
 
     #[test]
     fn test_dequantize_q4_0_roundtrip() {

@@ -1,7 +1,7 @@
-//! crabjar-llm-plug-in: LLM runner plug-in protocol for external model runtime integration.
+//! pesti-plug-in: Portable Execution Substrate for Transformer Inference — plug-in protocol for external model runtime integration.
 //!
 //! Provides weight manifest output from safetensors DB, inference request/response structs,
-//! and runner config for plugging external inference engines into crabjar tool calls and skills.
+//! and runner config for plugging external inference engines into PESTI tool calls and skills.
 //!
 //! ## Protocol
 //!
@@ -24,7 +24,7 @@ pub use templates::{infer_template, TemplateFamily};
 mod tests {
     use super::*;
     use crate::manifest::generate_weight_manifest;
-    use crabjar_safetensors::schema;
+    use pesti_safetensors::schema;
     use tempfile::tempdir;
 
     // ── WeightManifest ─────────────────────────────────────────────────
