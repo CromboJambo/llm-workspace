@@ -211,10 +211,10 @@ llm-workspace/
 
 | Device | VRAM | Free | Role |
 |--------|------|------|------|
-| GPU0 (RTX 4070) | 16GiB | ~1.6GiB | LM Studio (~13GiB) |
-| GPU1 (RTX 5060 Ti) | 16GiB | ~3.6GiB | LM Studio (~12.6GiB) |
-| Remote 3070 Ti | 8GiB | ~8GiB | LM Studio on Tailscale |
-| Laptop (LM-Link) | unknown | unknown | LM Studio on Tailscale |
+| GPU0 (RTX 4070Ti Super) | 16GiB | ~1.6GiB | LM Studio (~13GiB) |
+| GPU1 (RTX 5060Ti) | 16GiB | ~3.6GiB | LM Studio (~12.6GiB) |
+| Remote (RTX 3070Ti) | 8GiB | ~8GiB | LM Studio on Tailscale |
+| Laptop (RTX 3050) | 4Gib | unknown | LM Studio on Tailscale |
 
 ## Key Dependencies
 
