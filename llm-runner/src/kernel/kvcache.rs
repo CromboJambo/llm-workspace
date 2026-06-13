@@ -204,12 +204,12 @@ impl Kvcache {
         let new_total = self.num_heads * self.head_dim * 2 * new_max_seq;
         let mut new_buf = DeviceBuffer::zeros(new_total);
 
-        if let Some(src) = self.buffer.as_slice()
-            && let Some(dst) = new_buf.as_mut_slice()
-        {
-            let copy_len = self.total_elements();
-            if copy_len <= dst.len() && copy_len <= src.len() {
-                dst[..copy_len].copy_from_slice(&src[..copy_len]);
+        if let Some(src) = self.buffer.as_slice() {
+            if let Some(dst) = new_buf.as_mut_slice() {
+                let copy_len = self.total_elements();
+                if copy_len <= dst.len() && copy_len <= src.len() {
+                    dst[..copy_len].copy_from_slice(&src[..copy_len]);
+                }
             }
         }
 
@@ -283,7 +283,11 @@ impl Kvcache {
     ///
     /// Returns `None` if the cache is on host.
     pub fn device_ptr(&self) -> Option<u64> {
-        self.buffer.device_ptr()
+        if self.buffer.is_backed() {
+            Some(self.buffer.device_ptr())
+        } else {
+            None
+        }
     }
 
     /// Get the underlying buffer.
