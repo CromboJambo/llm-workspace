@@ -232,18 +232,30 @@ impl GemmKernel for CudaGemmKernel {
         }
 
         // Validate input buffers have data on device
-        let a_ptr = a.device_ptr().ok_or(GemmError::BufferSizeMismatch {
-            expected: m * k,
-            got: 0,
-        })?;
-        let b_ptr = b.device_ptr().ok_or(GemmError::BufferSizeMismatch {
-            expected: k * n,
-            got: 0,
-        })?;
-        let c_ptr = c.device_ptr().ok_or(GemmError::BufferSizeMismatch {
-            expected: m * n,
-            got: 0,
-        })?;
+        let a_ptr = if a.is_backed() {
+            a.device_ptr()
+        } else {
+            return Err(GemmError::BufferSizeMismatch {
+                expected: m * k,
+                got: 0,
+            });
+        };
+        let b_ptr = if b.is_backed() {
+            b.device_ptr()
+        } else {
+            return Err(GemmError::BufferSizeMismatch {
+                expected: k * n,
+                got: 0,
+            });
+        };
+        let c_ptr = if c.is_backed() {
+            c.device_ptr()
+        } else {
+            return Err(GemmError::BufferSizeMismatch {
+                expected: m * n,
+                got: 0,
+            });
+        };
 
         // Verify buffer sizes (DeviceBuffer::len() returns element count)
         if a.len() < m * k {
@@ -508,14 +520,15 @@ mod tests {
     #[test]
     fn cpu_gemm_kernel_matmul_basic() {
         let kernel = CpuGemmKernel::new();
-        let a = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 4]); // [2x2]
-        let b = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 4]); // [2x2]
-        let mut c = DeviceBuffer::from_host(vec![0.0f32; 4]); // [2x2]
+        let a = DeviceBuffer::from_cpu_device(vec![f16::from_f32(1.0); 4]); // [2x2]
+        let b = DeviceBuffer::from_cpu_device(vec![f16::from_f32(1.0); 4]); // [2x2]
+        let mut c = DeviceBuffer::from_cpu_device(vec![0.0f32; 4]); // [2x2]
 
         let result = kernel.matmul(1.0, &a, &b, 0.0, &mut c, 2, 2, 2);
         assert!(result.is_ok());
 
-        let c_host = c.to_host();
+        // Get result from the CPU-fallback buffer
+        let c_host = c.as_slice().map(|s| s.to_vec()).unwrap_or_default();
         assert_eq!(c_host[0], 2.0); // 1*1 + 1*1
         assert_eq!(c_host[1], 2.0);
         assert_eq!(c_host[2], 2.0);
@@ -535,19 +548,19 @@ mod tests {
         let mut c = DeviceBuffer::zeros_cpu_device(4); // [2x2]
 
         // Verify buffers are correctly identified as "device"
-        assert!(a.is_device());
-        assert!(b.is_device());
-        assert!(c.is_device());
+        assert!(a.is_backed());
+        assert!(b.is_backed());
+        assert!(c.is_backed());
         assert!(a.as_slice().is_some());
         assert!(c.as_mut_slice().is_some());
-        assert_eq!(c.device_ptr(), Some(0xDEAD));
+        assert_eq!(c.device_ptr(), 0xDEAD);
 
         // Run GEMM: C = 1.0 * A @ B + 0.0 * C
         // Each C[i][j] = sum_k(A[i][k] * B[k][j]) = 2.0*3.0 + 2.0*3.0 = 12.0
         let result = kernel.matmul(1.0, &a, &b, 0.0, &mut c, 2, 2, 2);
         assert!(result.is_ok());
 
-        let c_host = c.to_host();
+        let c_host = c.as_slice().map(|s| s.to_vec()).unwrap_or_default();
         assert_eq!(c_host[0], 12.0);
         assert_eq!(c_host[1], 12.0);
         assert_eq!(c_host[2], 12.0);
@@ -675,12 +688,13 @@ mod tests {
         }
 
         // Allocate device buffers
-        let a_dev = DeviceBuffer::from_host_device(&stream, &a_host)
-            .map_err(|e| format!("A alloc failed: {}", e))?;
-        let b_dev = DeviceBuffer::from_host_device(&stream, &b_host)
-            .map_err(|e| format!("B alloc failed: {}", e))?;
-        let mut c_dev = DeviceBuffer::zeros_device(&stream, m * n)
-            .map_err(|e| format!("C alloc failed: {}", e))?;
+        let backend = crate::kernel::memory::CudaMemoryBackend::new(stream.clone());
+        let a_dev = DeviceBuffer::from_host_device(&backend, &a_host)
+            .map_err(|e| format!("A alloc failed: {e}"))?;
+        let b_dev = DeviceBuffer::from_host_device(&backend, &b_host)
+            .map_err(|e| format!("B alloc failed: {e}"))?;
+        let mut c_dev = DeviceBuffer::zeros_device(&backend, m * n)
+            .map_err(|e| format!("C alloc failed: {e}"))?;
 
         // Launch GPU kernel
         gpu_kernel
@@ -688,9 +702,10 @@ mod tests {
             .map_err(|e| format!("Kernel launch failed: {}", e))?;
 
         // Read back result
+        let backend = crate::kernel::memory::CudaMemoryBackend::new(stream.clone());
         let c_gpu = c_dev
-            .to_host_from_device(&stream)
-            .map_err(|e| format!("D2H transfer failed: {}", e))?;
+            .to_host_vec(&backend)
+            .map_err(|e| format!("D2H transfer failed: {e}"))?;
 
         Ok((c_gpu, arch))
     }
@@ -808,16 +823,17 @@ mod tests {
 
         // Expected: C = 1.0 * (2.0 * 3.0 * 2) + 0.5 * 10.0 = 12.0 + 5.0 = 17.0
         // (each element: sum over k=2 of 2.0*3.0 = 12.0)
+        let backend = crate::kernel::memory::CudaMemoryBackend::new(stream.clone());
 
-        let a_dev = match DeviceBuffer::from_host_device(&stream, &a_host) {
+        let a_dev = match DeviceBuffer::from_host_device(&backend, &a_host) {
             Ok(d) => d,
             Err(_) => return,
         };
-        let b_dev = match DeviceBuffer::from_host_device(&stream, &b_host) {
+        let b_dev = match DeviceBuffer::from_host_device(&backend, &b_host) {
             Ok(d) => d,
             Err(_) => return,
         };
-        let mut c_dev = match DeviceBuffer::from_host_device(&stream, &c_init_host) {
+        let mut c_dev = match DeviceBuffer::from_host_device(&backend, &c_init_host) {
             Ok(d) => d,
             Err(_) => return,
         };
@@ -831,7 +847,8 @@ mod tests {
             }
         }
 
-        let c_gpu = match c_dev.to_host_from_device(&stream) {
+        let backend = crate::kernel::memory::CudaMemoryBackend::new(stream.clone());
+        let c_gpu = match c_dev.to_host_vec(&backend) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("D2H failed in beta test: {}", e);
@@ -898,11 +915,11 @@ mod tests {
         let b_host = vec![f16::from_f32(1.0)];
         let c_host = vec![0.0f32];
 
-        let a_dev = DeviceBuffer::from_host_device(&stream, &a_host)
+        let a_dev = DeviceBuffer::from_cuda_stream(&stream, &a_host)
             .expect("A alloc should succeed");
-        let b_dev = DeviceBuffer::from_host_device(&stream, &b_host)
+        let b_dev = DeviceBuffer::from_cuda_stream(&stream, &b_host)
             .expect("B alloc should succeed");
-        let mut c_dev = DeviceBuffer::from_host_device(&stream, &c_host)
+        let mut c_dev = DeviceBuffer::from_cuda_stream(&stream, &c_host)
             .expect("C alloc should succeed");
 
         // Launch should succeed
