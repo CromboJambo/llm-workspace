@@ -1,3 +1,4 @@
+use crate::cuda_runtime::is_available;
 use crate::device_discovery::LocalDevice;
 use crate::error::RunnerError;
 use crate::remote_discovery::RemoteDevice;
@@ -58,7 +59,7 @@ impl DeviceBackend {
     pub fn is_available(&self) -> Result<bool, RunnerError> {
         Ok(match &self.device {
             Device::Cpu => true,
-            Device::Cuda(_) => false,
+            Device::Cuda(_) => is_available(),
             Device::Metal(_) => false,
         })
     }
