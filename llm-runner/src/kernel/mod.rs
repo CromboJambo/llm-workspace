@@ -67,6 +67,7 @@
 pub mod attention;
 pub mod builder;
 pub mod device_buf;
+pub mod dispatch;
 pub mod gemm;
 pub mod kvcache;
 pub mod memory;
