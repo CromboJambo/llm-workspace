@@ -6,7 +6,7 @@
 |-------|--------|-------|
 | **Phase 1: CPU Inference** | ✅ Complete | Pure-Rust transformer + llama.cpp FFI path |
 | **Phase 1.5: Hybrid Routing** | ✅ Complete | GPU → Remote → CPU device selector |
-| **Phase 2: Backend Abstraction** | 🟡 In Progress | Trait layer, tensor interfaces, execution dispatch |
+| **Phase 2: Backend Abstraction** | 🟡 In Progress | Trait layer, tensor interfaces, execution dispatch, error handling |
 | **Phase 3: Runtime** | 🔴 Not Started | Runner bridge, streaming, model management |
 | **Phase 4: GPU Kernels** | 🔮 Future | WGMMA, fp8, attention (after abstraction is solid) |
 
@@ -73,6 +73,14 @@
 - [x] TMA descriptor binding (`kernel/tma_descriptor.rs`)
 - [x] TMA bridge (`kernel/tma_bridge.rs`) — descriptor → device buffer mapping
 - [x] Fixed compilation errors (77 → 0 errors)
+- [x] **Error handling overhaul:**
+  - `RunnerError::Cuda` — proper `CudaError` → `RunnerError` conversion via `#[from]`
+  - `RunnerError::Gemm` — structured GEMM errors with arch, m/n/k dimensions
+  - `RunnerError::Attention` — structured attention errors with num_heads, head_dim, seq
+  - **Runtime CPU fallback** — `InferenceEngine::matmul()` and `attention()` automatically retry on CPU when GPU fails
+  - `DeviceBackend::is_available()` — fixed inverted logic (was returning false for CUDA)
+  - `CudaAttentionKernel::is_available()` — now checks both arch AND CUDA driver availability
+  - `CudaAttentionKernel::forward()` — validates buffer backing, returns properly-sized output
 
 ### Key Design Decisions
 
@@ -82,11 +90,8 @@
 
 ### Remaining
 
-- [ ] **Execution trait layer** — `GemmKernel`, `AttentionKernel`, `MemoryBackend` traits with CPU + CUDA impls
-- [ ] **Tensor interface abstraction** — unified tensor layout API that hides GEMM/attention specifics from the model layer
 - [ ] **Dispatch logic** — `DeviceRouter` → backend selector that routes tensor ops to the right impl
-- [ ] **Error handling** — CUDA error propagation + automatic CPU fallback when GPU ops fail
-- [ ] **Async memory transfers** — H2D/D2H via cuda-core `memory` module
+- [ ] **Async memory transfers** — H2D/D2H via cuda-core `memory` module (partially done: `memcpy_htod_async` etc. exist in `CudaMemoryBackend`)
 
 ### Why This Before Kernels
 
@@ -123,19 +128,15 @@ Real GPU kernels (WGMMA, fp8, etc.) are high-effort, hardware-specific work. Wit
 
 ## Near-Term Priorities (Next 2-4 Weeks)
 
-### 1. Execution Trait Layer (Highest Impact)
+### 1. Dispatch Logic (Highest Impact)
 
-Define `GemmKernel`, `AttentionKernel`, `MemoryBackend` traits. Implement CPU backend (verified) and CUDA backend (stubbed). This is the abstraction that makes everything else interchangeable.
+Wire `DeviceRouter` → backend selector. When a tensor op is requested, the router picks the right backend based on device availability and tensor layout. The trait layer is solid (GemmKernel, AttentionKernel, MemoryBackend all implemented), but nothing routes ops through them yet.
 
-### 2. Dispatch Logic
-
-Wire `DeviceRouter` → backend selector. When a tensor op is requested, the router picks the right backend based on device availability and tensor layout.
-
-### 3. K-Family Dequantization Verification
+### 2. K-Family Dequantization Verification
 
 Test all Q2_K through Q8_K quant types against real GGUF models. Remove `#[ignore]` from tests once verified.
 
-### 4. SafeTensors Weight Loading
+### 3. SafeTensors Weight Loading
 
 Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
 
