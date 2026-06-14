@@ -85,3 +85,7 @@ pub use kvcache::{KvError, Kvcache, KvcacheSlice};
 pub use memory::{CpuMemoryBackend, CudaMemoryBackend, MemoryBackend, MemoryError, MemoryManager, RawHandle};
 pub use tma_bridge::HostTmaDescriptor;
 pub use tma_descriptor::TmaDescriptor;
+pub use dispatch::{
+    AttentionDispatch, DispatchContext, DispatchError, FeedForwardDispatch, LayerDispatch,
+    LinearDispatch, RmsNormDispatch,
+};
