@@ -1,9 +1,33 @@
+use crate::cuda_runtime::CudaError;
+use crate::kernel::{AttentionError, GemmError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RunnerError {
+    #[error("GEMM error ({arch}, {m}x{n}x{k}): {detail}")]
+    Gemm {
+        arch: String,
+        m: usize,
+        n: usize,
+        k: usize,
+        #[source]
+        detail: GemmError,
+    },
+
+    #[error("attention error (heads={num_heads}, dim={head_dim}, seq={seq}): {detail}")]
+    Attention {
+        num_heads: usize,
+        head_dim: usize,
+        seq: usize,
+        #[source]
+        detail: AttentionError,
+    },
+
     #[error("tensor computation error: {0}")]
     Tensor(String),
+
+    #[error("CUDA error: {0}")]
+    Cuda(#[from] CudaError),
 
     #[error("model loading error: {0}")]
     ModelLoad(String),
