@@ -23,6 +23,7 @@
 //! - Prefill: full KV cache loaded via TMA, all positions processed
 //! - Decode: single position (box_y=1), append new KV, compute attention over cache
 
+use crate::cuda_runtime::is_available;
 use crate::kernel::device_buf::DeviceBuffer;
 use crate::kernel::kvcache::{Kvcache, KvcacheSlice};
 use crate::kernel::tma_descriptor::TmaDescriptor;
@@ -296,21 +297,26 @@ impl AttentionKernel for CudaAttentionKernel {
         mask: Option<&DeviceBuffer<f32>>,
         config: &AttentionConfig,
     ) -> Result<DeviceBuffer<f32>, AttentionError> {
-        // TODO: Implement actual CUDA attention kernel call using cuda-oxide.
-        // This function should perform the scaled dot-product attention on the GPU device.
         if !self.is_available() {
             return Err(AttentionError::NotAvailable);
         }
 
-        println!("Running placeholder CUDA Attention for arch: {}", self.arch.name());
+        // Verify buffers have device backing (catches context destruction)
+        if !key_cache.buffer().is_backed() || !value_cache.buffer().is_backed() {
+            return Err(AttentionError::NotAvailable);
+        }
 
-        // Placeholder logic to simulate success and prevent compilation failure:
+        // TODO: Implement actual CUDA attention kernel call using cuda-oxide.
+        // This is a placeholder that validates inputs and returns a properly-sized
+        // zero buffer. The real implementation will launch a CUDA kernel.
         let _ = query;
         let _ = key_cache;
         let _ = value_cache;
         let _ = mask;
         let _ = config;
-        Ok(DeviceBuffer::zeros(1)) // Return a dummy device buffer of size 1
+        let out_dim = config.num_heads * config.head_dim;
+        let query_seq_len = query.len().checked_div(out_dim).unwrap_or(0);
+        Ok(DeviceBuffer::zeros(query_seq_len * out_dim))
     }
 
     fn arch(&self) -> AttentionArch {
@@ -318,8 +324,10 @@ impl AttentionKernel for CudaAttentionKernel {
     }
 
     fn is_available(&self) -> bool {
-        // Actual check should verify CUDA context and compute capability support
-        matches!(self.arch, AttentionArch::Wgmma | AttentionArch::Tcgen05)
+        // Check both architecture support AND CUDA driver availability
+        let arch_ok = matches!(self.arch, AttentionArch::Wgmma | AttentionArch::Tcgen05);
+        let cuda_ok = is_available();
+        arch_ok && cuda_ok
     }
 }
 
