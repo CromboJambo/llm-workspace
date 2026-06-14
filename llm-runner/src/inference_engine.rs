@@ -1,13 +1,15 @@
-use crate::cuda_runtime::{enumerate_devices, is_available, CudaRuntime};
+use crate::cuda_runtime::{enumerate_devices, is_available, CudaError, CudaRuntime};
 use crate::error::RunnerError;
 use crate::kernel::{
-    AttentionArch, AttentionConfig, AttentionKernel, CpuAttentionKernel,
-    CudaGemmKernelBuilder, GemmArch, GemmKernel,
+    AttentionArch, AttentionConfig, AttentionError, AttentionKernel, CpuAttentionKernel,
+    CudaGemmKernelBuilder, CudaMemoryBackend, GemmArch, GemmError, GemmKernel, Kvcache,
+    MemoryBackend, MemoryManager,
 };
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Module;
 use half::f16;
 use std::sync::Arc;
+use tracing::{debug, warn};
 /// Inference engine for tensor computation.
 ///
 /// actual tensor computation layer. separate from PESTI host.
@@ -20,6 +22,12 @@ pub struct InferenceEngine {
     cuda_runtime: Option<Arc<CudaRuntime>>,
     /// CUDA stream for async operations.
     stream: Option<Arc<cuda_core::CudaStream>>,
+    /// Memory manager for allocating device/host buffers.
+    memory_manager: MemoryManager,
+    /// Backup CPU GEMM kernel for runtime fallback.
+    cpu_gemm: crate::kernel::CpuGemmKernel,
+    /// Backup CPU attention kernel for runtime fallback.
+    cpu_attention: CpuAttentionKernel,
 }
 
 impl InferenceEngine {
@@ -76,6 +84,9 @@ impl InferenceEngine {
             attention,
             cuda_runtime,
             stream,
+            memory_manager: MemoryManager::new(),
+            cpu_gemm: crate::kernel::CpuGemmKernel::new(),
+            cpu_attention: CpuAttentionKernel::new(),
         }
     }
 
@@ -105,6 +116,9 @@ impl InferenceEngine {
             attention,
             cuda_runtime,
             stream,
+            memory_manager: MemoryManager::new(),
+            cpu_gemm: crate::kernel::CpuGemmKernel::new(),
+            cpu_attention: CpuAttentionKernel::new(),
         }
     }
 
@@ -140,6 +154,8 @@ impl InferenceEngine {
     /// Run a GEMM operation: C = alpha * A @ B + beta * C.
     ///
     /// A: [m x k] f16, B: [k x n] f16, C: [m x n] f32
+    ///
+    /// Falls back to CPU if the GPU kernel fails at runtime (OOM, invalid context, etc.).
     #[allow(clippy::too_many_arguments)]
     pub fn matmul(
         &self,
@@ -152,9 +168,34 @@ impl InferenceEngine {
         n: usize,
         k: usize,
     ) -> Result<(), RunnerError> {
-        self.gemm
-            .matmul(alpha, a, b, beta, c, m, n, k)
-            .map_err(|e| RunnerError::Tensor(format!("GEMM failed: {e}")))
+        // Try GPU first
+        match self.gemm.matmul(alpha, a, b, beta, c, m, n, k) {
+            Ok(()) => Ok(()),
+            Err(GemmError::NotAvailable) => {
+                // GPU not available — fall through to CPU
+                warn!(m, n, k, "GEMM: GPU not available, falling back to CPU");
+                self.cpu_gemm
+                    .matmul(alpha, a, b, beta, c, m, n, k)
+                    .map_err(|e| RunnerError::Tensor(format!("GEMM CPU fallback failed: {e}")))
+            }
+            Err(e) => {
+                // GPU failed — try CPU fallback
+                warn!(
+                    error = %e,
+                    m, n, k,
+                    "GEMM: GPU kernel failed, falling back to CPU"
+                );
+                self.cpu_gemm
+                    .matmul(alpha, a, b, beta, c, m, n, k)
+                    .map_err(|e| RunnerError::Gemm {
+                        arch: self.gemm.arch().name().to_string(),
+                        m,
+                        n,
+                        k,
+                        detail: e,
+                    })
+            }
+        }
     }
 
     /// Get the GEMM kernel's target architecture.
@@ -216,6 +257,8 @@ impl InferenceEngine {
     /// `config` — attention configuration (num_heads, head_dim, max_seq, arch)
     ///
     /// Returns output tensor [query_seq_len x (num_heads * head_dim)] f32
+    ///
+    /// Falls back to CPU if the GPU kernel fails at runtime.
     pub fn attention(
         &self,
         query: &crate::kernel::DeviceBuffer<f16>,
@@ -224,9 +267,35 @@ impl InferenceEngine {
         mask: Option<&crate::kernel::DeviceBuffer<f32>>,
         config: &AttentionConfig,
     ) -> Result<crate::kernel::DeviceBuffer<f32>, RunnerError> {
-        self.attention
-            .forward(query, key_cache, value_cache, mask, config)
-            .map_err(|e| RunnerError::Tensor(format!("Attention failed: {e}")))
+        // Try GPU first
+        match self.attention.forward(query, key_cache, value_cache, mask, config) {
+            Ok(output) => Ok(output),
+            Err(AttentionError::NotAvailable) => {
+                // GPU not available — fall through to CPU
+                warn!("Attention: GPU not available, falling back to CPU");
+                self.cpu_attention
+                    .forward(query, key_cache, value_cache, mask, config)
+                    .map_err(|e| RunnerError::Tensor(format!("Attention CPU fallback failed: {e}")))
+            }
+            Err(e) => {
+                // GPU failed — try CPU fallback
+                warn!(
+                    error = %e,
+                    "Attention: GPU kernel failed, falling back to CPU"
+                );
+                let num_heads = config.num_heads;
+                let head_dim = config.head_dim;
+                let seq = key_cache.seq_len();
+                self.cpu_attention
+                    .forward(query, key_cache, value_cache, mask, config)
+                    .map_err(|_| RunnerError::Attention {
+                        num_heads,
+                        head_dim,
+                        seq,
+                        detail: e,
+                    })
+            }
+        }
     }
 
     /// Get the attention kernel's target architecture.
