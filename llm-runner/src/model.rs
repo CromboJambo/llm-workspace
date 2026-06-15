@@ -1256,6 +1256,26 @@ mod tests {
         assert_eq!(result.unwrap().len(), 0);
         assert_eq!(model.seq_len, 1);
     }
+
+    // ── Dispatch integration test ──────────────────────────────────────
+
+    #[test]
+    fn model_enable_and_use_dispatch() {
+        let config = ModelConfig::default()
+            .with_num_layers(2)
+            .with_num_heads(4)
+            .with_head_dim(16)
+            .with_max_seq(32);
+        let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model = Model::new(config, engine, false);
+
+        // Dispatch disabled by default
+        assert!(!model.can_use_dispatch());
+
+        // Enable dispatch (no model loaded yet — still can't use it)
+        model.enable_dispatch();
+        assert!(!model.can_use_dispatch()); // needs llama_model loaded
+    }
 }
 
 // ── Test helpers ─────────────────────────────────────────────────────

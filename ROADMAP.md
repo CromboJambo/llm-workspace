@@ -94,6 +94,7 @@
   - `DispatchError` — typed error type for dispatch failures
   - `RunnerError::Dispatch` — conversion from `DispatchError`
 - [x] **Build verified:** 349 tests pass, 3 CUDA-driver errors (expected without GPU)
+- [x] **Dispatch wired into runner:** `Model::decode()` and `CpuModel` delegate to `forward_with_dispatch` when dispatch is enabled. The dispatch path handles KV cache internally; the CPU path uses manual KV append as before.
 
 ### Key Design Decisions
 
@@ -133,15 +134,23 @@
 
 ## Near-Term Priorities (Next 2-4 Weeks)
 
-### 1. K-Family Dequantization Verification
+### 1. Test Dispatch with Real GGUF Models
+
+The dispatch system is wired into `Model::decode()` and `CpuModel`. Enable dispatch on a loaded GGUF model and verify output matches the CPU path. This validates:
+- RoPE + attention correctness end-to-end
+- KV cache management in dispatch path
+- Weight loading (f32 → f16 conversion)
+- Output head correctness
+
+### 2. K-Family Dequantization Verification
 
 Test all Q2_K through Q8_K quant types against real GGUF models. Remove `#[ignore]` from tests once verified.
 
-### 2. SafeTensors Weight Loading
+### 3. SafeTensors Weight Loading
 
 Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
 
-### 3. Phase 3: Runtime
+### 4. Phase 3: Runtime
 
 Start building the runtime layer — runner bridge, streaming token generation, model lifecycle management.
 
