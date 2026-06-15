@@ -148,6 +148,8 @@ pub struct Model {
     pub seq_len: usize,
     /// Loaded transformer weights for Q/K/V projections (None = stub mode).
     pub llama_model: Option<LlamaModel>,
+    /// Whether to use the dispatch system (GPU-accelerated path).
+    pub use_dispatch: bool,
 }
 
 impl Model {
@@ -176,6 +178,7 @@ impl Model {
             kv_caches,
             seq_len: 0,
             llama_model: None,
+            use_dispatch: false,
         }
     }
 
@@ -205,7 +208,26 @@ impl Model {
             kv_caches,
             seq_len: 0,
             llama_model: Some(llama_model),
+            use_dispatch: false,
         }
+    }
+
+    /// Enable the dispatch (GPU-accelerated) inference path.
+    pub fn enable_dispatch(&mut self) {
+        self.use_dispatch = true;
+    }
+
+    /// Check if dispatch is enabled and weights are loaded.
+    pub fn can_use_dispatch(&self) -> bool {
+        self.use_dispatch && self.llama_model.is_some()
+    }
+
+    /// Pass hidden states through all transformer layers using the dispatch system.
+    pub fn forward_with_dispatch(&mut self, hidden: &[f32], start_pos: usize) -> Result<Vec<f32>> {
+        self.llama_model
+            .as_mut()
+            .ok_or_else(|| RunnerError::Tensor("dispatch: no loaded model".to_string()))?
+            .forward_with_dispatch(hidden, start_pos)
     }
 
     /// Create a model with a specific GEMM kernel.
@@ -608,6 +630,8 @@ pub struct CpuModel {
     pub kv_caches: Vec<(Kvcache, Kvcache)>,
     /// Current sequence length.
     pub seq_len: usize,
+    /// Whether to use the dispatch system (GPU-accelerated path).
+    pub use_dispatch: bool,
 }
 
 impl CpuModel {
@@ -647,7 +671,23 @@ impl CpuModel {
             config: model_config,
             kv_caches,
             seq_len: 0,
+            use_dispatch: false,
         })
+    }
+
+    /// Enable the dispatch (GPU-accelerated) inference path.
+    pub fn enable_dispatch(&mut self) {
+        self.use_dispatch = true;
+    }
+
+    /// Check if dispatch is enabled and weights are loaded.
+    pub fn can_use_dispatch(&self) -> bool {
+        self.use_dispatch
+    }
+
+    /// Pass hidden states through all transformer layers using the dispatch system.
+    pub fn forward_with_dispatch(&mut self, hidden: &[f32], start_pos: usize) -> Result<Vec<f32>> {
+        self.llama_model.forward_with_dispatch(hidden, start_pos)
     }
 
     /// Embed a single token ID into its embedding vector.
@@ -742,25 +782,33 @@ impl CpuModel {
     /// Returns: logits over vocabulary
     pub fn decode(&mut self, token: u32) -> Result<Vec<f32>> {
         let hidden = self.llama_model.embed(token, self.seq_len)?;
-        let hidden = self.llama_model.forward_layers(&hidden, self.seq_len)?;
 
-        // Store KV for all layers
-        let embed_dim = hidden.len();
-        let kv_dim = self.config.head_dim * self.config.num_heads;
-        let key: Vec<f16> = hidden[embed_dim - kv_dim..]
-            .iter()
-            .map(|&x| f16::from_f32(x))
-            .collect();
-        let value = key.clone();
+        let hidden = if self.can_use_dispatch() {
+            // Use dispatch path: handles KV cache internally
+            self.forward_with_dispatch(&hidden, self.seq_len)?
+        } else {
+            self.llama_model.forward_layers(&hidden, self.seq_len)?;
 
-        for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
-            key_cache
-                .append(&key, &value)
-                .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
-            value_cache
-                .append(&value, &key)
-                .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
-        }
+            // Store KV for all layers
+            let embed_dim = hidden.len();
+            let kv_dim = self.config.head_dim * self.config.num_heads;
+            let key: Vec<f16> = hidden[embed_dim - kv_dim..]
+                .iter()
+                .map(|&x| f16::from_f32(x))
+                .collect();
+            let value = key.clone();
+
+            for (layer_idx, (key_cache, value_cache)) in self.kv_caches.iter_mut().enumerate() {
+                key_cache
+                    .append(&key, &value)
+                    .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
+                value_cache
+                    .append(&value, &key)
+                    .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
+            }
+
+            hidden
+        };
 
         self.seq_len += 1;
 
