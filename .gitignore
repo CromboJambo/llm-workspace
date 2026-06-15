@@ -7,3 +7,5 @@ target/release/
 target/.future-incompat-report.json
 tarpaulin-report.html
 Cargo.lock
+guard.db
+knowledge.db
