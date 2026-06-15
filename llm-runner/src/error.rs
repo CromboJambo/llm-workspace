@@ -1,5 +1,5 @@
 use crate::cuda_runtime::CudaError;
-use crate::kernel::{AttentionError, GemmError};
+use crate::kernel::{AttentionError, DispatchError, GemmError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -61,6 +61,9 @@ pub enum RunnerError {
 
     #[error("GGUF header missing required field: {0}")]
     MissingHeaderField(String),
+
+    #[error("dispatch error: {0}")]
+    Dispatch(#[from] DispatchError),
 }
 
 pub type Result<T> = std::result::Result<T, RunnerError>;
