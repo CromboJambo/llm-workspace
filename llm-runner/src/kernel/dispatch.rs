@@ -258,6 +258,11 @@ impl DispatchContext {
             return Ok(c_host);
         }
 
+        // Sync after async D2H to ensure data is ready
+        if let Err(e) = self.memory.sync() {
+            warn!(error = %e, "GEMM dispatch: sync failed, returning partial result");
+        }
+
         Ok(c_host)
     }
 
@@ -457,6 +462,11 @@ impl DispatchContext {
             .d2h(result_buf.handle(), result_bytes_mut)
             .map_err(|e| DispatchError::Transfer(format!("D2H attention: {e}")))?;
 
+        // Sync after async D2H to ensure data is ready
+        if let Err(e) = self.memory.sync() {
+            warn!(error = %e, "Attention dispatch: sync failed");
+        }
+
         Ok(result_host)
     }
 
@@ -596,6 +606,12 @@ pub struct AttentionDispatch {
 }
 
 impl AttentionDispatch {
+    /// Compute scaled dot-product attention with dispatch.
+    ///
+    /// 1. Q/K/V projections (GPU or CPU via dispatch context)
+    /// 2. RoPE on Q and K
+    /// 3. softmax(Q @ K^T / sqrt(head_dim)) @ V
+    /// 4. Output projection (wo)
     pub fn forward(
         &self,
         ctx: &DispatchContext,
@@ -607,27 +623,159 @@ impl AttentionDispatch {
         value_cache: &Kvcache,
     ) -> Result<Vec<f32>, DispatchError> {
         let embed_dim = self.num_heads * self.head_dim;
+        let scale = 1.0 / (self.head_dim as f32).sqrt();
 
         // Q/K/V projections (GPU or CPU)
         let q = self.wq.forward(ctx, x, batch_size)?;
         let k = self.wk.forward(ctx, x, batch_size)?;
         let v = self.wv.forward(ctx, x, batch_size)?;
 
-        // Apply RoPE to Q and K (host-side, already done in original)
-        // ... (caller handles RoPE)
+        // Apply RoPE to Q and K (per-head, per-position)
+        let mut q_rope = q.clone();
+        let mut k_rope = k.clone();
+        self.apply_rope(&mut q_rope, &mut k_rope, seq_len, start_pos);
 
-        // Scaled dot-product attention
-        let scale = 1.0 / (self.head_dim as f32).sqrt();
+        // Scaled dot-product attention: softmax(Q @ K^T / sqrt(head_dim)) @ V
+        // Output: [batch_size * seq_len, embed_dim]
+        let mut output = vec![0.0f32; batch_size * seq_len * embed_dim];
 
-        // Build query buffer for attention dispatch
-        let q_f16: Vec<f16> = q.iter().map(|val| f16::from_f32(val * scale)).collect();
+        for b in 0..batch_size {
+            for pos in 0..seq_len {
+                let q_idx = (b * seq_len + pos) * embed_dim;
+                let mut attn_weights = vec![0.0f32; start_pos + seq_len];
 
-        // For now, return the projected Q/K/V — full attention dispatch
-        // would need the Kvcache integration
-        let _ = (k, v, scale, key_cache, value_cache, start_pos, seq_len);
+                // Q @ K^T for this position
+                for j in 0..(start_pos + seq_len) {
+                    let mut sum = 0.0f32;
+                    for h in 0..self.num_heads {
+                        let q_start = q_idx + h * self.head_dim;
+                        let group = h / (self.num_heads / self.num_kv_heads);
+                        let k_start = group * self.head_dim + j * self.kv_dim;
+                        // Read K from cache at position j
+                        let k_slice = Self::extract_head_slice(
+                            key_cache,
+                            true,
+                            group,
+                            j,
+                            self.head_dim,
+                        );
+                        if k_slice.len() == self.head_dim {
+                            for d in 0..self.head_dim {
+                                sum += q_rope[q_start + d] * k_slice[d].to_f32();
+                            }
+                        }
+                    }
+                    attn_weights[j] = sum * scale;
+                }
 
-        // Return Q output (attention computation would go here)
-        Ok(q)
+                // Softmax
+                let max_val = attn_weights
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
+                let exps: Vec<f32> = attn_weights.iter().map(|w| (*w - max_val).exp()).collect();
+                let exp_sum: f32 = exps.iter().sum();
+                let softmax_out: Vec<f32> = if exp_sum > 0.0 {
+                    exps.iter().map(|e| e / exp_sum).collect()
+                } else {
+                    vec![1.0 / (start_pos + seq_len) as f32; start_pos + seq_len]
+                };
+
+                // softmax_out @ V
+                let mut attn_output = vec![0.0f32; self.num_heads * self.head_dim];
+                for h in 0..self.num_heads {
+                    let group = h / (self.num_heads / self.num_kv_heads);
+                    for d in 0..self.head_dim {
+                        let mut sum = 0.0f32;
+                        for j in 0..(start_pos + seq_len) {
+                            let v_slice = Self::extract_head_slice(
+                                value_cache,
+                                false,
+                                group,
+                                j,
+                                self.head_dim,
+                            );
+                            if j < v_slice.len() / self.head_dim {
+                                let v_pos = j * self.head_dim + d;
+                                if v_pos < v_slice.len() {
+                                    sum += softmax_out[j] * v_slice[v_pos].to_f32();
+                                }
+                            }
+                        }
+                        attn_output[h * self.head_dim + d] = sum;
+                    }
+                }
+
+                // Output projection: attn_output @ wo^T
+                let wo_output = self.wo.forward(ctx, &attn_output, 1)?;
+                for i in 0..embed_dim {
+                    output[(b * seq_len + pos) * embed_dim + i] = wo_output[i];
+                }
+            }
+        }
+
+        Ok(output)
+    }
+
+    /// Apply RoPE (Rotary Positional Embeddings) to Q and K.
+    fn apply_rope(&self, q: &mut [f32], k: &mut [f32], seq_len: usize, start_pos: usize) {
+        let dim = self.head_dim;
+        let inv_freq: Vec<f32> = (0..dim / 2)
+            .map(|i| 1.0 / (10000.0_f32.powf(2.0 * i as f32 / dim as f32)))
+            .collect();
+
+        for pos in 0..seq_len {
+            let global_pos = start_pos + pos;
+            for head in 0..self.num_heads {
+                let q_start = head * dim;
+                let k_start = head * dim;
+                for i in 0..dim / 2 {
+                    let freq = inv_freq[i] * global_pos as f32;
+                    let cos = freq.cos();
+                    let sin = freq.sin();
+
+                    // Rotate Q
+                    let q0 = q[q_start + 2 * i];
+                    let q1 = q[q_start + 2 * i + 1];
+                    q[q_start + 2 * i] = q0 * cos - q1 * sin;
+                    q[q_start + 2 * i + 1] = q0 * sin + q1 * cos;
+
+                    // Rotate K
+                    let k0 = k[k_start + 2 * i];
+                    let k1 = k[k_start + 2 * i + 1];
+                    k[k_start + 2 * i] = k0 * cos - k1 * sin;
+                    k[k_start + 2 * i + 1] = k0 * sin + k1 * cos;
+                }
+            }
+        }
+    }
+
+    /// Extract a head's slice from a Kvcache buffer.
+    fn extract_head_slice(
+        cache: &Kvcache,
+        is_key: bool,
+        head_idx: usize,
+        seq_pos: usize,
+        head_dim: usize,
+    ) -> Vec<f16> {
+        let num_heads = cache.num_heads();
+        let max_seq = cache.max_seq();
+        let head_stride = num_heads * head_dim;
+        let head_offset = head_idx * head_dim;
+        let v_base = head_stride * max_seq;
+        let base = if is_key { 0 } else { v_base };
+        let head_base = base + head_stride * head_offset;
+
+        let src = cache.buffer().as_slice().unwrap_or(&[]);
+        let row_start = head_base + head_stride * seq_pos;
+        let mut result = Vec::with_capacity(head_dim);
+        for d in 0..head_dim {
+            let idx = row_start + d;
+            if idx < src.len() {
+                result.push(src[idx]);
+            }
+        }
+        result
     }
 }
 
