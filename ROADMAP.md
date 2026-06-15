@@ -6,7 +6,7 @@
 |-------|--------|-------|
 | **Phase 1: CPU Inference** | ✅ Complete | Pure-Rust transformer + llama.cpp FFI path |
 | **Phase 1.5: Hybrid Routing** | ✅ Complete | GPU → Remote → CPU device selector |
-| **Phase 2: Backend Abstraction** | 🟡 In Progress | Trait layer, tensor interfaces, execution dispatch, error handling |
+| **Phase 2: Backend Abstraction** | ✅ Complete | Trait layer, tensor interfaces, execution dispatch, error handling |
 | **Phase 3: Runtime** | 🔴 Not Started | Runner bridge, streaming, model management |
 | **Phase 4: GPU Kernels** | 🔮 Future | WGMMA, fp8, attention (after abstraction is solid) |
 
@@ -58,7 +58,7 @@
 
 ---
 
-## Phase 2: Backend Abstraction Layer (🟡 In Progress)
+## Phase 2: Backend Abstraction Layer (✅ Complete)
 
 **Goal:** Define the execution trait layer so CUDA is one backend among others, not the center.
 
@@ -81,21 +81,26 @@
   - `DeviceBackend::is_available()` — fixed inverted logic (was returning false for CUDA)
   - `CudaAttentionKernel::is_available()` — now checks both arch AND CUDA driver availability
   - `CudaAttentionKernel::forward()` — validates buffer backing, returns properly-sized output
+- [x] **Dispatch layer (`kernel/dispatch.rs`):**
+  - `DispatchContext` — unified GPU/CPU context with device info
+  - `LinearDispatch` — weight-backed linear layer with GPU-aware matmul
+  - `AttentionDispatch` — full attention with RoPE + scaled dot-product (Q @ K^T / sqrt(d) @ V)
+  - `FeedForwardDispatch` — FFN layer with GELU/SwiGLU
+  - `RmsNormDispatch` — RMS normalization
+  - `LayerDispatch` — complete transformer layer (attention + FFN + residual)
+  - `GpuInferenceEngine` — GPU-aware engine with async H2D/D2H transfers
+  - Async memory transfers with proper stream sync after D2H
+  - `LlamaModel::forward_with_dispatch()` — builds `LayerDispatch` from model weights, runs full forward pass through dispatch context
+  - `DispatchError` — typed error type for dispatch failures
+  - `RunnerError::Dispatch` — conversion from `DispatchError`
+- [x] **Build verified:** 349 tests pass, 3 CUDA-driver errors (expected without GPU)
 
 ### Key Design Decisions
 
 - **CUDA is a backend, not the substrate.** The tensor interfaces (`GemmKernel`, `AttentionKernel`) define the contract; cuda-oxide implements one path.
 - **TMA descriptors are speculative.** The CUDA driver API treats `CUtensorMap` as opaque. Production descriptors should use `cuTensorMapEncodeTiled()` on the host. `HostTmaDescriptor` wraps the correct approach.
 - **CPU is the default path.** GPU is an optimization, not a requirement. All CPU paths are verified and working.
-
-### Remaining
-
-- [ ] **Dispatch logic** — `DeviceRouter` → backend selector that routes tensor ops to the right impl
-- [ ] **Async memory transfers** — H2D/D2H via cuda-core `memory` module (partially done: `memcpy_htod_async` etc. exist in `CudaMemoryBackend`)
-
-### Why This Before Kernels
-
-Real GPU kernels (WGMMA, fp8, etc.) are high-effort, hardware-specific work. Without a clean abstraction layer, that effort is locked to one backend. Get the trait layer right first, and kernels become interchangeable implementations.
+- **Dispatch layer is complete.** `LayerDispatch` builds from model weights, runs full forward pass with RoPE + attention, and falls back to CPU when GPU is unavailable.
 
 ---
 
@@ -128,17 +133,17 @@ Real GPU kernels (WGMMA, fp8, etc.) are high-effort, hardware-specific work. Wit
 
 ## Near-Term Priorities (Next 2-4 Weeks)
 
-### 1. Dispatch Logic (Highest Impact)
-
-Wire `DeviceRouter` → backend selector. When a tensor op is requested, the router picks the right backend based on device availability and tensor layout. The trait layer is solid (GemmKernel, AttentionKernel, MemoryBackend all implemented), but nothing routes ops through them yet.
-
-### 2. K-Family Dequantization Verification
+### 1. K-Family Dequantization Verification
 
 Test all Q2_K through Q8_K quant types against real GGUF models. Remove `#[ignore]` from tests once verified.
 
-### 3. SafeTensors Weight Loading
+### 2. SafeTensors Weight Loading
 
 Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
+
+### 3. Phase 3: Runtime
+
+Start building the runtime layer — runner bridge, streaming token generation, model lifecycle management.
 
 ---
 
