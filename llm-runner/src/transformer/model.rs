@@ -10,6 +10,9 @@ use tracing::debug;
 
 use crate::error::{Result, RunnerError};
 use crate::gguf_weight_loader::{GgufWeights, load_gguf_weights};
+use crate::kernel::dispatch::{DispatchContext, LayerDispatch};
+use crate::kernel::kvcache::Kvcache;
+use crate::kernel::memory::MemoryManager;
 use crate::transformer::GgufTokenizer;
 use crate::transformer::layer::{Attention, FeedForward, TransformerLayer};
 use crate::transformer::linear::Linear;
@@ -176,6 +179,10 @@ pub struct LlamaModel {
     pub vocab_size: u32,
     pub tokenizer: Option<GgufTokenizer>,
     pub tokenizer_config: Option<GgufTokenizerConfig>,
+    /// GPU dispatch context (None = CPU-only mode).
+    pub dispatch: Option<DispatchContext>,
+    /// KV caches per layer (used when dispatch is enabled).
+    pub kv_caches: Option<(Vec<Kvcache>, Vec<Kvcache>)>,
 }
 
 impl LlamaModel {
@@ -246,6 +253,8 @@ impl LlamaModel {
             vocab_size,
             tokenizer: None,
             tokenizer_config: None,
+            dispatch: Some(DispatchContext::new()),
+            kv_caches: None,
         })
     }
 
@@ -454,6 +463,147 @@ impl LlamaModel {
         Ok(h)
     }
 
+    /// Pass hidden states through all layers using GPU dispatch (if available).
+    ///
+    /// Builds `LayerDispatch` from the model's weights and runs through each
+    /// layer using the dispatch context. Falls back to CPU if GPU is unavailable.
+    ///
+    /// KV caches are initialized on first call and persist across calls.
+    pub fn forward_with_dispatch(&mut self, hidden: &[f32], start_pos: usize) -> Result<Vec<f32>> {
+        let ctx = self
+            .dispatch
+            .as_ref()
+            .ok_or_else(|| RunnerError::Tensor("dispatch context not initialized".into()))?;
+
+        // Initialize KV caches on first call
+        if self.kv_caches.is_none() {
+            let mut key_caches = Vec::with_capacity(self.config.num_layers);
+            let mut value_caches = Vec::with_capacity(self.config.num_layers);
+            for _ in 0..self.config.num_layers {
+                let key_cache = Kvcache::new(
+                    self.config.num_kv_heads,
+                    self.config.head_dim,
+                    self.config.max_seq_len,
+                    if ctx.gpu_available() { true } else { false },
+                );
+                let value_cache = Kvcache::new(
+                    self.config.num_kv_heads,
+                    self.config.head_dim,
+                    self.config.max_seq_len,
+                    if ctx.gpu_available() { true } else { false },
+                );
+                key_caches.push(key_cache);
+                value_caches.push(value_cache);
+            }
+            self.kv_caches = Some((key_caches, value_caches));
+        }
+
+        let (key_caches, value_caches) = self
+            .kv_caches
+            .as_mut()
+            .ok_or_else(|| RunnerError::Tensor("kv caches not initialized".into()))?;
+
+        let mut h = hidden.to_vec();
+
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            // Build LayerDispatch from this layer's weights
+            let attention_dispatch = crate::kernel::dispatch::AttentionDispatch {
+                wq: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.attention.wq.weight),
+                    layer.attention.wq.weight.clone(),
+                    layer.attention.wq.bias.clone(),
+                    layer.attention.wq.in_features,
+                    layer.attention.wq.out_features,
+                ),
+                wk: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.attention.wk.weight),
+                    layer.attention.wk.weight.clone(),
+                    layer.attention.wk.bias.clone(),
+                    layer.attention.wk.in_features,
+                    layer.attention.wk.out_features,
+                ),
+                wv: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.attention.wv.weight),
+                    layer.attention.wv.weight.clone(),
+                    layer.attention.wv.bias.clone(),
+                    layer.attention.wv.in_features,
+                    layer.attention.wv.out_features,
+                ),
+                wo: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.attention.wo.weight),
+                    layer.attention.wo.weight.clone(),
+                    layer.attention.wo.bias.clone(),
+                    layer.attention.wo.in_features,
+                    layer.attention.wo.out_features,
+                ),
+                num_heads: layer.attention.num_heads,
+                num_kv_heads: layer.attention.num_kv_heads,
+                head_dim: layer.attention.head_dim,
+                kv_dim: layer.attention.kv_dim,
+            };
+
+            let feed_forward_dispatch = crate::kernel::dispatch::FeedForwardDispatch {
+                w1: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.feed_forward.w1.weight),
+                    layer.feed_forward.w1.weight.clone(),
+                    layer.feed_forward.w1.bias.clone(),
+                    layer.feed_forward.w1.in_features,
+                    layer.feed_forward.w1.out_features,
+                ),
+                w2: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.feed_forward.w2.weight),
+                    layer.feed_forward.w2.weight.clone(),
+                    layer.feed_forward.w2.bias.clone(),
+                    layer.feed_forward.w2.in_features,
+                    layer.feed_forward.w2.out_features,
+                ),
+                w3: crate::kernel::dispatch::LinearDispatch::new(
+                    f32_to_f16(&layer.feed_forward.w3.weight),
+                    layer.feed_forward.w3.weight.clone(),
+                    layer.feed_forward.w3.bias.clone(),
+                    layer.feed_forward.w3.in_features,
+                    layer.feed_forward.w3.out_features,
+                ),
+                intermediate_dim: layer.feed_forward.intermediate_dim,
+            };
+
+            let attention_norm = crate::kernel::dispatch::RmsNormDispatch::new(
+                layer.attention_norm.weight.clone(),
+                layer.attention_norm.eps,
+            );
+
+            let ffn_norm = crate::kernel::dispatch::RmsNormDispatch::new(
+                layer.ffn_norm.weight.clone(),
+                layer.ffn_norm.eps,
+            );
+
+            let layer_dispatch = crate::kernel::dispatch::LayerDispatch {
+                attention: attention_dispatch,
+                feed_forward: feed_forward_dispatch,
+                attention_norm,
+                ffn_norm,
+            };
+
+            let layer_start_pos = start_pos + layer_idx;
+            h = layer_dispatch.forward(
+                ctx,
+                &h,
+                1, // batch_size
+                1, // seq_len
+                layer_start_pos,
+                &key_caches[layer_idx],
+                &value_caches[layer_idx],
+            )?;
+        }
+
+        // Apply final norm for architectures that have it (qwen2/qwen3)
+        if let Some(ref norm) = self.final_norm {
+            h = norm.forward(&h, 1);
+        }
+
+        Ok(h)
+    }
+
     /// Get the model architecture string from GGUF header.
     pub fn architecture(header: &GgufHeader) -> Option<&str> {
         header.architecture()
@@ -564,6 +714,11 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
             }
         })
         .collect()
+}
+
+/// Convert f32 slice to f16 Vec.
+fn f32_to_f16(data: &[f32]) -> Vec<half::f16> {
+    data.iter().map(|&v| half::f16::from_f32(v)).collect()
 }
 
 #[cfg(test)]
