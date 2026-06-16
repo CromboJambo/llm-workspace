@@ -545,9 +545,10 @@ mod tests {
 
     #[test]
     fn test_device_memory_allocation_and_free() {
-        // Initialize CUDA driver
-        unsafe {
+        // Initialize CUDA driver and create a context that stays alive for the test
+        let ctx = unsafe {
             cuda_core::init(0).expect("Failed to initialize CUDA");
+            CudaContext::new(0).expect("Failed to create CUDA context")
         };
 
         // Allocate 64 bytes of device memory
@@ -556,13 +557,16 @@ mod tests {
 
         // Verify it can be freed without error
         free_device_memory(d_ptr).expect("Failed to free device memory");
+
+        // ctx is dropped here, cleaning up the CUDA context
     }
 
     #[test]
     fn test_host_to_device_copy() {
-        // Initialize CUDA driver
-        unsafe {
+        // Initialize CUDA driver and create a context
+        let _ctx = unsafe {
             cuda_core::init(0).expect("Failed to initialize CUDA");
+            CudaContext::new(0).expect("Failed to create CUDA context")
         };
 
         let size = 64; // bytes
@@ -592,11 +596,10 @@ mod tests {
 
     #[test]
     fn test_f32_roundtrip_verification() {
-        // This test verifies the memory path using f32 values, comparable to CPU kernel outputs
-        unsafe {
+        // Initialize CUDA driver and create a context
+        let _ctx = unsafe {
             cuda_core::init(0).expect("Failed to initialize CUDA");
-            // Ensure a context is active on device 0 for cuMemAlloc to work
-            let _ctx = cuda_core::CudaContext::new(0).expect("Failed to create CUDA context");
+            CudaContext::new(0).expect("Failed to create CUDA context")
         };
 
         const N: usize = 1024;
