@@ -44,6 +44,22 @@ impl Linear {
         }
     }
 
+    /// Build a Linear layer from f32 bytes (used for safetensors loading).
+    pub fn from_f32_weight(weight_f32: &[u8], bias: Option<Vec<f32>>) -> Self {
+        let elements = weight_f32.len() / 4;
+        let weight: Vec<f32> = weight_f32
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        let (in_features, out_features) = if elements > 0 { (1, elements) } else { (0, 0) };
+        Self {
+            weight,
+            bias,
+            in_features,
+            out_features,
+        }
+    }
+
     /// Forward pass: y = x @ W^T + bias.
     ///
     /// x: [batch_size, in_features]
