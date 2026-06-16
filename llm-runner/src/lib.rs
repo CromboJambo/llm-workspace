@@ -63,6 +63,7 @@ pub use llama::{
     GenerationResult, KvCacheType, SessionManager, StreamingResult, TokenCallback, TokenInfo,
     LlamaRunner, LlamaRunnerBuilder, ModelInfo, ContextConfig,
 };
+pub use runtime::{Runtime, RuntimeConfig, ModelState};
 
 #[cfg(test)]
 mod tests {
