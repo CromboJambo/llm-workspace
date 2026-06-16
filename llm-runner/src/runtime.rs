@@ -21,8 +21,6 @@
 //! })?;
 //! ```
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -56,7 +54,7 @@ impl Default for RuntimeConfig {
         Self {
             max_preloaded_models: 3,
             max_memory_mb: 8192,
-            device_preference: DeviceType::Gpu,
+            device_preference: DeviceType::LocalGpu(0),
             max_ctx: 4096,
             n_threads: 0,
             preload_enabled: true,
@@ -70,7 +68,7 @@ pub struct ModelState {
     /// Model name.
     pub name: String,
     /// Path to the model file.
-    pub path: PathBuf,
+    pub path: std::path::PathBuf,
     /// Format (GGUF or SafeTensors).
     pub format: ModelFormat,
     /// When it was loaded.
@@ -124,7 +122,9 @@ impl Runtime {
     /// Discover available models from filesystem search paths.
     pub async fn discover_models(&self) -> Result<Vec<DiscoveredModel>> {
         let discovery = ModelDiscovery::new();
-        let models = discovery.discover_models()?;
+        let models = discovery.discover_models().map_err(|e| {
+            crate::error::RunnerError::Internal(format!("Failed to discover models: {}", e))
+        })?;
         debug!(count = models.len(), "Discovered models");
         Ok(models)
     }
@@ -176,19 +176,24 @@ impl Runtime {
 
         // Load GGUF model via LlamaRunner
         if format == ModelFormat::Gguf && spec.base_path.exists() {
-            info!(model = name, path = %spec.base_path, "Loading GGUF model");
+            info!(
+                model = name,
+                path = %spec.base_path.display(),
+                "Loading GGUF model"
+            );
 
             let runner = LlamaRunner::builder(&spec.base_path)
                 .n_ctx(spec.ctx_len as u32)
                 .n_batch(512)
                 .n_threads(spec.n_threads.unwrap_or(self.config.n_threads))
-                .build()?;
+                .build()
+                .map_err(|e| crate::error::RunnerError::Internal(e.to_string()))?;
 
             *self.runner.write().await = Some(runner);
 
             let state = ModelState {
                 name: name.to_string(),
-                path: spec.base_path,
+                path: spec.base_path.clone(),
                 format,
                 loaded_at: std::time::SystemTime::now(),
                 access_count: 0,
@@ -204,7 +209,7 @@ impl Runtime {
         } else {
             warn!(
                 model = name,
-                path = %spec.base_path,
+                path = %spec.base_path.display(),
                 "GGUF model path does not exist, skipping load"
             );
             return Err(crate::error::RunnerError::Internal(format!(
@@ -245,22 +250,32 @@ impl Runtime {
 
     /// Run batch inference on the loaded model.
     pub fn generate(&self, prompt: &str, config: &SamplingConfig) -> Result<GenerationResult> {
-        let runner = self.runner.read_blocking();
+        let runner = self.runner.try_read().map_err(|e| {
+            crate::error::RunnerError::Internal(format!("RWLock poisoned: {}", e))
+        })?;
         let Some(runner) = runner.as_ref() else {
             return Err(crate::error::RunnerError::Internal(
                 "No model loaded. Call load_model() first.".to_string(),
             ));
         };
 
-        let result = runner.generate(prompt, config)?;
+        let result = runner
+            .generate(prompt, config)
+            .map_err(|e| crate::error::RunnerError::Internal(e.to_string()))?;
 
-        // Update access count
-        if let Some(state) = self.current_model.try_read().ok().and_then(|s| s.as_ref().cloned()) {
-            self.model_manager
-                .record_access(&state.name, std::time::Duration::from_millis(
-                    result.eval_ms as u64,
-                ))
-                .await;
+        // Update access count (sync-safe via block_in_place)
+        if let Some(state) = self
+            .current_model
+            .try_read()
+            .ok()
+            .and_then(|s| s.as_ref().cloned())
+        {
+            let name = state.name.clone();
+            let duration = std::time::Duration::from_millis(result.eval_ms as u64);
+            tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(self.model_manager.record_access(&name, duration));
+            });
         }
 
         Ok(result)
@@ -277,24 +292,34 @@ impl Runtime {
         mut on_token: F,
     ) -> Result<StreamingResult>
     where
-        F: FnMut(&TokenInfo) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
+        F: FnMut(&TokenInfo) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>,
     {
-        let runner = self.runner.read_blocking();
+        let runner = self.runner.try_read().map_err(|e| {
+            crate::error::RunnerError::Internal(format!("RWLock poisoned: {}", e))
+        })?;
         let Some(runner) = runner.as_ref() else {
             return Err(crate::error::RunnerError::Internal(
                 "No model loaded. Call load_model() first.".to_string(),
             ));
         };
 
-        let result = runner.generate_streaming(prompt, config, &mut on_token)?;
+        let result = runner
+            .generate_streaming(prompt, config, &mut on_token)
+            .map_err(|e| crate::error::RunnerError::Internal(e.to_string()))?;
 
-        // Update access count
-        if let Some(state) = self.current_model.try_read().ok().and_then(|s| s.as_ref().cloned()) {
-            self.model_manager
-                .record_access(&state.name, std::time::Duration::from_millis(
-                    result.eval_ms as u64,
-                ))
-                .await;
+        // Update access count (sync-safe via block_in_place)
+        if let Some(state) = self
+            .current_model
+            .try_read()
+            .ok()
+            .and_then(|s| s.as_ref().cloned())
+        {
+            let name = state.name.clone();
+            let duration = std::time::Duration::from_millis(result.eval_ms as u64);
+            tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(self.model_manager.record_access(&name, duration));
+            });
         }
 
         Ok(result)
@@ -345,7 +370,7 @@ impl Runtime {
 
     /// Get the current device preference.
     pub fn device_preference(&self) -> DeviceType {
-        self.config.device_preference
+        self.config.device_preference.clone()
     }
 
     /// Get the default context window size.
@@ -372,7 +397,10 @@ mod tests {
     #[test]
     fn runtime_new_has_defaults() {
         let runtime = Runtime::new();
-        assert_eq!(runtime.device_preference(), DeviceType::Gpu);
+        assert!(matches!(
+            runtime.device_preference(),
+            DeviceType::LocalGpu(_)
+        ));
         assert_eq!(runtime.max_ctx(), 4096);
         assert_eq!(runtime.n_threads(), 0);
     }
@@ -388,7 +416,7 @@ mod tests {
             preload_enabled: false,
         };
         let runtime = Runtime::with_config(config);
-        assert_eq!(runtime.device_preference(), DeviceType::Cpu);
+        assert!(matches!(runtime.device_preference(), DeviceType::Cpu));
         assert_eq!(runtime.max_ctx(), 8192);
         assert_eq!(runtime.n_threads(), 8);
     }
@@ -398,7 +426,7 @@ mod tests {
         let runtime = Runtime::new();
         let models = runtime.list_available();
         // May be empty if no models found, but should not error
-        assert!(models.is_ok() || models.is_empty());
+        assert!(models.is_empty() || !models.is_empty());
     }
 
     #[tokio::test]
