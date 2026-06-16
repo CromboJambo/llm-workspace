@@ -1,15 +1,14 @@
-use crate::cuda_runtime::{enumerate_devices, is_available, CudaError, CudaRuntime};
+use crate::cuda_runtime::{enumerate_devices, is_available, CudaRuntime};
 use crate::error::RunnerError;
 use crate::kernel::{
     AttentionArch, AttentionConfig, AttentionError, AttentionKernel, CpuAttentionKernel,
-    CudaGemmKernelBuilder, CudaMemoryBackend, GemmArch, GemmError, GemmKernel, Kvcache,
-    MemoryBackend, MemoryManager,
+    CudaGemmKernelBuilder, GemmArch, GemmError, GemmKernel, MemoryManager,
 };
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Module;
 use half::f16;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::warn;
 /// Inference engine for tensor computation.
 ///
 /// actual tensor computation layer. separate from PESTI host.
