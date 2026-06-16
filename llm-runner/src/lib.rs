@@ -30,6 +30,7 @@ pub mod registry;
 pub mod remote_discovery;
 pub mod runtime;
 pub mod runner;
+pub mod safetensors_weight_loader;
 pub mod tokenizer;
 pub mod transformer;
 
@@ -41,6 +42,10 @@ pub use device::{DeviceBackend, DeviceInfo, DeviceSelection, DeviceSelector, Dev
 pub use device_discovery::LocalDevice;
 pub use error::{Result, RunnerError};
 pub use gguf_weight_loader::{GgufWeights, load_gguf_tensor, load_gguf_weights};
+pub use safetensors_weight_loader::{
+    extract_safetensors_config, get_safetensors_tensor_count, get_safetensors_total_size,
+    load_safetensors_tensor, load_safetensors_weights, SafetensorsWeights,
+};
 pub use inference_engine::InferenceEngine;
 pub use kernel::{AttentionKernel, CpuAttentionKernel, GemmBuilder, GemmKernel};
 pub use kernel::{DeviceBuffer, HostTmaDescriptor, Kvcache};
