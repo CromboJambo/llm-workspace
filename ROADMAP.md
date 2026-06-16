@@ -103,6 +103,16 @@
 - **CPU is the default path.** GPU is an optimization, not a requirement. All CPU paths are verified and working.
 - **Dispatch layer is complete.** `LayerDispatch` builds from model weights, runs full forward pass with RoPE + attention, and falls back to CPU when GPU is unavailable.
 
+### Post-Completion Refinements (after Phase 2 marked complete)
+
+- [x] `use_dispatch` flag on `Model` and `CpuModel` — `enable_dispatch()` / `can_use_dispatch()` / `forward_with_dispatch()` for opt-in GPU path
+- [x] `CpuModel::decode()` branches on dispatch vs CPU path (dispatch handles KV internally; CPU uses manual KV append)
+- [x] `dispatch_integration.rs` test suite — GPU detection, linear accuracy, attention mock (ignored)
+- [x] `transformer/model.rs` cleaned up unused imports (`LayerDispatch`, `MemoryManager`)
+- [x] `inference_engine.rs` trimmed unused imports
+- [x] `cuda_runtime.rs` tests fixed — `CudaContext` scoped to avoid lifetime issues
+- [x] Intentional unused variables prefixed with `_` across `dispatch.rs`, `attention.rs`, `llama.rs`, `model_manager.rs`
+
 ---
 
 ## Phase 3: Runtime (🔴 Not Started)
