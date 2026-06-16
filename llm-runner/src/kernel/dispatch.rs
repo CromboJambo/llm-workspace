@@ -247,7 +247,7 @@ impl DispatchContext {
         }
 
         // Dispatch to GPU or CPU fallback
-        let result = self.engine.matmul(alpha, &a_buf, &b_buf, beta, &mut c_buf, m, n, k);
+        let _result = self.engine.matmul(alpha, &a_buf, &b_buf, beta, &mut c_buf, m, n, k);
 
         // Transfer result back to host
         let mut c_host = vec![0.0f32; c_len];
@@ -279,7 +279,7 @@ impl DispatchContext {
         beta: f32,
     ) -> Result<Vec<f32>, DispatchError> {
         let c_len = m * n;
-        let mut c_host = if let Some(c_init_data) = c_init {
+        let c_host = if let Some(c_init_data) = c_init {
             c_init_data.to_vec()
         } else {
             vec![0.0f32; c_len]
@@ -295,7 +295,7 @@ impl DispatchContext {
             .map_err(|e| DispatchError::Kernel(format!("CPU GEMM: {e}")))?;
 
         // Read result from device buffer
-        if let Some(result) = c_buf.as_slice() {
+        if let Some(_result) = c_buf.as_slice() {
             // Result is in f32, but c_buf was created from f32 data
             // We need to convert f16 result back... actually the CPU GEMM
             // writes to the f32 buffer. Let's handle this differently.
@@ -628,7 +628,7 @@ impl AttentionDispatch {
         // Q/K/V projections (GPU or CPU)
         let q = self.wq.forward(ctx, x, batch_size)?;
         let k = self.wk.forward(ctx, x, batch_size)?;
-        let v = self.wv.forward(ctx, x, batch_size)?;
+        let _v = self.wv.forward(ctx, x, batch_size)?;
 
         // Apply RoPE to Q and K (per-head, per-position)
         let mut q_rope = q.clone();
@@ -650,7 +650,7 @@ impl AttentionDispatch {
                     for h in 0..self.num_heads {
                         let q_start = q_idx + h * self.head_dim;
                         let group = h / (self.num_heads / self.num_kv_heads);
-                        let k_start = group * self.head_dim + j * self.kv_dim;
+                        let _k_start = group * self.head_dim + j * self.kv_dim;
                         // Read K from cache at position j
                         let k_slice = Self::extract_head_slice(
                             key_cache,
