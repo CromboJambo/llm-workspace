@@ -12,6 +12,7 @@ use crate::error::{Result, RunnerError};
 use crate::gguf_weight_loader::{GgufWeights, load_gguf_weights};
 use crate::kernel::dispatch::DispatchContext;
 use crate::kernel::kvcache::Kvcache;
+use crate::safetensors_weight_loader::SafetensorsWeights;
 use crate::transformer::GgufTokenizer;
 use crate::transformer::layer::{Attention, FeedForward, TransformerLayer};
 use crate::transformer::linear::Linear;
@@ -257,6 +258,70 @@ impl LlamaModel {
         })
     }
 
+    /// Build a model from already-loaded safetensors weights.
+    ///
+    /// Unlike GGUF, safetensors doesn't embed model config — the caller must
+    /// provide `LlamaConfig` (e.g., from a companion `config.json` file).
+    /// All tensor data is already in f32 format (the loader converted f16/bf16).
+    pub fn from_safetensors_weights(weights: SafetensorsWeights, config: LlamaConfig) -> Result<Self> {
+        let rope_config = RopeConfig::new(config.head_dim, config.rope_base, config.max_seq_len);
+        let vocab_size = config.embed_dim as u32; // default if not in metadata
+
+        // Load token embeddings — architecture-dependent name
+        let embedding_name = config.embedding_name();
+        let token_embeddings = weights
+            .tensors
+            .get(embedding_name)
+            .map(|tensor_data| Linear::from_f32_weight(tensor_data, None));
+
+        // Load output (LM head) — architecture-dependent name
+        let output_name = config.output_name();
+        let output = weights
+            .tensors
+            .get(output_name)
+            .map(|tensor_data| Linear::from_f32_weight(tensor_data, None));
+
+        // Build transformer layers
+        let mut layers = Vec::with_capacity(config.num_layers);
+        for layer_idx in 0..config.num_layers {
+            let layer = Self::load_layer_from_safetensors(&weights, layer_idx, &config, &rope_config)?;
+            layers.push(layer);
+        }
+
+        // Load final norm for architectures that have it (qwen2/qwen3)
+        let final_norm = if let Some(norm_name) = config.final_norm_name() {
+            weights
+                .tensors
+                .get(norm_name)
+                .map(|tensor_data| RmsNorm::new(f32_bytes_to_f32(tensor_data), config.rms_norm_eps))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            config,
+            token_embeddings,
+            output,
+            final_norm,
+            layers,
+            vocab_size,
+            tokenizer: None,
+            tokenizer_config: None,
+            dispatch: Some(DispatchContext::new()),
+            kv_caches: None,
+        })
+    }
+
+    /// Load a Llama-style model from a safetensors file.
+    ///
+    /// The safetensors file must be accompanied by a `config.json` in the same
+    /// directory (or you can construct `LlamaConfig` manually).
+    pub fn load_safetensors(path: &Path, config: LlamaConfig) -> Result<Self> {
+        let weights = crate::safetensors_weight_loader::load_safetensors_weights(path)
+            .map_err(|e| RunnerError::ModelLoad(format!("Safetensors load failed: {e}")))?;
+        Self::from_safetensors_weights(weights, config)
+    }
+
     /// Load a single transformer layer from GGUF weights.
     fn load_layer(
         weights: &GgufWeights,
@@ -399,6 +464,162 @@ impl LlamaModel {
         let w1 = Linear::from_f16_weight(w1_data, None);
         let w2 = Linear::from_f16_weight(w2_data, None);
         let w3 = Linear::from_f16_weight(w3_data, None);
+
+        let feed_forward = FeedForward::new(w1, w2, w3, config.intermediate_dim);
+
+        Ok(TransformerLayer::new(
+            attention,
+            feed_forward,
+            attention_norm,
+            ffn_norm,
+        ))
+    }
+
+    /// Load a single transformer layer from safetensors weights.
+    ///
+    /// Mirrors `load_layer` but uses f32 bytes directly (safetensors tensors
+    /// are already in f32 format after loading).
+    fn load_layer_from_safetensors(
+        weights: &SafetensorsWeights,
+        layer_idx: usize,
+        config: &LlamaConfig,
+        _rope: &RopeConfig,
+    ) -> Result<TransformerLayer> {
+        let prefix = config.layer_prefix(layer_idx);
+
+        // RMSNorm weights — architecture-dependent names
+        let attention_norm_name = match config.arch {
+            ModelArch::Gemma => format!("{prefix}input_layernorm.weight"),
+            ModelArch::Qwen2 | ModelArch::Qwen3 => format!("{prefix}norm_1.weight"),
+            _ => format!("{prefix}attention_norm.weight"),
+        };
+        let attention_norm_data = weights
+            .tensors
+            .get(&attention_norm_name)
+            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {attention_norm_name}")))?;
+        let attention_norm =
+            RmsNorm::new(f32_bytes_to_f32(attention_norm_data), config.rms_norm_eps);
+
+        let ffn_norm_name = match config.arch {
+            ModelArch::Gemma => format!("{prefix}post_attention_layernorm.weight"),
+            ModelArch::Qwen2 | ModelArch::Qwen3 => format!("{prefix}norm_2.weight"),
+            _ => format!("{prefix}ffn_norm.weight"),
+        };
+        let ffn_norm_data = weights
+            .tensors
+            .get(&ffn_norm_name)
+            .ok_or_else(|| RunnerError::ModelLoad(format!("missing {ffn_norm_name}")))?;
+        let ffn_norm = RmsNorm::new(f32_bytes_to_f32(ffn_norm_data), config.rms_norm_eps);
+
+        // Attention weights — architecture-dependent naming
+        let suffix = config.attn_weight_suffix();
+        let wq_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}q_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing q_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wq.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wq.weight"))
+                }),
+        }?;
+        let wk_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}k_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing k_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wk.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wk.weight"))
+                }),
+        }?;
+        let wv_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}v_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing v_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wv.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wv.weight"))
+                }),
+        }?;
+        let wo_data = match config.arch {
+            ModelArch::Gemma | ModelArch::Qwen2 | ModelArch::Qwen3 => weights
+                .tensors
+                .get(&format!("{prefix}o_proj{suffix}"))
+                .ok_or_else(|| RunnerError::ModelLoad(format!("missing o_proj weight"))),
+            _ => weights
+                .tensors
+                .get(&format!("{prefix}attention.wo.weight"))
+                .ok_or_else(|| {
+                    RunnerError::ModelLoad(format!("missing {prefix}attention.wo.weight"))
+                }),
+        }?;
+
+        let wq = Linear::from_f32_weight(wq_data, None);
+        let wk = Linear::from_f32_weight(wk_data, None);
+        let wv = Linear::from_f32_weight(wv_data, None);
+        let wo = Linear::from_f32_weight(wo_data, None);
+
+        let attention = Attention::new(
+            wq,
+            wk,
+            wv,
+            wo,
+            config.head_dim,
+            config.num_heads,
+            config.num_kv_heads,
+        );
+
+        // FFN weights — architecture-dependent naming
+        let (w1_data, w2_data, w3_data) = match config.arch {
+            ModelArch::Qwen2 | ModelArch::Qwen3 => {
+                let w1 = weights
+                    .tensors
+                    .get(&format!("{prefix}gate.weight"))
+                    .ok_or_else(|| RunnerError::ModelLoad("missing gate weight".into()))?;
+                let w2 = weights
+                    .tensors
+                    .get(&format!("{prefix}down_proj.weight"))
+                    .ok_or_else(|| RunnerError::ModelLoad("missing down_proj weight".into()))?;
+                let w3 = weights
+                    .tensors
+                    .get(&format!("{prefix}up.weight"))
+                    .ok_or_else(|| RunnerError::ModelLoad("missing up weight".into()))?;
+                (w1, w2, w3)
+            }
+            _ => {
+                let w1 = weights
+                    .tensors
+                    .get(&format!("{prefix}feed_forward.w1.weight"))
+                    .ok_or_else(|| {
+                        RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w1.weight"))
+                    })?;
+                let w2 = weights
+                    .tensors
+                    .get(&format!("{prefix}feed_forward.w2.weight"))
+                    .ok_or_else(|| {
+                        RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w2.weight"))
+                    })?;
+                let w3 = weights
+                    .tensors
+                    .get(&format!("{prefix}feed_forward.w3.weight"))
+                    .ok_or_else(|| {
+                        RunnerError::ModelLoad(format!("missing {prefix}feed_forward.w3.weight"))
+                    })?;
+                (w1, w2, w3)
+            }
+        };
+
+        let w1 = Linear::from_f32_weight(w1_data, None);
+        let w2 = Linear::from_f32_weight(w2_data, None);
+        let w3 = Linear::from_f32_weight(w3_data, None);
 
         let feed_forward = FeedForward::new(w1, w2, w3, config.intermediate_dim);
 
@@ -712,6 +933,14 @@ fn f16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
                 f32::from_bits(f32_bits)
             }
         })
+        .collect()
+}
+
+/// Convert f32 bytes to f32 Vec.
+fn f32_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
 }
 
