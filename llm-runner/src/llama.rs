@@ -79,6 +79,48 @@ pub struct GenerationResult {
     pub eval_ms: f64,
 }
 
+/// Metadata about a single streamed token.
+#[derive(Debug, Clone)]
+pub struct TokenInfo {
+    /// Token ID from the model vocabulary.
+    pub token: LlamaToken,
+    /// Decoded text piece for this token.
+    pub text: String,
+    /// Position in the sequence (0-indexed).
+    pub position: usize,
+    /// Whether this is the first generated token.
+    pub is_first: bool,
+    /// Whether this is the last generated token (EOS reached).
+    pub is_last: bool,
+}
+
+/// Callback type for streaming token generation.
+///
+/// Called once per generated token. Return `Ok(())` to continue,
+/// `Err(...)` to abort early.
+pub type TokenCallback = dyn Fn(&TokenInfo) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+/// Result of a streaming generation run.
+#[derive(Debug, Clone)]
+pub struct StreamingResult {
+    /// The full generated text (concatenation of all streamed tokens).
+    pub text: String,
+    /// All tokens produced (including the prompt).
+    pub tokens: Vec<LlamaToken>,
+    /// Number of prompt tokens processed.
+    pub prompt_tokens: usize,
+    /// Number of new tokens generated.
+    pub generated_tokens: usize,
+    /// Whether generation completed normally (not aborted).
+    pub completed: bool,
+    /// Load time in milliseconds.
+    pub load_time_ms: f64,
+    /// Prompt evaluation time in milliseconds.
+    pub prompt_eval_ms: f64,
+    /// Token evaluation time in milliseconds.
+    pub eval_ms: f64,
+}
+
 /// Builder for [`LlamaRunner`].
 pub struct LlamaRunnerBuilder {
     model_path: String,
@@ -398,6 +440,177 @@ impl LlamaRunner {
     ) -> Result<GenerationResult> {
         let prompt = self.apply_chat_template(messages, true)?;
         self.generate(&prompt, config)
+    }
+
+    /// Run streaming generation: yield tokens via callback as they are generated.
+    ///
+    /// The callback is invoked once per generated token with metadata
+    /// (token ID, decoded text, position, first/last flags).
+    /// Return `Err(...)` from the callback to abort early.
+    ///
+    /// Returns a [`StreamingResult`] with the full output and timing.
+    pub fn generate_streaming<F>(
+        &self,
+        prompt: &str,
+        config: &SamplingConfig,
+        mut on_token: F,
+    ) -> Result<StreamingResult>
+    where
+        F: FnMut(&TokenInfo) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let mut sampler = self.build_sampler(config);
+
+        // Encode prompt
+        let prompt_tokens = self.encode(prompt, true)?;
+        let prompt_len = prompt_tokens.len();
+
+        info!("Prompt: {} tokens", prompt_len);
+
+        // Create batch for prompt
+        let mut batch = LlamaBatch::new(prompt_len, 0);
+        for (i, tok) in prompt_tokens.iter().enumerate() {
+            batch.add(*tok, i as i32, &[0], true)?;
+        }
+
+        // Prefill
+        let t_start = Instant::now();
+        self.decode(&mut batch)?;
+        let prompt_time = t_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Sample first token
+        let mut tokens: Vec<LlamaToken> = vec![];
+        let mut full_text = String::new();
+        let ctx = self.context.borrow_mut();
+        let _logits = ctx.get_logits_ith((prompt_len - 1) as i32);
+        let mut token = sampler.sample(&ctx, (prompt_len - 1) as i32);
+        tokens.push(token);
+
+        // Build token info for first token
+        let piece = self.token_to_piece(token).unwrap_or_default();
+        let first_info = TokenInfo {
+            token,
+            text: piece.clone(),
+            position: prompt_len,
+            is_first: true,
+            is_last: false,
+        };
+        full_text.push_str(&piece);
+        if let Err(_e) = on_token(&first_info) {
+            return Ok(StreamingResult {
+                text: full_text,
+                tokens,
+                prompt_tokens: prompt_len,
+                generated_tokens: 0,
+                completed: false,
+                load_time_ms: 0.0,
+                prompt_eval_ms: prompt_time,
+                eval_ms: 0.0,
+            });
+        }
+
+        info!("First token streamed: {:?}", token);
+
+        // Decode loop
+        let t_gen_start = Instant::now();
+        let mut gen_count = 0;
+
+        for pos in prompt_len..(prompt_len + config.max_tokens as usize) {
+            // Create new batch for single token
+            let mut new_batch = LlamaBatch::new(1, pos as i32);
+            new_batch.add(token, pos as i32, &[0], false)?;
+
+            // Decode
+            self.decode(&mut new_batch)?;
+
+            // Sample next token
+            let _logits = self.get_logits_ith(pos as i32)?;
+            let ctx = self.context.borrow();
+            let next_token = sampler.sample(&ctx, pos as i32);
+            drop(ctx);
+
+            let is_eos = self.model.is_eog_token(next_token);
+
+            token = next_token;
+            tokens.push(token);
+            gen_count += 1;
+
+            let piece = self.token_to_piece(token).unwrap_or_default();
+            let info = TokenInfo {
+                token,
+                text: piece.clone(),
+                position: pos,
+                is_first: false,
+                is_last: is_eos,
+            };
+            full_text.push_str(&piece);
+
+            if let Err(e) = on_token(&info) {
+                info!("Streaming aborted by callback: {}", e);
+                let gen_time = t_gen_start.elapsed().as_secs_f64() * 1000.0;
+                return Ok(StreamingResult {
+                    text: full_text,
+                    tokens,
+                    prompt_tokens: prompt_len,
+                    generated_tokens: gen_count,
+                    completed: false,
+                    load_time_ms: 0.0,
+                    prompt_eval_ms: prompt_time,
+                    eval_ms: gen_time,
+                });
+            }
+
+            // Check for EOS
+            if is_eos {
+                info!(
+                    "EOS token reached at position {}, generated {} tokens",
+                    pos + 1, gen_count
+                );
+                break;
+            }
+        }
+
+        let gen_time = t_gen_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Get timings
+        let mut ctx = self.context.borrow_mut();
+        let timings = ctx.timings();
+        drop(ctx);
+
+        info!(
+            "Streaming complete: {} tokens in {:.2}ms ({:.2} tok/s)",
+            gen_count,
+            gen_time,
+            if gen_time > 0.0 {
+                gen_count as f64 / gen_time * 1000.0
+            } else {
+                0.0
+            }
+        );
+
+        Ok(StreamingResult {
+            text: full_text,
+            tokens,
+            prompt_tokens: prompt_len,
+            generated_tokens: gen_count,
+            completed: true,
+            load_time_ms: timings.t_load_ms(),
+            prompt_eval_ms: prompt_time,
+            eval_ms: gen_time,
+        })
+    }
+
+    /// Run streaming generation with a chat template.
+    pub fn generate_streaming_chat<F>(
+        &self,
+        messages: &[LlamaChatMessage],
+        config: &SamplingConfig,
+        on_token: F,
+    ) -> Result<StreamingResult>
+    where
+        F: FnMut(&TokenInfo) -> Result<(), Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let prompt = self.apply_chat_template(messages, true)?;
+        self.generate_streaming(&prompt, config, on_token)
     }
 
     /// Compute embeddings for a prompt.
