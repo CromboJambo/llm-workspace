@@ -178,15 +178,16 @@ fn bf16_f32(data: &[u8]) -> Vec<f32> {
 ///
 /// Safetensors files store metadata as a JSON object in the file header.
 /// Common keys: `general.architecture`, `llama.context_length`, etc.
+///
+/// The file format is: u64 LE num_tensors + JSON header (null-terminated) + tensor data.
 pub fn extract_safetensors_config(
     safetensors_path: &Path,
 ) -> Result<std::collections::HashMap<String, String>> {
     let file_data = std::fs::read(safetensors_path)
         .map_err(|e| RunnerError::ModelLoad(format!("Failed to read safetensors file: {e}")))?;
 
-    // Use the safetensors crate's Metadata struct to parse the header.
-    // Offset 8 skips the num_tensors field (u64 LE).
-    let metadata = safetensors::tensor::Metadata::new(&file_data, 8)
+    // Use read_metadata to correctly parse the num_tensors-prefixed JSON header.
+    let (_header_size, metadata) = safetensors::SafeTensors::read_metadata(&file_data)
         .map_err(|e| RunnerError::ModelLoad(format!("Failed to read safetensors metadata: {e}")))?;
 
     let mut config = std::collections::HashMap::new();
@@ -314,11 +315,31 @@ mod tests {
 
     #[test]
     fn test_half_f32_round_trip() {
-        let values: Vec<f32> = vec![0.0, 1.0, -1.0, 100.0, 0.001, 3.14159, 1e10];
-        let converted = half_f32(&values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>());
+        // Values within f16 range (max ~65504). 1e6 overflows f16 to infinity.
+        let values: Vec<f32> = vec![0.0, 1.0, -1.0, 100.0, 0.001, 3.14159, 1000.0];
+        // Convert f32 → f16 bytes (matching the encoder in make_f16_safetensors_file)
+        let f16_bytes: Vec<u8> = values
+            .iter()
+            .flat_map(|v| {
+                let bits = v.to_bits();
+                let sign = ((bits >> 31) & 1) as u16;
+                let exp = (((bits >> 23) & 0xFF) as i32) - 127 + 15;
+                let frac = ((bits >> 13) & 0x3FF) as u16;
+                // Clamp denormal numbers (exp <= 0) to zero exponent
+                let exp = if exp <= 0 { 0 } else { exp as u16 };
+                let result = (sign << 15) | (exp << 10) | frac;
+                result.to_le_bytes()
+            })
+            .collect();
+        let converted = half_f32(&f16_bytes);
 
-        for (a, b) in values.iter().zip(converted.iter()) {
-            assert!((a - b).abs() < 1e-3, "Half-float round-trip error: {a} vs {b}");
+        for (i, (a, b)) in values.iter().zip(converted.iter()).enumerate() {
+            if (a - b).abs() >= 1e-3 {
+                panic!(
+                    "Half-float round-trip error at index {}: original={:.6}, converted={:.6}, diff={:.6}",
+                    i, a, b, (a - b).abs()
+                );
+            }
         }
     }
 
