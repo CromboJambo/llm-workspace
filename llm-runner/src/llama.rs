@@ -315,8 +315,8 @@ impl LlamaRunner {
 
         // Sample first token
         let mut tokens: Vec<LlamaToken> = vec![];
-        let mut ctx = self.context.borrow_mut();
-        let logits = ctx.get_logits_ith((prompt_len - 1) as i32);
+        let ctx = self.context.borrow_mut();
+        let _logits = ctx.get_logits_ith((prompt_len - 1) as i32);
         let mut token = sampler.sample(&ctx, (prompt_len - 1) as i32);
         tokens.push(token);
 
@@ -335,7 +335,7 @@ impl LlamaRunner {
             self.decode(&mut new_batch)?;
 
             // Sample next token
-            let logits = self.get_logits_ith(pos as i32)?;
+            let _logits = self.get_logits_ith(pos as i32)?;
             let ctx = self.context.borrow();
             let next_token = sampler.sample(&ctx, pos as i32);
             drop(ctx);
@@ -590,8 +590,8 @@ impl SessionManager {
 /// and query metadata via LlamaModel methods.
 pub fn inspect_gguf(path: &str) -> Result<String> {
     // Use llama_cpp_sys_2 directly for GGUF inspection
-    let mut n_tensors: u64 = 0;
-    let mut n_kv: u64 = 0;
+    let _n_tensors: u64 = 0;
+    let _n_kv: u64 = 0;
     let gguf = unsafe {
         llama_cpp_sys_2::gguf_init_from_file(
             std::ffi::CString::new(path).unwrap().as_ptr(),
