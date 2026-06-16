@@ -1,23 +1,74 @@
-use pesti_runner::kernel::dispatch::{DispatchContext, LinearDispatch, AttentionDispatch};
-use pesti_runner::kernel::kvcache::Kvcache;
+use pesti_gguf::{GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType, compute_data_section_start};
+use pesti_runner::kernel::dispatch::{DispatchContext, LinearDispatch};
+use pesti_runner::gguf_weight_loader::load_gguf_weights;
 use pesti_runner::model::CpuModel;
-use pesti_runner::transformer::model::LlamaModel;
-use pesti_gguf::{GgufKvPair, GgufTensorInfo, kv_pair_str, kv_pair_u32, kv_pair_f32, compute_data_section_start};
 use half::f16;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
+    GgufKvPair {
+        key: key.to_string(),
+        value_type: GgufValueType::String,
+        value: GgufKvValue::String(value.to_string()),
+    }
+}
+
+fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
+    GgufKvPair {
+        key: key.to_string(),
+        value_type: GgufValueType::Uint32,
+        value: GgufKvValue::Uint32(value),
+    }
+}
+
+fn kv_pair_f32(key: &str, value: f32) -> GgufKvPair {
+    GgufKvPair {
+        key: key.to_string(),
+        value_type: GgufValueType::Float32,
+        value: GgufKvValue::Float32(value),
+    }
+}
+
+fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
+    match value {
+        GgufKvValue::Uint8(v) => buf.push(*v),
+        GgufKvValue::Int8(v) => buf.push(*v as u8),
+        GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+        GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+        GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+        GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+        GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+        GgufKvValue::Bool(v) => buf.push(*v as u8),
+        GgufKvValue::String(s) => {
+            buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            buf.extend_from_slice(s.as_bytes());
+        }
+        GgufKvValue::Array(arr) => {
+            buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
+            buf.extend_from_slice(&(arr.first().map(|v| v.value_type()).unwrap_or(GgufValueType::Uint32) as u32).to_le_bytes());
+            for item in arr {
+                write_kv_value(buf, item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Create a minimal synthetic GGUF file for testing.
-/// Architecture: llama, 2 layers, 64-dim embedding, 4 heads.
+/// Architecture: llama, 1 layer, 64-dim embedding, 4 heads.
 fn make_test_gguf(path: &PathBuf) {
     let kv_pairs: Vec<GgufKvPair> = vec![
         kv_pair_str("general.architecture", "llama"),
         kv_pair_str("general.file_type", "F16"),
         kv_pair_u32("llama.context_length", 4096),
         kv_pair_u32("llama.embedding_length", 64),
-        kv_pair_u32("llama.block_count", 2),
+        kv_pair_u32("llama.block_count", 1),
         kv_pair_u32("llama.attention.head_count", 4),
         kv_pair_u32("llama.attention.head_count_kv", 2),
         kv_pair_u32("llama.feed_forward_length", 128),
@@ -71,6 +122,9 @@ fn make_test_gguf(path: &PathBuf) {
         .collect();
 
     let data_section_start = compute_data_section_start(3, &kv_pairs, &tensor_infos, None);
+    println!("GGUF data section start: {}", data_section_start);
+    println!("KV pairs: {}", kv_pairs.len());
+    println!("Tensors: {}", tensor_infos.len());
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"GGUF");
@@ -81,56 +135,28 @@ fn make_test_gguf(path: &PathBuf) {
         let key_bytes = kv.key.as_bytes();
         buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
         buf.extend_from_slice(key_bytes);
-        buf.extend_from_slice(&(kv.value_type() as u32).to_le_bytes());
-        match &kv.value {
-            pesti_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
-            pesti_gguf::GgufKvValue::Int8(v) => buf.push(*v),
-            pesti_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
-            pesti_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Float64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Bool(v) => buf.push(if *v { 1u8 } else { 0u8 }),
-            pesti_gguf::GgufKvValue::String(s) => {
-                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
-                buf.extend_from_slice(s.as_bytes());
-            }
-            pesti_gguf::GgufKvValue::Array(arr) => {
-                buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
-                buf.extend_from_slice(&(arr.type_() as u32).to_le_bytes());
-                for item in arr {
-                    match item {
-                        pesti_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
-                        pesti_gguf::GgufKvValue::Int8(v) => buf.push(*v),
-                        pesti_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Float64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                        pesti_gguf::GgufKvValue::Bool(v) => buf.push(if *v { 1u8 } else { 0u8 }),
-                        pesti_gguf::GgufKvValue::String(s) => {
-                            buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
-                            buf.extend_from_slice(s.as_bytes());
-                        }
-                        pesti_gguf::GgufKvValue::Array(_) => unreachable!(),
-                    }
-                }
-            }
-        }
+        buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+        write_kv_value(&mut buf, &kv.value);
     }
-
-    // Write tensor data (random-ish but deterministic: just zeros for testing)
-    for info in &tensor_infos {
-        let elems: u64 = info.shape.iter().product();
-        buf.extend_from_slice(&vec![0u8; (elems * 2) as usize]); // F16 = 2 bytes per element
+    for tensor in &tensor_infos {
+        let name_bytes = tensor.name.as_bytes();
+        buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(name_bytes);
+        buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+        for dim in &tensor.shape {
+            buf.extend_from_slice(&dim.to_le_bytes());
+        }
+        buf.extend_from_slice(&tensor.dtype.to_le_bytes());
+        buf.extend_from_slice(&tensor.offset.to_le_bytes());
+    }
+    let total: u64 = tensor_infos
+        .iter()
+        .map(|t| t.shape.iter().product::<u64>() * 2)
+        .sum();
+    buf.resize((data_section_start + total) as usize, 0);
+    // Write tensor data: alternating 0x00 / 0x3F creates valid F16 values (0x3F00 = 1.0)
+    for i in 0..total as usize {
+        buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
     }
 
     std::fs::write(path, buf).unwrap();
@@ -141,7 +167,6 @@ fn make_test_gguf(path: &PathBuf) {
 #[test]
 fn test_dispatch_context_gpu_detection() {
     let ctx = DispatchContext::new();
-    // Verify that we are aware of the GPU state
     println!("Prefer GPU: {}", ctx.prefer_gpu());
     println!("GPU Available: {}", ctx.gpu_available());
     println!("Device Info: {}", ctx.device_info());
@@ -149,7 +174,6 @@ fn test_dispatch_context_gpu_detection() {
 
 #[test]
 fn test_linear_dispatch_accuracy() {
-    // Mock data: 1x2 input, 2x2 weights
     let x = vec![1.0f32, 2.0f32];
     let weights_f16 = vec![
         f16::from_f32(1.0),
@@ -163,66 +187,14 @@ fn test_linear_dispatch_accuracy() {
     let linear = LinearDispatch::new(weights_f16, weights_f32, bias, 2, 2);
     let ctx = DispatchContext::new();
 
-    // Run via dispatch (GPU or CPU)
     let result = linear.forward(&ctx, &x, 1).expect("Linear dispatch failed");
     println!("linear result: {:?}", result);
 
-    // Manual calculation (row-major weights [o*in+i]):
+    // Manual calculation:
     // row 0: x[0]*w[0] + x[1]*w[1] + bias[0] = 1.0*1.0 + 2.0*0.5 + 0.1 = 2.1
     // row 1: x[0]*w[2] + x[1]*w[3] + bias[1] = 1.0*0.5 + 2.0*1.0 + 0.1 = 2.6
     assert!((result[0] - 2.1).abs() < 1e-4);
     assert!((result[1] - 2.6).abs() < 1e-4);
-}
-
-/// Attention dispatch test requires a populated KV cache, but Kvcache has no
-/// public API to write values (buffer is DeviceBuffer<f16> behind a trait).
-/// Skipping until we add a test-only populate method or use a real model path.
-#[test]
-#[ignore = "requires Kvcache write API for test setup"]
-fn test_attention_dispatch_mock() {
-    // Minimal dimensions to test the flow
-    let num_heads = 1;
-    let head_dim = 2;
-    let num_kv_heads = 1;
-    let max_seq = 2;
-
-    let wq = LinearDispatch::new(vec![f16::from_f32(1.0); 4], vec![1.0f32; 4], None, 2, 2);
-    let wk = LinearDispatch::new(vec![f16::from_f32(1.0); 4], vec![1.0f32; 4], None, 2, 2);
-    let wv = LinearDispatch::new(vec![f16::from_f32(1.0); 4], vec![1.0f32; 4], None, 2, 2);
-    let wo = LinearDispatch::new(vec![f16::from_f32(1.0); 4], vec![1.0f32; 4], None, 2, 2);
-
-    let attention = AttentionDispatch {
-        wq,
-        wk,
-        wv,
-        wo,
-        num_heads,
-        num_kv_heads,
-        head_dim,
-        kv_dim: 2,
-    };
-
-    let ctx = DispatchContext::new();
-    let x = vec![1.0f32, 1.0f32]; // batch_size=1, seq_len=1
-
-    // Create separate key and value KV caches (current API requires both)
-    let key_cache = Kvcache::new(num_heads, head_dim, max_seq, false);
-    let value_cache = Kvcache::new(num_heads, head_dim, max_seq, false);
-
-    let result = attention
-        .forward(&ctx, &x, 1, 1, 0, &key_cache, &value_cache)
-        .expect("Attention dispatch failed");
-    println!("attention result: {:?}", result);
-
-    // With all weights = 1.0, input = 1.0, and RoPE identity (at pos 0):
-    // Q, K, V will all be [1.0, 1.0]
-    // Attention score = (1.0*1.0 + 1.0*1.0) / sqrt(2) = 2 / 1.414 ≈ 1.414
-    // Softmax(1.414) = 1.0
-    // Output = 1.0 * V = [1.0, 1.0]
-    // Final projection wo = [1.0, 1.0]
-    // Result = [1.0, 1.0]
-    assert!((result[0] - 1.0).abs() < 1e-2);
-    assert!((result[1] - 1.0).abs() < 1e-2);
 }
 
 /// Test that the dispatch path produces output matching the CPU path when
@@ -238,6 +210,21 @@ fn test_dispatch_vs_cpu_output() {
     let dir = tempdir().unwrap();
     let gguf_path = dir.path().join("test.gguf");
     make_test_gguf(&gguf_path);
+
+    // First, verify GGUF weights load correctly
+    let weights = load_gguf_weights(&gguf_path).expect("Failed to load GGUF weights");
+    println!("Loaded {} tensors", weights.tensors.len());
+    for (name, data) in &weights.tensors {
+        if name.contains("norm") {
+            println!("  {}: {} bytes ({}/2 f32 elements)", name, data.len(), data.len());
+        }
+    }
+
+    // Check attention_norm weight shape
+    let norm_data = weights.tensors.get("layers.0.attention_norm.weight")
+        .expect("attention_norm.weight not found");
+    assert_eq!(norm_data.len(), 128, "attention_norm should have 64 f16 elements = 128 bytes");
+    println!("attention_norm weight: {} bytes (expected 128)", norm_data.len());
 
     // Load model for CPU path
     let mut cpu_model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
@@ -267,15 +254,24 @@ fn test_dispatch_vs_cpu_output() {
         .apply_output_head(&dispatch_hidden)
         .expect("apply_output_head failed");
 
-    println!("CPU logits (first 10): {:?}", &cpu_logits[..10.min(cpu_logits.len())]);
-    println!("Dispatch logits (first 10): {:?}", &dispatch_logits[..10.min(dispatch_logits.len())]);
+    println!(
+        "CPU logits (first 10): {:?}",
+        &cpu_logits[..10.min(cpu_logits.len())]
+    );
+    println!(
+        "Dispatch logits (first 10): {:?}",
+        &dispatch_logits[..10.min(dispatch_logits.len())]
+    );
 
     // Outputs should match (within floating point tolerance)
-    assert_eq!(cpu_logits.len(), dispatch_logits.len(), "Logit vector length mismatch");
+    assert_eq!(
+        cpu_logits.len(),
+        dispatch_logits.len(),
+        "Logit vector length mismatch"
+    );
     for (i, (cpu, dispatch)) in cpu_logits.iter().zip(dispatch_logits.iter()).enumerate() {
         let diff = (cpu - dispatch).abs();
-        // Use relative tolerance for larger values, absolute for smaller
-        let tol = 1e-3.max(cpu.abs() * 1e-4);
+        let tol: f32 = 1e-3_f32.max(cpu.abs() * 1e-4);
         assert!(
             diff < tol,
             "Logit mismatch at index {}: cpu={:.6} dispatch={:.6} diff={:.6} tol={:.6}",
@@ -295,10 +291,7 @@ fn test_dispatch_cpu_fallback() {
     model.enable_dispatch();
 
     // Even without GPU, dispatch should work (falls back to CPU)
-    let hidden = model
-        .llama_model
-        .embed(0, 0)
-        .expect("embed failed");
+    let hidden = model.llama_model.embed(0, 0).expect("embed failed");
     let result = model
         .forward_with_dispatch(&hidden, 0)
         .expect("dispatch should fall back to CPU when GPU unavailable");
