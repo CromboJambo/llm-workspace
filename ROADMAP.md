@@ -115,13 +115,25 @@
 
 ---
 
-## Phase 3: Runtime (🔴 Not Started)
+## Phase 3: Runtime (🟡 In Progress)
 
 **Goal:** Make the runner usable as a library and service.
 
-- [ ] **Runner bridge** — HTTP or local pipe transport for remote inference
-- [ ] **Streaming token generation** — progressive output, not batch
-- [ ] **Model lifecycle** — loading, unloading, memory management, popularity-based eviction
+### Completed
+
+- [x] **Streaming token generation** — `LlamaRunner::generate_streaming()` + `generate_streaming_chat()` with callback-based token delivery. New types: `TokenInfo`, `TokenCallback`, `StreamingResult`.
+- [x] **Runtime struct** (`runtime.rs`) — unified entry point tying together:
+  - Model discovery (`Registry` + `ModelDiscovery`)
+  - Model loading (GGUF → `LlamaRunner` builder)
+  - Batch inference (`generate()`)
+  - Streaming inference (`generate_streaming()`)
+  - Model lifecycle (preload/eviction via `ModelManager`)
+  - Preloading stats and background task support
+- [x] **Bridge ModelManager to actual lifecycle** — `load_model()` calls `model_manager.load_model()`, `unload_current()` calls `model_manager.unload_model()`, `record_access()` after each inference call.
+- [x] **Exported new types** from `lib.rs`: `Runtime`, `RuntimeConfig`, `ModelState`, `StreamingResult`, `TokenInfo`, `TokenCallback`, `GenerationResult`, `LlamaRunner`, `LlamaRunnerBuilder`, `ModelInfo`, `ContextConfig`, `KvCacheType`, `SessionManager`
+
+### Remaining
+
 - [ ] **SafeTensors weight loading** — wire `ModelLoader` for SafeTensors → `LlamaModel`
 - [ ] **GGUF file writer** — currently parser-only
 - [ ] **SafeTensors file writer** — currently parser-only
@@ -160,9 +172,17 @@ Test all Q2_K through Q8_K quant types against real GGUF models. Remove `#[ignor
 
 Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
 
-### 4. Phase 3: Runtime
+### 4. SafeTensors Weight Loading
 
-Start building the runtime layer — runner bridge, streaming token generation, model lifecycle management.
+Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
+
+### 5. GGUF/SafeTensors File Writers
+
+Currently parser-only. Add writers for both formats.
+
+### 6. HuggingFace Model Download
+
+Integrate `hf-hub` dependency for model download.
 
 ---
 
