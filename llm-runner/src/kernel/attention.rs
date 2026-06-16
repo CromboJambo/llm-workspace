@@ -516,7 +516,7 @@ impl AttentionKernel for CpuAttentionKernel {
             // Apply causal mask: mask positions where key_idx > query_idx
             let mut masked = scaled;
             if let Some(mask_buf) = mask {
-                if let Some(mask_slice) = mask_buf.as_slice() {
+                if let Some(_mask_slice) = mask_buf.as_slice() {
                     for q in 0..query_seq_len {
                         for k in 0..cache_seq_len {
                             if k > q {
