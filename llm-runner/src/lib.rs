@@ -28,6 +28,7 @@ pub mod model_manager;
 pub mod plug_in;
 pub mod registry;
 pub mod remote_discovery;
+pub mod runtime;
 pub mod runner;
 pub mod tokenizer;
 pub mod transformer;
@@ -57,6 +58,11 @@ pub use transformer::{
 
 // ── llama.rs: High-level API over llama.cpp ──
 pub mod llama;
+
+pub use llama::{
+    GenerationResult, KvCacheType, SessionManager, StreamingResult, TokenCallback, TokenInfo,
+    LlamaRunner, LlamaRunnerBuilder, ModelInfo, ContextConfig,
+};
 
 #[cfg(test)]
 mod tests {
