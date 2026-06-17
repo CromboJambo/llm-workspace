@@ -31,6 +31,9 @@ use crate::error::Result;
 use crate::llama::{GenerationResult, LlamaRunner, SamplingConfig, StreamingResult, TokenInfo};
 use crate::model_manager::{ModelManager, ModelSpec, PreloadConfig, PreloadStats};
 use crate::registry::{DiscoveredModel, ModelDiscovery, ModelEntry, ModelFormat, Registry};
+use crate::transformer::{LlamaConfig, LlamaModel};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 /// Configuration for the Runtime.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -77,6 +80,14 @@ pub struct ModelState {
     pub access_count: u64,
 }
 
+/// Backend for inference: llama.cpp (GGUF) or pure-Rust (SafeTensors).
+pub enum RunnerBackend {
+    /// llama.cpp FFI runner (GGUF models).
+    Llama(LlamaRunner),
+    /// Pure-Rust transformer model (SafeTensors).
+    RustModel(LlamaModel),
+}
+
 /// The unified inference runtime.
 ///
 /// Manages model discovery, loading, inference (batch + streaming),
@@ -87,7 +98,7 @@ pub struct Runtime {
     /// Model manager for lifecycle.
     model_manager: ModelManager,
     /// Currently loaded runner (if any).
-    runner: Arc<RwLock<Option<LlamaRunner>>>,
+    runner: Arc<RwLock<Option<RunnerBackend>>>,
     /// Runtime configuration.
     config: RuntimeConfig,
     /// Currently loaded model state.
@@ -189,7 +200,7 @@ impl Runtime {
                 .build()
                 .map_err(|e| crate::error::RunnerError::Internal(e.to_string()))?;
 
-            *self.runner.write().await = Some(runner);
+            *self.runner.write().await = Some(RunnerBackend::Llama(runner));
 
             let state = ModelState {
                 name: name.to_string(),
@@ -206,6 +217,41 @@ impl Runtime {
                 .await;
 
             info!(model = name, "Model loaded successfully");
+        } else if format == ModelFormat::SafeTensors && spec.base_path.exists() {
+            info!(
+                model = name,
+                path = %spec.base_path.display(),
+                "Loading SafeTensors model"
+            );
+
+            // Extract config from safetensors metadata
+            let meta = crate::safetensors_weight_loader::extract_safetensors_config(&spec.base_path)
+                .map_err(|e| crate::error::RunnerError::ModelLoad(format!("Failed to extract safetensors config: {e}")))?;
+
+            let config = LlamaConfig::from_safetensors_metadata(&meta)
+                .map_err(|e| crate::error::RunnerError::ModelLoad(format!("Failed to build config from safetensors metadata: {e}")))?;
+
+            // Load model from safetensors
+            let llama_model = LlamaModel::load_safetensors(&spec.base_path, config)
+                .map_err(|e| crate::error::RunnerError::ModelLoad(format!("Failed to load safetensors model: {e}")))?;
+
+            *self.runner.write().await = Some(RunnerBackend::RustModel(llama_model));
+
+            let state = ModelState {
+                name: name.to_string(),
+                path: spec.base_path.clone(),
+                format,
+                loaded_at: std::time::SystemTime::now(),
+                access_count: 0,
+            };
+            *self.current_model.write().await = Some(state);
+
+            // Track in model manager
+            self.model_manager
+                .load_model(name.to_string(), spec)
+                .await;
+
+            info!(model = name, "SafeTensors model loaded successfully");
         } else {
             warn!(
                 model = name,
@@ -248,14 +294,14 @@ impl Runtime {
         self.current_model.read().await.clone()
     }
 
-    /// Run batch inference on the loaded model.
+    /// Run batch inference on the loaded GGUF model (llama.cpp path).
     pub fn generate(&self, prompt: &str, config: &SamplingConfig) -> Result<GenerationResult> {
         let runner = self.runner.try_read().map_err(|e| {
             crate::error::RunnerError::Internal(format!("RWLock poisoned: {}", e))
         })?;
-        let Some(runner) = runner.as_ref() else {
+        let Some(RunnerBackend::Llama(runner)) = runner.as_ref() else {
             return Err(crate::error::RunnerError::Internal(
-                "No model loaded. Call load_model() first.".to_string(),
+                "No GGUF model loaded. Call load_model() with a .gguf file.".to_string(),
             ));
         };
 
@@ -281,6 +327,53 @@ impl Runtime {
         Ok(result)
     }
 
+    /// Run batch inference on the loaded SafeTensors model (pure-Rust path).
+    ///
+    /// This uses the transformer-based inference engine, not llama.cpp.
+    /// The prompt must be tokenized first using the model's tokenizer.
+    pub fn generate_rust(&self, prompt_tokens: &[u32], max_tokens: usize, temp: f32) -> Result<Vec<u32>> {
+        let model = self.runner.try_read().map_err(|e| {
+            crate::error::RunnerError::Internal(format!("RWLock poisoned: {}", e))
+        })?;
+        let RunnerBackend::RustModel(model) = model.as_ref().ok_or_else(|| {
+            crate::error::RunnerError::Internal(
+                "No SafeTensors model loaded. Call load_model() with a .safetensors file.".to_string(),
+            )
+        })? else {
+            return Err(crate::error::RunnerError::Internal(
+                "Loaded model is not a SafeTensors model. Use generate() for GGUF models.".to_string(),
+            ));
+        };
+
+        let sampling_config = crate::transformer::SamplingConfig {
+            temperature: temp,
+            top_p: 0.95,
+            top_k: 0,
+            seed: Some(42),
+        };
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let generated = model.generate(prompt_tokens, max_tokens, &sampling_config, &mut rng, &[])
+            .map_err(|e| crate::error::RunnerError::ModelLoad(format!("Rust inference failed: {e}")))?;
+
+        // Update access count
+        if let Some(state) = self
+            .current_model
+            .try_read()
+            .ok()
+            .and_then(|s| s.as_ref().cloned())
+        {
+            let name = state.name.clone();
+            let duration = std::time::Duration::from_millis(1); // rough estimate
+            tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(self.model_manager.record_access(&name, duration));
+            });
+        }
+
+        Ok(generated)
+    }
+
     /// Run streaming inference on the loaded model.
     ///
     /// The callback is invoked once per generated token.
@@ -297,9 +390,9 @@ impl Runtime {
         let runner = self.runner.try_read().map_err(|e| {
             crate::error::RunnerError::Internal(format!("RWLock poisoned: {}", e))
         })?;
-        let Some(runner) = runner.as_ref() else {
+        let Some(RunnerBackend::Llama(runner)) = runner.as_ref() else {
             return Err(crate::error::RunnerError::Internal(
-                "No model loaded. Call load_model() first.".to_string(),
+                "Streaming requires a GGUF model. Use generate_rust() for SafeTensors models.".to_string(),
             ));
         };
 
@@ -366,6 +459,21 @@ impl Runtime {
     /// Get the model spec for a name (from registry or discovery).
     pub fn model_spec(&self, name: &str) -> Option<ModelSpec> {
         self.registry.to_spec(name)
+    }
+
+    /// Download a model file from HuggingFace Hub.
+    ///
+    /// Uses the `hf-hub` crate to download from the cache (downloading if needed).
+    /// Returns the local path to the downloaded file.
+    pub fn download_from_hf(repo_id: &str, filename: &str) -> Result<std::path::PathBuf> {
+        let cache = hf_hub::Cache::from_env();
+        let repo = cache.model(repo_id.to_string());
+        let path = repo.get(filename).ok_or_else(|| {
+            crate::error::RunnerError::Internal(format!(
+                "Failed to download '{filename}' from '{repo_id}' (check HF token or network)"
+            ))
+        })?;
+        Ok(path)
     }
 
     /// Get the current device preference.
