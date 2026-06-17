@@ -111,6 +111,106 @@ impl LlamaConfig {
         })
     }
 
+    /// Build config from safetensors metadata (the HashMap stored in the file header).
+    ///
+    /// Safetensors files embed a JSON metadata object. Common keys include:
+    /// - `model_type` / `architectures` — architecture name
+    /// - `hidden_size` / `dim` — embedding dimension
+    /// - `num_hidden_layers` / `n_layers` — number of layers
+    /// - `num_attention_heads` / `n_heads` — number of heads
+    /// - `num_key_value_heads` — KV heads (optional)
+    /// - `intermediate_size` / `ffn_dim` — FFN intermediate dim
+    /// - `max_position_embeddings` / `context_length` — max seq len
+    /// - `rope_theta` — RoPE base
+    /// - `rms_norm_eps` / `layer_norm_epsilon` — normalization epsilon
+    pub fn from_safetensors_metadata(meta: &std::collections::HashMap<String, String>) -> Result<Self> {
+        // Architecture
+        let arch = meta
+            .get("model_type")
+            .or(meta.get("architectures"))
+            .map(|s| s.trim_matches('"').to_lowercase())
+            .and_then(|s| {
+                match s.as_str() {
+                    "gemma" | "google/gemma" => Some(ModelArch::Gemma),
+                    "qwen2" | "qwen2vl" => Some(ModelArch::Qwen2),
+                    "qwen3" => Some(ModelArch::Qwen3),
+                    "phi3" | "microsoft/phi-3" => Some(ModelArch::Phi3),
+                    "mixtral" | "mistral" | "mistralai" => Some(ModelArch::Mixtral),
+                    "starcoder2" => Some(ModelArch::Starcoder2),
+                    _ => None,
+                }
+            })
+            .unwrap_or(ModelArch::Llama);
+
+        // Helper: get a u64 from metadata, trying multiple key names
+        let get_u64 = |keys: &[&str]| -> Option<u64> {
+            for &k in keys {
+                if let Some(v) = meta.get(k) {
+                    if let Ok(n) = v.trim_matches('"').parse::<u64>() {
+                        return Some(n);
+                    }
+                }
+            }
+            None
+        };
+
+        let get_f32 = |keys: &[&str]| -> Option<f32> {
+            for &k in keys {
+                if let Some(v) = meta.get(k) {
+                    if let Ok(n) = v.trim_matches('"').parse::<f32>() {
+                        return Some(n);
+                    }
+                }
+            }
+            None
+        };
+
+        let embed_dim = get_u64(&["hidden_size", "dim", "d_model"]).map(|v| v as usize).ok_or_else(|| {
+            RunnerError::ModelLoad("safetensors metadata missing hidden_size/dim".to_string())
+        })?;
+
+        let num_heads = get_u64(&["num_attention_heads", "n_heads", "num_heads"]).map(|v| v as usize).unwrap_or(32);
+        let num_kv_heads = get_u64(&["num_key_value_heads"]).map(|v| v as usize).unwrap_or(num_heads);
+        let num_layers = get_u64(&["num_hidden_layers", "n_layers", "num_layers"]).map(|v| v as usize).unwrap_or(32);
+        let head_dim = if num_heads > 0 { embed_dim / num_heads } else { 64 };
+        let intermediate_dim = get_u64(&["intermediate_size", "ffn_dim", "feed_forward_length"])
+            .map(|v| v as usize)
+            .unwrap_or(11008);
+        let max_seq_len = get_u64(&["max_position_embeddings", "context_length", "seq_length"]).map(|v| v as usize).unwrap_or(4096);
+        let rope_base = get_f32(&["rope_theta", "rope_scaling_factor"]).unwrap_or(10000.0);
+        let rms_norm_eps = get_f32(&["rms_norm_eps", "layer_norm_epsilon", "layer_norm_epsilon"]).unwrap_or(1e-5);
+
+        // Try to get rope dimension from metadata
+        let rope_dim = get_u64(&["rope_dim", "rope_dimension_count", "rope_scaling_rope_dimension"])
+            .map(|v| v as usize)
+            .unwrap_or(head_dim);
+        let actual_head_dim = if rope_dim > 0 { rope_dim } else { head_dim };
+
+        // Rope scaling
+        let rope_scaling = meta.get("rope_scaling");
+        let rope_scaling_factor = rope_scaling
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_matches('"')).ok())
+            .and_then(|v| v.get("factor").and_then(|fv| fv.as_f64()).map(|f| f as f32));
+        let rope_scaling_type = rope_scaling
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_matches('"')).ok())
+            .and_then(|v| v.get("type").and_then(|tv| tv.as_str()).map(|s| s.to_string()));
+
+        Ok(Self {
+            arch,
+            num_layers,
+            num_heads,
+            num_kv_heads,
+            head_dim: actual_head_dim,
+            embed_dim,
+            intermediate_dim,
+            max_seq_len,
+            rope_base,
+            rope_scaling_factor,
+            rope_scaling_type,
+            rms_norm_eps,
+        })
+    }
+
     /// Get the layer prefix for this architecture.
     pub fn layer_prefix(&self, layer_idx: usize) -> String {
         match self.arch {
