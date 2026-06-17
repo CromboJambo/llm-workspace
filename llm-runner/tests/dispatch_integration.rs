@@ -72,9 +72,8 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
 /// Create a minimal synthetic GGUF file for testing.
 /// Architecture: llama, 2 layers, 64-dim embedding, 4 heads.
 fn make_test_gguf(path: &PathBuf) {
-    // tokenizer.ggml.tokens must be an array of strings per GGUF v3 spec
-    // Use small vocab size to avoid large file size in tests
-    let dummy_tokens: Vec<GgufKvValue> = (0..100).map(|i| GgufKvValue::String(format!("token_{}", i))).collect();
+    // Use a tiny vocab to avoid large file sizes in tests
+    let dummy_tokens: Vec<GgufKvValue> = (0..10).map(|i| GgufKvValue::String(format!("tok{}", i))).collect();
     
     let kv_pairs: Vec<GgufKvPair> = vec![
         kv_pair_str("general.architecture", "llama"),
@@ -184,13 +183,21 @@ fn make_test_gguf(path: &PathBuf) {
         .iter()
         .map(|t| t.shape.iter().product::<u64>() * 2)
         .sum();
+    println!("Total tensor bytes: {}", total);
+    println!("Expected file size: {}", data_section_start + total);
+    for t in &tensor_infos {
+        let elems: u64 = t.shape.iter().product();
+        println!("  {}: offset={} shape={:?} bytes={}", t.name, t.offset, t.shape, elems * 2);
+    }
     buf.resize((data_section_start + total) as usize, 0);
     // Write tensor data: alternating 0x00 / 0x3F creates valid F16 values (0x3F00 = 1.0)
     for i in 0..total as usize {
         buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
     }
 
-    std::fs::write(path, buf).unwrap();
+    std::fs::write(path, &buf).unwrap();
+    println!("Actual file size: {}", buf.len());
+    println!("Data section start: {}", data_section_start);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
