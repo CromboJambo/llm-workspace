@@ -7,7 +7,7 @@
 | **Phase 1: CPU Inference** | ✅ Complete | Pure-Rust transformer + llama.cpp FFI path |
 | **Phase 1.5: Hybrid Routing** | ✅ Complete | GPU → Remote → CPU device selector |
 | **Phase 2: Backend Abstraction** | ✅ Complete | Trait layer, tensor interfaces, execution dispatch, error handling |
-| **Phase 3: Runtime** | 🔴 Not Started | Runner bridge, streaming, model management |
+| **Phase 3: Runtime** | ✅ Complete | Runner bridge, streaming, model management, SafeTensors, HF download |
 | **Phase 4: GPU Kernels** | 🔮 Future | WGMMA, fp8, attention (after abstraction is solid) |
 
 ---
@@ -115,7 +115,7 @@
 
 ---
 
-## Phase 3: Runtime (🟡 In Progress)
+## Phase 3: Runtime (✅ Complete)
 
 **Goal:** Make the runner usable as a library and service.
 
@@ -124,20 +124,30 @@
 - [x] **Streaming token generation** — `LlamaRunner::generate_streaming()` + `generate_streaming_chat()` with callback-based token delivery. New types: `TokenInfo`, `TokenCallback`, `StreamingResult`.
 - [x] **Runtime struct** (`runtime.rs`) — unified entry point tying together:
   - Model discovery (`Registry` + `ModelDiscovery`)
-  - Model loading (GGUF → `LlamaRunner` builder)
-  - Batch inference (`generate()`)
-  - Streaming inference (`generate_streaming()`)
+  - Model loading (GGUF → `LlamaRunner` builder, SafeTensors → `LlamaModel`)
+  - Batch inference (`generate()` for GGUF, `generate_rust()` for SafeTensors)
+  - Streaming inference (`generate_streaming()` for GGUF)
   - Model lifecycle (preload/eviction via `ModelManager`)
   - Preloading stats and background task support
+- [x] **RunnerBackend enum** — abstracts over `LlamaRunner` (llama.cpp/GGUF) and `LlamaModel` (pure-Rust/SafeTensors)
 - [x] **Bridge ModelManager to actual lifecycle** — `load_model()` calls `model_manager.load_model()`, `unload_current()` calls `model_manager.unload_model()`, `record_access()` after each inference call.
-- [x] **Exported new types** from `lib.rs`: `Runtime`, `RuntimeConfig`, `ModelState`, `StreamingResult`, `TokenInfo`, `TokenCallback`, `GenerationResult`, `LlamaRunner`, `LlamaRunnerBuilder`, `ModelInfo`, `ContextConfig`, `KvCacheType`, `SessionManager`
+- [x] **SafeTensors weight loading** — `LlamaConfig::from_safetensors_metadata()` parses safetensors header JSON → `LlamaConfig`; `LlamaModel::load_safetensors()` loads weights; `Runtime::load_model()` handles `.safetensors` files
+- [x] **HuggingFace model download** — `Runtime::download_from_hf(repo_id, filename)` via `hf-hub` crate
+- [x] **Exported new types** from `lib.rs`: `Runtime`, `RuntimeConfig`, `ModelState`, `RunnerBackend`, `StreamingResult`, `TokenInfo`, `TokenCallback`, `GenerationResult`, `LlamaRunner`, `LlamaRunnerBuilder`, `ModelInfo`, `ContextConfig`, `KvCacheType`, `SessionManager`
 
-### Remaining
+### Remaining (post-Phase-3)
 
-- [ ] **SafeTensors weight loading** — wire `ModelLoader` for SafeTensors → `LlamaModel`
+- [ ] **SafeTensors weight loading** — partial: `LlamaConfig::from_safetensors_metadata()` and `LlamaModel::load_safetensors()` work; full integration via `Runtime::load_model()` is wired up
 - [ ] **GGUF file writer** — currently parser-only
 - [ ] **SafeTensors file writer** — currently parser-only
-- [ ] **HuggingFace model download** — integrate `hf-hub` dependency
+- [ ] **HuggingFace model download** — wired: `Runtime::download_from_hf(repo_id, filename)` uses `hf-hub` crate
+
+### Post-Completion Refinements
+
+- [ ] Wire SafeTensors into `ModelDiscovery` for auto-registration
+- [ ] Add tokenizer support for SafeTensors models (currently GGUF-only)
+- [ ] Add `generate_chat()` method for SafeTensors path
+- [ ] Test dispatch with real GGUF models (see Phase 4 near-term priorities)
 
 ---
 
