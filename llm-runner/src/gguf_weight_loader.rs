@@ -40,6 +40,10 @@ pub struct GgufWeights {
 /// Returns the header + all tensor data.
 pub fn load_gguf_weights(gguf_path: &Path) -> Result<GgufWeights> {
     let header = parse_gguf(gguf_path)?;
+    eprintln!("Parser data_section_start: {}", header.data_section_start);
+    eprintln!("First tensor: {} offset={}, stored_size={}", 
+        header.tensors[0].name, header.tensors[0].offset, header.tensors[0].stored_size());
+    eprintln!("File would be read from offset: {}", header.data_section_start + header.tensors[0].offset);
 
     let mut tensors = HashMap::with_capacity(header.tensors.len());
 
