@@ -32,6 +32,14 @@ fn kv_pair_f32(key: &str, value: f32) -> GgufKvPair {
     }
 }
 
+fn kv_pair_array(key: &str, items: Vec<GgufKvValue>) -> GgufKvPair {
+    GgufKvPair {
+        key: key.to_string(),
+        value_type: GgufValueType::Array,
+        value: GgufKvValue::Array(items),
+    }
+}
+
 fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
     match value {
         GgufKvValue::Uint8(v) => buf.push(*v),
@@ -61,8 +69,12 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
 }
 
 /// Create a minimal synthetic GGUF file for testing.
-/// Architecture: llama, 1 layer, 64-dim embedding, 4 heads.
+/// Architecture: llama, 2 layers, 64-dim embedding, 4 heads.
 fn make_test_gguf(path: &PathBuf) {
+    // tokenizer.ggml.tokens must be an array of strings per GGUF v3 spec
+    // Use small vocab size to avoid large file size in tests
+    let dummy_tokens: Vec<GgufKvValue> = (0..100).map(|i| GgufKvValue::String(format!("token_{}", i))).collect();
+    
     let kv_pairs: Vec<GgufKvPair> = vec![
         kv_pair_str("general.architecture", "llama"),
         kv_pair_str("general.file_type", "F16"),
@@ -74,7 +86,7 @@ fn make_test_gguf(path: &PathBuf) {
         kv_pair_u32("llama.feed_forward_length", 128),
         kv_pair_u32("llama.rope.dimension_count", 64),
         kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
-        kv_pair_u32("tokenizer.ggml.tokens", 32000),
+        kv_pair_array("tokenizer.ggml.tokens", dummy_tokens),
     ];
 
     let tensor_shapes: Vec<Vec<u64>> = vec![
@@ -217,12 +229,7 @@ fn test_linear_dispatch_accuracy() {
 
 /// Test that the dispatch path produces output matching the CPU path when
 /// run on the same GGUF model with the same input.
-///
-/// NOTE: Skipped because the test GGUF writer has a pre-existing bug where
-/// `tokenizer.ggml.tokens` is written as u32 instead of string, causing the
-/// parser to misalign tensor reads. Fixing the writer is a Phase 4 task.
 #[test]
-#[ignore = "pre-existing test GGUF writer bug"]
 fn test_dispatch_vs_cpu_output() {
     let dir = tempdir().unwrap();
     let gguf_path = dir.path().join("test.gguf");
