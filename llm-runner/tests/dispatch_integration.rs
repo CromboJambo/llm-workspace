@@ -58,8 +58,9 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
             buf.extend_from_slice(s.as_bytes());
         }
         GgufKvValue::Array(arr) => {
+            let element_type = arr.first().map(|v| v.value_type()).unwrap_or(GgufValueType::String);
+            buf.extend_from_slice(&(element_type as u32).to_le_bytes());
             buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
-            buf.extend_from_slice(&(arr.first().map(|v| v.value_type()).unwrap_or(GgufValueType::Uint32) as u32).to_le_bytes());
             for item in arr {
                 write_kv_value(buf, item);
             }
