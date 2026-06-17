@@ -94,19 +94,25 @@ fn parse_v2<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
 fn parse_v3<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
     let tensor_count = reader.read_u64::<LittleEndian>()?;
     let kv_count = reader.read_u64::<LittleEndian>()?;
+    eprintln!("parse_v3: tensor_count={}, kv_count={}", tensor_count, kv_count);
 
     let mut kv_pairs = Vec::with_capacity(kv_count as usize);
     for _ in 0..kv_count {
         kv_pairs.push(read_kv_pair(reader)?);
     }
+    eprintln!("parse_v3: read {} KV pairs", kv_pairs.len());
 
     let mut tensors = Vec::with_capacity(tensor_count as usize);
-    for _ in 0..tensor_count {
+    for i in 0..tensor_count {
+        eprintln!("parse_v3: reading tensor {} of {}", i + 1, tensor_count);
         tensors.push(read_tensor_info(reader)?);
     }
+    eprintln!("parse_v3: read {} tensors", tensors.len());
 
     let alignment = read_alignment_from_kv(&kv_pairs);
     let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, alignment);
+    eprintln!("parse_v3: computed data_section_start={}, alignment={:?}", data_section_start, alignment);
+    eprintln!("parse_v3: returning Ok with {} tensors", tensors.len());
 
     Ok(GgufHeader {
         version: 3,
@@ -124,9 +130,10 @@ fn parse_v3<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
 /// aligned up to `data_alignment` for v3.
 pub fn compute_data_section_start(version: u32, kv_pairs: &[GgufKvPair], tensors: &[GgufTensorInfo], data_alignment: Option<u64>) -> u64 {
     let header_base: u64 = 4 + 4 + 8 + 8; // magic + version + tensor_count + kv_count
-    let kv_size: usize = kv_pairs.iter().map(|p| p.raw_byte_size()).sum();
-    let tensor_size: usize = tensors.iter().map(|t| t.raw_byte_size()).sum();
-    let mut data_section: u64 = header_base + kv_size as u64 + tensor_size as u64;
+    let kv_size: u64 = kv_pairs.iter().map(|p| p.raw_byte_size() as u64).sum();
+    let tensor_size: u64 = tensors.iter().map(|t| t.raw_byte_size() as u64).sum();
+    let mut data_section = header_base.checked_add(kv_size).and_then(|v| v.checked_add(tensor_size)).unwrap_or(u64::MAX);
+    eprintln!("compute_data_section_start: header_base={}, kv_size={}, tensor_size={}, data_section={}", header_base, kv_size, tensor_size, data_section);
 
     if version == 3
         && let Some(alignment) = data_alignment
@@ -295,6 +302,7 @@ fn read_tensor_info<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError
     }
     let dtype = reader.read_u32::<LittleEndian>()?;
     let offset = reader.read_u64::<LittleEndian>()?;
+    eprintln!("  read_tensor_info: name={} dims={} dtype={} offset={}", name, n_dims, dtype, offset);
     Ok(GgufTensorInfo { name, shape, offset, dtype })
 }
 
