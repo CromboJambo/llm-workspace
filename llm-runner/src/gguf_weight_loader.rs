@@ -40,18 +40,29 @@ pub struct GgufWeights {
 /// Returns the header + all tensor data.
 pub fn load_gguf_weights(gguf_path: &Path) -> Result<GgufWeights> {
     let header = parse_gguf(gguf_path)?;
-    eprintln!("Parser data_section_start: {}", header.data_section_start);
-    eprintln!("First tensor: {} offset={}, stored_size={}", 
-        header.tensors[0].name, header.tensors[0].offset, header.tensors[0].stored_size());
-    eprintln!("File would be read from offset: {}", header.data_section_start + header.tensors[0].offset);
+    let file_size = std::fs::metadata(gguf_path).map(|m| m.len()).unwrap_or(0);
+    std::fs::write("/tmp/llm-debug.log", format!(
+        "load_gguf_weights: data_section_start={}, tensor_count={}, file_size={}\n\
+         first tensor: {} offset={} stored_size={}\n\
+         will read at absolute offset={}\n",
+        header.data_section_start, header.tensors.len(), file_size,
+        header.tensors[0].name, header.tensors[0].offset, header.tensors[0].stored_size(),
+        header.data_section_start + header.tensors[0].offset,
+    )).ok();
 
     let mut tensors = HashMap::with_capacity(header.tensors.len());
 
     for tensor in &header.tensors {
         let stored_size = tensor.stored_size() as usize;
         let file_offset = header.data_section_start + tensor.offset;
+        eprintln!("  extract: {} offset={} stored_size={} file_total={}", 
+            tensor.name, file_offset, stored_size, std::fs::metadata(gguf_path).map(|m| m.len()).unwrap_or(0));
 
-        let raw_data = extract_tensor_bytes(gguf_path, file_offset, stored_size)?;
+        let raw_data = extract_tensor_bytes(gguf_path, file_offset, stored_size).map_err(|e| {
+            RunnerError::Gguf(pesti_gguf::GgufError::Io(format!(
+                "extract {} at {} size {}: {e}", tensor.name, file_offset, stored_size
+            )))
+        })?;
 
         let dequantized = dequantize_tensor(tensor, &raw_data)?;
 
