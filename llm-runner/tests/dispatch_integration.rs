@@ -70,14 +70,15 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
 }
 
 /// Create a minimal synthetic GGUF file for testing.
-/// Architecture: llama, 2 layers, 64-dim embedding, 4 heads.
+/// Architecture: llama, 2 layers, 64-dim embedding, 4 heads, vocab=10.
 fn make_test_gguf(path: &PathBuf) {
-    // Use a tiny vocab to avoid large file sizes in tests
-    let dummy_tokens: Vec<GgufKvValue> = (0..10).map(|i| GgufKvValue::String(format!("tok{}", i))).collect();
-    
+    let vocab_size: u32 = 10;
+    let dummy_tokens: Vec<GgufKvValue> = (0..vocab_size as usize).map(|i| GgufKvValue::String(format!("tok{}", i))).collect();
+
     let kv_pairs: Vec<GgufKvPair> = vec![
         kv_pair_str("general.architecture", "llama"),
         kv_pair_str("general.file_type", "F16"),
+        kv_pair_u32("general.alignment", 32),
         kv_pair_u32("llama.context_length", 4096),
         kv_pair_u32("llama.embedding_length", 64),
         kv_pair_u32("llama.block_count", 2),
@@ -86,12 +87,14 @@ fn make_test_gguf(path: &PathBuf) {
         kv_pair_u32("llama.feed_forward_length", 128),
         kv_pair_u32("llama.rope.dimension_count", 64),
         kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
+        kv_pair_u32("tokenizer.ggml.model", 2), // bigram
         kv_pair_array("tokenizer.ggml.tokens", dummy_tokens),
     ];
 
+    // Tensor shapes: output.weight must match vocab_size
     let tensor_shapes: Vec<Vec<u64>> = vec![
         vec![64],        // tok_embeddings
-        vec![32000, 64], // output
+        vec![vocab_size as u64, 64], // output (vocab x embed)
         vec![64, 64],    // layers.0.attention.wq
         vec![64, 64],    // layers.0.attention.wk
         vec![64, 64],    // layers.0.attention.wv
@@ -151,7 +154,7 @@ fn make_test_gguf(path: &PathBuf) {
         })
         .collect();
 
-    let data_section_start = compute_data_section_start(3, &kv_pairs, &tensor_infos, None);
+    let data_section_start = compute_data_section_start(3, &kv_pairs, &tensor_infos, Some(32));
     println!("GGUF data section start: {}", data_section_start);
     println!("KV pairs: {}", kv_pairs.len());
     println!("Tensors: {}", tensor_infos.len());
@@ -320,8 +323,7 @@ fn test_dispatch_vs_cpu_output() {
 /// Test that dispatch falls back to CPU when GPU is unavailable.
 #[test]
 fn test_dispatch_cpu_fallback() {
-    let dir = tempdir().unwrap();
-    let gguf_path = dir.path().join("test.gguf");
+    let gguf_path = std::path::PathBuf::from("/tmp/test_dispatch.gguf");
     make_test_gguf(&gguf_path);
 
     let mut model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
