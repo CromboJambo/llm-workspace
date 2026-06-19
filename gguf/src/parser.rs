@@ -191,6 +191,12 @@ fn read_value_type<R: Read>(reader: &mut R) -> Result<GgufValueType, GgufError> 
     GgufValueType::from_u32(raw).ok_or(GgufError::InvalidValueType(raw))
 }
 
+/// Read element_type for an array — per GGUF spec this is u8 (1 byte).
+fn read_array_element_type<R: Read>(reader: &mut R) -> Result<GgufValueType, GgufError> {
+    let raw = reader.read_u8()?;
+    GgufValueType::from_u32(raw as u32).ok_or(GgufError::InvalidValueType(raw as u32))
+}
+
 fn read_kv_value<R: Read>(reader: &mut R, value_type: GgufValueType) -> Result<GgufKvValue, GgufError> {
     match value_type {
         GgufValueType::Uint8 => {
@@ -238,7 +244,7 @@ fn read_kv_value<R: Read>(reader: &mut R, value_type: GgufValueType) -> Result<G
             Ok(GgufKvValue::String(s))
         }
         GgufValueType::Array => {
-            let element_type = read_value_type(reader)?;
+            let element_type = read_array_element_type(reader)?;
             let count = reader.read_u64::<LittleEndian>()?;
             match element_type {
                 GgufValueType::Int8Array => {
