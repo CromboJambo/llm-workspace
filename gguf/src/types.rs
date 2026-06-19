@@ -147,11 +147,11 @@ impl GgufKvPair {
                         return arr.iter().map(|v| match v {
                             GgufKvValue::String(s) => 8 + s.len(),
                             _ => 0,
-                        }).sum::<usize>() + 4 + 8;
+                        }).sum::<usize>() + 1 + 8;
                     }
                     _ => 4,
                 };
-                4 + 8 + arr.len() * elem_size
+                1 + 8 + arr.len() * elem_size
             }
         };
         8 + key_bytes + 4 + value_bytes
