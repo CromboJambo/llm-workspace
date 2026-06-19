@@ -59,10 +59,11 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
         }
         GgufKvValue::Array(arr) => {
             let element_type = arr.first().map(|v| v.value_type()).unwrap_or(GgufValueType::String);
-            buf.extend_from_slice(&(element_type as u32).to_le_bytes());
+            // GGUF spec: element_type is u8 (1 byte), count is u64 (8 bytes)
+            buf.push(element_type as u8);
             buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
             for item in arr {
-                write_kv_value(buf, item);
+
             }
         }
         _ => {}
