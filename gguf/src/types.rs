@@ -154,7 +154,7 @@ impl GgufKvPair {
                 1 + 8 + arr.len() * elem_size
             }
         };
-        8 + key_bytes + 4 + value_bytes
+        4 + key_bytes + 4 + value_bytes
     }
 }
 
@@ -882,7 +882,7 @@ mod tests {
             value_type: GgufValueType::String,
             value: GgufKvValue::String("llama".to_string()),
         };
-        assert_eq!(kv.raw_byte_size(), 29);
+        assert_eq!(kv.raw_byte_size(), 25);
     }
 
     #[test]
@@ -892,7 +892,7 @@ mod tests {
             value_type: GgufValueType::String,
             value: GgufKvValue::String("".to_string()),
         };
-        assert_eq!(kv.raw_byte_size(), 21);
+        assert_eq!(kv.raw_byte_size(), 17);
     }
 
     #[test]
@@ -906,7 +906,7 @@ mod tests {
                 GgufKvValue::Uint32(3),
             ]),
         };
-        assert_eq!(kv.raw_byte_size(), 39);
+        assert_eq!(kv.raw_byte_size(), 32);
     }
 
     #[test]
