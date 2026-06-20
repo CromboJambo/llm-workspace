@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn attention_slice_from_cache() {
-        let mut cache = Kvcache::new(8, 64, 128, false);
+        let mut cache = Kvcache::new(8, 8, 64, 128, false);
         let key = vec![f16::from_f32(1.0); 8 * 64];
         let value = vec![f16::from_f32(2.0); 8 * 64];
         cache.append(&key, &value).unwrap();
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn attention_slice_tma_descriptors() {
-        let mut cache = Kvcache::new(8, 64, 128, false);
+        let mut cache = Kvcache::new(8, 8, 64, 128, false);
         let key = vec![f16::from_f32(1.0); 8 * 64];
         let value = vec![f16::from_f32(2.0); 8 * 64];
         cache.append(&key, &value).unwrap();
@@ -690,7 +690,7 @@ mod tests {
 
     #[test]
     fn attention_slice_tma_descriptors_head_oob() {
-        let cache = Kvcache::new(8, 64, 128, false);
+        let cache = Kvcache::new(8, 8, 64, 128, false);
         let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 64]);
         let slice = AttentionSlice::from_cache(&cache, query, 0, 1);
 
@@ -719,8 +719,8 @@ mod tests {
         let kernel = CpuAttentionKernel::new();
 
         // Build KV cache with known values
-        let mut key_cache = Kvcache::new(4, 8, 16, false);
-        let mut value_cache = Kvcache::new(4, 8, 16, false);
+        let mut key_cache = Kvcache::new(4, 4, 8, 16, false);
+        let mut value_cache = Kvcache::new(4, 4, 8, 16, false);
 
         for i in 0..3 {
             let key = vec![f16::from_f32(i as f32 + 1.0); 4 * 8];
@@ -749,8 +749,8 @@ mod tests {
         let kernel = CpuAttentionKernel::new();
 
         // Build KV cache with 10 positions
-        let mut key_cache = Kvcache::new(2, 16, 32, false);
-        let mut value_cache = Kvcache::new(2, 16, 32, false);
+        let mut key_cache = Kvcache::new(2, 2, 16, 32, false);
+        let mut value_cache = Kvcache::new(2, 2, 16, 32, false);
 
         for i in 0..10 {
             let key = vec![f16::from_f32(1.0 + i as f32 * 0.1); 2 * 16];
@@ -778,8 +778,8 @@ mod tests {
     fn cpu_attention_kernel_forward_zero_heads() {
         let kernel = CpuAttentionKernel::new();
         let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 4]);
-        let key_cache = Kvcache::new(0, 64, 16, false);
-        let value_cache = Kvcache::new(0, 64, 16, false);
+        let key_cache = Kvcache::new(0, 0, 64, 16, false);
+        let value_cache = Kvcache::new(0, 0, 64, 16, false);
         let config = AttentionConfig::default();
 
         let result = kernel.forward(&query, &key_cache, &value_cache, None, &config);
@@ -790,8 +790,8 @@ mod tests {
     fn cpu_attention_kernel_forward_zero_dim() {
         let kernel = CpuAttentionKernel::new();
         let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 4]);
-        let key_cache = Kvcache::new(4, 0, 16, false);
-        let value_cache = Kvcache::new(4, 0, 16, false);
+        let key_cache = Kvcache::new(4, 4, 0, 16, false);
+        let value_cache = Kvcache::new(4, 4, 0, 16, false);
         let config = AttentionConfig::default();
 
         let result = kernel.forward(&query, &key_cache, &value_cache, None, &config);
@@ -802,8 +802,8 @@ mod tests {
     fn cpu_attention_kernel_forward_masked() {
         let kernel = CpuAttentionKernel::new();
 
-        let mut key_cache = Kvcache::new(2, 8, 8, false);
-        let mut value_cache = Kvcache::new(2, 8, 8, false);
+        let mut key_cache = Kvcache::new(2, 2, 8, 8, false);
+        let mut value_cache = Kvcache::new(2, 2, 8, 8, false);
 
         for _i in 0..4 {
             let key = vec![f16::from_f32(1.0); 2 * 8];
@@ -902,8 +902,8 @@ mod tests {
         // When query is one-hot per head, output should approximate the corresponding V row
         let kernel = CpuAttentionKernel::new();
 
-        let mut key_cache = Kvcache::new(1, 4, 8, false);
-        let mut value_cache = Kvcache::new(1, 4, 8, false);
+        let mut key_cache = Kvcache::new(1, 1, 4, 8, false);
+        let mut value_cache = Kvcache::new(1, 1, 4, 8, false);
 
         // Write known values
         for i in 0..3 {
@@ -937,8 +937,8 @@ mod tests {
     fn cpu_attention_kernel_forward_single_position_cache() {
         let kernel = CpuAttentionKernel::new();
 
-        let mut key_cache = Kvcache::new(1, 4, 8, false);
-        let mut value_cache = Kvcache::new(1, 4, 8, false);
+        let mut key_cache = Kvcache::new(1, 1, 4, 8, false);
+        let mut value_cache = Kvcache::new(1, 1, 4, 8, false);
 
         let key = vec![f16::from_f32(2.0); 4];
         let value = vec![f16::from_f32(3.0); 4];
@@ -978,7 +978,7 @@ mod tests {
 
     #[test]
     fn attention_slice_from_cache_empty_cache() {
-        let cache = Kvcache::new(4, 64, 128, false);
+        let cache = Kvcache::new(4, 4, 64, 128, false);
         let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 64]);
         let slice = AttentionSlice::from_cache(&cache, query, 0, 1);
         assert_eq!(slice.key_slices.len(), 4);
@@ -998,7 +998,7 @@ mod tests {
 
     #[test]
     fn attention_slice_clone_copy() {
-        let mut cache = Kvcache::new(4, 64, 128, false);
+        let mut cache = Kvcache::new(4, 4, 64, 128, false);
         let key = vec![f16::from_f32(1.0); 4 * 64];
         let value = vec![f16::from_f32(2.0); 4 * 64];
         cache.append(&key, &value).unwrap();
