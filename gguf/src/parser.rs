@@ -173,8 +173,17 @@ fn read_string<R: Read>(reader: &mut R) -> Result<String, GgufError> {
     String::from_utf8(bytes).map_err(GgufError::Utf8)
 }
 
+fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
+    let len = reader.read_u32::<LittleEndian>()?;
+    if len > 1024 * 1024 {
+        return Err(GgufError::Io(format!("key length {len} exceeds max 1MB")));
+    }
+    let bytes = read_bytes(reader, len as usize)?;
+    String::from_utf8(bytes).map_err(GgufError::Utf8)
+}
+
 fn read_kv_pair<R: Read>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
-    let key = read_string(reader)?;
+    let key = read_key(reader)?;
     let value_type = read_value_type(reader)?;
     let value = read_kv_value(reader, value_type)?;
     #[cfg(debug_assertions)]
@@ -562,7 +571,7 @@ mod tests {
 
         // KV pair 1: general.architecture = "llama" (string)
         let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
         buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
         buf.extend_from_slice(&(5u64).to_le_bytes()); // "llama" length
@@ -570,14 +579,14 @@ mod tests {
 
         // KV pair 2: general.file_type = 1 (F16) (uint32)
         let key = "general.file_type";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
         buf.extend_from_slice(&(4u32).to_le_bytes()); // UINT32 type
         buf.extend_from_slice(&1u32.to_le_bytes());
 
         // KV pair 3: general.alignment = 32
         let key = "general.alignment";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
         buf.extend_from_slice(&(4u32).to_le_bytes()); // UINT32 type
         buf.extend_from_slice(&32u32.to_le_bytes());
@@ -713,7 +722,7 @@ mod tests {
 
         // KV pair: general.architecture = "llama" (string)
         let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
         buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
         buf.extend_from_slice(&(5u64).to_le_bytes()); // "llama" length
@@ -748,7 +757,7 @@ mod tests {
 
         // KV pair: general.architecture = "qwen2" (string)
         let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
         buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
         buf.extend_from_slice(&(5u64).to_le_bytes()); // "qwen2" length
@@ -776,7 +785,7 @@ mod tests {
         assert_eq!(header.kv_pairs.len(), 1);
         assert_eq!(header.tensors.len(), 1);
         assert_eq!(header.architecture(), Some("llama"));
-        assert_eq!(header.data_section_start, 118);
+        assert_eq!(header.data_section_start, 114);
     }
 
     #[test]
@@ -822,16 +831,16 @@ mod tests {
             value_type: GgufValueType::Uint32,
             value: GgufKvValue::Uint32(42),
         };
-        // 8 (key_len) + 4 (key) + 4 (type) + 4 (value) = 20
-        assert_eq!(kv.raw_byte_size(), 8 + 4 + 4 + 4);
+        // 4 (key_len) + 4 (key) + 4 (type) + 4 (value) = 16
+        assert_eq!(kv.raw_byte_size(), 4 + 4 + 4 + 4);
 
         let str_kv = GgufKvPair {
             key: "arch".to_string(),
             value_type: GgufValueType::String,
             value: GgufKvValue::String("llama".to_string()),
         };
-        // 8 (key_len) + 4 (key) + 4 (type) + 8 (str_len) + 5 (str) = 29
-        assert_eq!(str_kv.raw_byte_size(), 8 + 4 + 4 + 8 + 5);
+        // 4 (key_len) + 4 (key) + 4 (type) + 8 (str_len) + 5 (str) = 25
+        assert_eq!(str_kv.raw_byte_size(), 4 + 4 + 4 + 8 + 5);
     }
 
     #[test]
