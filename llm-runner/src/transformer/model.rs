@@ -822,12 +822,14 @@ impl LlamaModel {
             let mut value_caches = Vec::with_capacity(self.config.num_layers);
             for _ in 0..self.config.num_layers {
                 let key_cache = Kvcache::new(
+                    self.config.num_heads,
                     self.config.num_kv_heads,
                     self.config.head_dim,
                     self.config.max_seq_len,
                     if ctx.gpu_available() { true } else { false },
                 );
                 let value_cache = Kvcache::new(
+                    self.config.num_heads,
                     self.config.num_kv_heads,
                     self.config.head_dim,
                     self.config.max_seq_len,
@@ -918,7 +920,7 @@ impl LlamaModel {
                 layer.ffn_norm.eps,
             );
 
-            let layer_dispatch = crate::kernel::dispatch::LayerDispatch {
+            let mut layer_dispatch = crate::kernel::dispatch::LayerDispatch {
                 attention: attention_dispatch,
                 feed_forward: feed_forward_dispatch,
                 attention_norm,
@@ -932,8 +934,8 @@ impl LlamaModel {
                 1, // batch_size
                 1, // seq_len
                 layer_start_pos,
-                &key_caches[layer_idx],
-                &value_caches[layer_idx],
+                &mut key_caches[layer_idx],
+                &mut value_caches[layer_idx],
             )?;
         }
 
