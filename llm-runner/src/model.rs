@@ -161,13 +161,14 @@ impl Model {
     pub fn new(config: ModelConfig, engine: InferenceEngine, on_device: bool) -> Self {
         let num_layers = config.num_layers;
         let num_heads = config.num_heads;
+        let num_kv_heads = config.num_kv_heads;
         let head_dim = config.head_dim;
         let max_seq = config.max_seq;
 
         let kv_caches = (0..num_layers)
             .map(|_| {
-                let key_cache = Kvcache::new(num_heads, head_dim, max_seq, on_device);
-                let value_cache = Kvcache::new(num_heads, head_dim, max_seq, on_device);
+                let key_cache = Kvcache::new(num_heads, num_kv_heads, head_dim, max_seq, on_device);
+                let value_cache = Kvcache::new(num_heads, num_kv_heads, head_dim, max_seq, on_device);
                 (key_cache, value_cache)
             })
             .collect();
@@ -191,13 +192,14 @@ impl Model {
     ) -> Self {
         let num_layers = config.num_layers;
         let num_heads = config.num_heads;
+        let num_kv_heads = config.num_kv_heads;
         let head_dim = config.head_dim;
         let max_seq = config.max_seq;
 
         let kv_caches = (0..num_layers)
             .map(|_| {
-                let key_cache = Kvcache::new(num_heads, head_dim, max_seq, on_device);
-                let value_cache = Kvcache::new(num_heads, head_dim, max_seq, on_device);
+                let key_cache = Kvcache::new(num_heads, num_kv_heads, head_dim, max_seq, on_device);
+                let value_cache = Kvcache::new(num_heads, num_kv_heads, head_dim, max_seq, on_device);
                 (key_cache, value_cache)
             })
             .collect();
@@ -659,9 +661,9 @@ impl CpuModel {
         let kv_caches = (0..config.num_layers)
             .map(|_| {
                 let key_cache =
-                    Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
+                    Kvcache::new(config.num_heads, config.num_kv_heads, config.head_dim, config.max_seq_len, false);
                 let value_cache =
-                    Kvcache::new(config.num_heads, config.head_dim, config.max_seq_len, false);
+                    Kvcache::new(config.num_heads, config.num_kv_heads, config.head_dim, config.max_seq_len, false);
                 (key_cache, value_cache)
             })
             .collect();
