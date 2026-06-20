@@ -41,14 +41,16 @@ pub struct GgufWeights {
 pub fn load_gguf_weights(gguf_path: &Path) -> Result<GgufWeights> {
     let header = parse_gguf(gguf_path)?;
     let file_size = std::fs::metadata(gguf_path).map(|m| m.len()).unwrap_or(0);
-    std::fs::write("/tmp/llm-debug.log", format!(
-        "load_gguf_weights: data_section_start={}, tensor_count={}, file_size={}\n\
-         first tensor: {} offset={} stored_size={}\n\
-         will read at absolute offset={}\n",
-        header.data_section_start, header.tensors.len(), file_size,
-        header.tensors[0].name, header.tensors[0].offset, header.tensors[0].stored_size(),
-        header.data_section_start + header.tensors[0].offset,
-    )).ok();
+    if !header.tensors.is_empty() {
+        std::fs::write("/tmp/llm-debug.log", format!(
+            "load_gguf_weights: data_section_start={}, tensor_count={}, file_size={}\n\
+             first tensor: {} offset={} stored_size={}\n\
+             will read at absolute offset={}\n",
+            header.data_section_start, header.tensors.len(), file_size,
+            header.tensors[0].name, header.tensors[0].offset, header.tensors[0].stored_size(),
+            header.data_section_start + header.tensors[0].offset,
+        )).ok();
+    }
 
     let mut tensors = HashMap::with_capacity(header.tensors.len());
 
@@ -1007,7 +1009,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
@@ -1079,7 +1081,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
@@ -1136,7 +1138,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
+            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
             buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
