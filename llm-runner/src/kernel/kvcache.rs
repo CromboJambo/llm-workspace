@@ -24,8 +24,10 @@ use half::f16;
 pub struct Kvcache {
     /// Device buffer for K and V (interleaved).
     buffer: DeviceBuffer<f16>,
-    /// Number of heads (all layers use the same head count).
+    /// Number of attention heads in the cache.
     num_heads: usize,
+    /// Number of KV heads (for GQA).
+    num_kv_heads: usize,
     /// Dimension per head.
     head_dim: usize,
     /// Maximum sequence length allocated.
@@ -45,11 +47,12 @@ impl Kvcache {
     /// `on_device` — whether to allocate on device (Device variant) or host (Host variant).
     ///
     /// Total elements: `num_heads * head_dim * 2 * max_seq`.
-    pub fn new(num_heads: usize, head_dim: usize, max_seq: usize, on_device: bool) -> Self {
+    pub fn new(num_heads: usize, num_kv_heads: usize, head_dim: usize, max_seq: usize, on_device: bool) -> Self {
         let total = num_heads * head_dim * 2 * max_seq;
         Self {
             buffer: DeviceBuffer::zeros(total),
             num_heads,
+            num_kv_heads,
             head_dim,
             max_seq,
             seq_len: 0,
@@ -66,6 +69,7 @@ impl Kvcache {
     pub unsafe fn from_device(
         ptr_addr: u64,
         num_heads: usize,
+        num_kv_heads: usize,
         head_dim: usize,
         max_seq: usize,
     ) -> Self {
@@ -73,6 +77,7 @@ impl Kvcache {
         Self {
             buffer: unsafe { DeviceBuffer::from_device(ptr_addr, total) },
             num_heads,
+            num_kv_heads,
             head_dim,
             max_seq,
             seq_len: 0,
@@ -88,6 +93,11 @@ impl Kvcache {
     /// Dimension per attention head.
     pub fn head_dim(&self) -> usize {
         self.head_dim
+    }
+
+    /// Number of KV heads (for GQA).
+    pub fn num_kv_heads(&self) -> usize {
+        self.num_kv_heads
     }
 
     /// Maximum sequence length.
@@ -153,6 +163,31 @@ impl Kvcache {
         }
 
         self.seq_len += 1;
+        Ok(())
+    }
+
+    /// Write a KV row for `num_kv_heads` heads at position `pos`.
+    ///
+    /// `key` and `value` must each have `num_kv_heads * head_dim` elements.
+    /// Only the first `num_kv_heads` head slots are written.
+    pub fn write_kv_at(&mut self, pos: usize, key: &[f16], value: &[f16]) -> Result<(), KvError> {
+        if pos >= self.max_seq {
+            return Err(KvError::SeqLenExceeded {
+                current: pos,
+                max: self.max_seq,
+            });
+        }
+        let head_stride = self.num_heads * self.head_dim;
+        if let Some(slice) = self.buffer.as_mut_slice() {
+            let k_start = head_stride * pos;
+            let v_start = head_stride * self.max_seq + head_stride * pos;
+            let kv_len = self.num_kv_heads * self.head_dim;
+            slice[k_start..(k_start + kv_len)].copy_from_slice(key);
+            slice[v_start..(v_start + kv_len)].copy_from_slice(value);
+        }
+        if pos + 1 > self.seq_len {
+            self.seq_len = pos + 1;
+        }
         Ok(())
     }
 
@@ -408,7 +443,7 @@ mod tests {
 
     #[test]
     fn kvcache_new() {
-        let cache = Kvcache::new(8, 64, 2048, false);
+        let cache = Kvcache::new(8, 8, 64, 2048, false);
         assert_eq!(cache.num_heads(), 8);
         assert_eq!(cache.head_dim(), 64);
         assert_eq!(cache.max_seq(), 2048);
@@ -419,13 +454,13 @@ mod tests {
 
     #[test]
     fn kvcache_total_elements() {
-        let cache = Kvcache::new(8, 64, 100, false);
+        let cache = Kvcache::new(8, 8, 64, 100, false);
         assert_eq!(cache.total_elements(), 8 * 64 * 2 * 100);
     }
 
     #[test]
     fn kvcache_append_single() {
-        let mut cache = Kvcache::new(8, 64, 2048, false);
+        let mut cache = Kvcache::new(8, 8, 64, 2048, false);
         let key = vec![f16::from_f32(1.0); 8 * 64];
         let value = vec![f16::from_f32(2.0); 8 * 64];
 
@@ -436,7 +471,7 @@ mod tests {
 
     #[test]
     fn kvcache_append_batch() {
-        let mut cache = Kvcache::new(8, 64, 2048, false);
+        let mut cache = Kvcache::new(8, 8, 64, 2048, false);
         let keys: Vec<Vec<f16>> = (0..5).map(|_| vec![f16::from_f32(1.0); 8 * 64]).collect();
         let values: Vec<Vec<f16>> = (0..5).map(|_| vec![f16::from_f32(2.0); 8 * 64]).collect();
         let key_refs: Vec<&[f16]> = keys.iter().map(|k| k.as_slice()).collect();
@@ -449,7 +484,7 @@ mod tests {
 
     #[test]
     fn kvcache_append_exceeds_max() {
-        let mut cache = Kvcache::new(8, 64, 10, false);
+        let mut cache = Kvcache::new(8, 8, 64, 10, false);
         for i in 0..11 {
             let key = vec![f16::from_f32(1.0); 8 * 64];
             let value = vec![f16::from_f32(2.0); 8 * 64];
@@ -463,7 +498,7 @@ mod tests {
 
     #[test]
     fn kvcache_append_verify_data() {
-        let mut cache = Kvcache::new(2, 4, 10, false);
+        let mut cache = Kvcache::new(2, 2, 4, 10, false);
         let key = vec![f16::from_f32(1.0); 8];
         let value = vec![f16::from_f32(2.0); 8];
 
@@ -485,7 +520,7 @@ mod tests {
 
     #[test]
     fn kvcache_resize() {
-        let mut cache = Kvcache::new(8, 64, 100, false);
+        let mut cache = Kvcache::new(8, 8, 64, 100, false);
         let result = cache.resize(200);
         assert!(result.is_ok());
         assert_eq!(cache.max_seq(), 200);
@@ -493,14 +528,14 @@ mod tests {
 
     #[test]
     fn kvcache_resize_shrink_fails() {
-        let mut cache = Kvcache::new(8, 64, 100, false);
+        let mut cache = Kvcache::new(8, 8, 64, 100, false);
         let result = cache.resize(50);
         assert!(result.is_err());
     }
 
     #[test]
     fn kvcache_tma_descriptor() {
-        let mut cache = Kvcache::new(8, 64, 2048, true);
+        let mut cache = Kvcache::new(8, 8, 64, 2048, true);
         let key = vec![f16::from_f32(1.0); 8 * 64];
         let value = vec![f16::from_f32(2.0); 8 * 64];
         cache.append(&key, &value).unwrap();
@@ -510,21 +545,21 @@ mod tests {
 
     #[test]
     fn kvcache_tma_descriptor_head_oob() {
-        let cache = Kvcache::new(8, 64, 2048, true);
+        let cache = Kvcache::new(8, 8, 64, 2048, true);
         let desc = cache.tma_descriptor(0x1000, true, 8, 1);
         assert!(desc.is_err());
     }
 
     #[test]
     fn kvcache_tma_descriptor_boxy_oob() {
-        let cache = Kvcache::new(8, 64, 2048, true);
+        let cache = Kvcache::new(8, 8, 64, 2048, true);
         let desc = cache.tma_descriptor(0x1000, true, 0, 2049);
         assert!(desc.is_err());
     }
 
     #[test]
     fn kvcache_device_ptr() {
-        let cache = Kvcache::new(8, 64, 100, false);
+        let cache = Kvcache::new(8, 8, 64, 100, false);
         assert!(cache.device_ptr().is_none());
     }
 
