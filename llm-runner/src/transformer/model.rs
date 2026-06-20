@@ -318,14 +318,14 @@ impl LlamaModel {
         let token_embeddings = weights
             .tensors
             .get(embedding_name)
-            .map(|tensor_data| Linear::from_f16_weight(tensor_data, None));
+            .map(|tensor_data| Linear::from_f32_weight(tensor_data, None));
 
         // Load output (LM head) — architecture-dependent name
         let output_name = config.output_name();
         let output = weights
             .tensors
             .get(output_name)
-            .map(|tensor_data| Linear::from_f16_weight(tensor_data, None));
+            .map(|tensor_data| Linear::from_f32_weight(tensor_data, None));
 
         // Build transformer layers
         let mut layers = Vec::with_capacity(config.num_layers);
@@ -339,7 +339,13 @@ impl LlamaModel {
             weights
                 .tensors
                 .get(norm_name)
-                .map(|tensor_data| RmsNorm::new(f16_bytes_to_f32(tensor_data), config.rms_norm_eps))
+                .map(|tensor_data| {
+                    let weight: Vec<f32> = tensor_data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    RmsNorm::new(weight, config.rms_norm_eps)
+                })
         } else {
             None
         };
@@ -441,8 +447,12 @@ impl LlamaModel {
             .tensors
             .get(&attention_norm_name)
             .ok_or_else(|| RunnerError::ModelLoad(format!("missing {attention_norm_name}")))?;
-        let attention_norm =
-            RmsNorm::new(f16_bytes_to_f32(attention_norm_data), config.rms_norm_eps);
+        // Data is already f32 (gguf_weight_loader dequantized F16→f32)
+        let norm_weight: Vec<f32> = attention_norm_data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let attention_norm = RmsNorm::new(norm_weight, config.rms_norm_eps);
 
         let ffn_norm_name = match config.arch {
             ModelArch::Gemma => format!("{prefix}post_attention_layernorm.weight"),
@@ -453,7 +463,11 @@ impl LlamaModel {
             .tensors
             .get(&ffn_norm_name)
             .ok_or_else(|| RunnerError::ModelLoad(format!("missing {ffn_norm_name}")))?;
-        let ffn_norm = RmsNorm::new(f16_bytes_to_f32(ffn_norm_data), config.rms_norm_eps);
+        let ffn_norm_weight: Vec<f32> = ffn_norm_data
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let ffn_norm = RmsNorm::new(ffn_norm_weight, config.rms_norm_eps);
 
         // Attention weights — architecture-dependent naming
         let suffix = config.attn_weight_suffix();
@@ -506,10 +520,10 @@ impl LlamaModel {
                 }),
         }?;
 
-        let wq = Linear::from_f16_weight(wq_data, None);
-        let wk = Linear::from_f16_weight(wk_data, None);
-        let wv = Linear::from_f16_weight(wv_data, None);
-        let wo = Linear::from_f16_weight(wo_data, None);
+        let wq = Linear::from_f32_weight(wq_data, None);
+        let wk = Linear::from_f32_weight(wk_data, None);
+        let wv = Linear::from_f32_weight(wv_data, None);
+        let wo = Linear::from_f32_weight(wo_data, None);
 
         let attention = Attention::new(
             wq,
@@ -561,9 +575,9 @@ impl LlamaModel {
             }
         };
 
-        let w1 = Linear::from_f16_weight(w1_data, None);
-        let w2 = Linear::from_f16_weight(w2_data, None);
-        let w3 = Linear::from_f16_weight(w3_data, None);
+        let w1 = Linear::from_f32_weight(w1_data, None);
+        let w2 = Linear::from_f32_weight(w2_data, None);
+        let w3 = Linear::from_f32_weight(w3_data, None);
 
         let feed_forward = FeedForward::new(w1, w2, w3, config.intermediate_dim);
 
@@ -749,7 +763,14 @@ impl LlamaModel {
             .ok_or_else(|| RunnerError::ModelLoad("missing token embeddings".to_string()))?;
 
         let token_idx = token as usize;
-        let emb_dim = emb.in_features;
+        // For 1D embedding tensors (shape [N]), the embedding dimension is the tensor length.
+        // For 2D tensors (shape [vocab_size, embed_dim]), use in_features.
+        let emb_dim = if emb.in_features == 1 && emb.out_features > 1 {
+            // 1D tensor stored as [1, N] — the actual dim is out_features
+            emb.out_features
+        } else {
+            emb.in_features
+        };
         let start = token_idx * emb_dim;
         let x = emb.weight[start..start + emb_dim].to_vec();
         Ok(x)
