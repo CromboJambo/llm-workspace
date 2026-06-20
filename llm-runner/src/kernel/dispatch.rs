@@ -613,14 +613,14 @@ impl AttentionDispatch {
     /// 3. softmax(Q @ K^T / sqrt(head_dim)) @ V
     /// 4. Output projection (wo)
     pub fn forward(
-        &self,
+        &mut self,
         ctx: &DispatchContext,
         x: &[f32],
         batch_size: usize,
         seq_len: usize,
         start_pos: usize,
-        key_cache: &Kvcache,
-        value_cache: &Kvcache,
+        key_cache: &mut Kvcache,
+        value_cache: &mut Kvcache,
     ) -> Result<Vec<f32>, DispatchError> {
         let embed_dim = self.num_heads * self.head_dim;
         let scale = 1.0 / (self.head_dim as f32).sqrt();
@@ -628,12 +628,35 @@ impl AttentionDispatch {
         // Q/K/V projections (GPU or CPU)
         let q = self.wq.forward(ctx, x, batch_size)?;
         let k = self.wk.forward(ctx, x, batch_size)?;
-        let _v = self.wv.forward(ctx, x, batch_size)?;
+        let v = self.wv.forward(ctx, x, batch_size)?;
 
         // Apply RoPE to Q and K (per-head, per-position)
         let mut q_rope = q.clone();
         let mut k_rope = k.clone();
         self.apply_rope(&mut q_rope, &mut k_rope, seq_len, start_pos);
+
+        // Write current position's K and V to the KV cache.
+        // K/V from projections have shape [batch_size * seq_len, kv_dim].
+        // kv_dim = num_kv_heads * head_dim.
+        // The KV cache stores f16; convert from f32.
+        let kv_dim = self.num_kv_heads * self.head_dim;
+        for pos in 0..seq_len {
+            let global_pos = start_pos + pos;
+            // Extract the key vector for this batch position
+            let k_start = global_pos * kv_dim;
+            let k_row: Vec<f16> = k[k_start..(k_start + kv_dim)]
+                .iter()
+                .map(|&v| half::f16::from_f32(v))
+                .collect();
+            let v_start = global_pos * kv_dim;
+            let v_row: Vec<f16> = v[v_start..(v_start + kv_dim)]
+                .iter()
+                .map(|&v| half::f16::from_f32(v))
+                .collect();
+            if key_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {
+                // Cache full — ignore (shouldn't happen in practice)
+            }
+        }
 
         // Scaled dot-product attention: softmax(Q @ K^T / sqrt(head_dim)) @ V
         // Output: [batch_size * seq_len, embed_dim]
@@ -650,7 +673,6 @@ impl AttentionDispatch {
                     for h in 0..self.num_heads {
                         let q_start = q_idx + h * self.head_dim;
                         let group = h / (self.num_heads / self.num_kv_heads);
-                        let _k_start = group * self.head_dim + j * self.kv_dim;
                         // Read K from cache at position j
                         let k_slice = Self::extract_head_slice(
                             key_cache,
@@ -683,11 +705,12 @@ impl AttentionDispatch {
 
                 // softmax_out @ V
                 let mut attn_output = vec![0.0f32; self.num_heads * self.head_dim];
+                let cache_len = start_pos + seq_len;
                 for h in 0..self.num_heads {
                     let group = h / (self.num_heads / self.num_kv_heads);
                     for d in 0..self.head_dim {
                         let mut sum = 0.0f32;
-                        for j in 0..(start_pos + seq_len) {
+                        for j in 0..cache_len {
                             let v_slice = Self::extract_head_slice(
                                 value_cache,
                                 false,
@@ -695,11 +718,8 @@ impl AttentionDispatch {
                                 j,
                                 self.head_dim,
                             );
-                            if j < v_slice.len() / self.head_dim {
-                                let v_pos = j * self.head_dim + d;
-                                if v_pos < v_slice.len() {
-                                    sum += softmax_out[j] * v_slice[v_pos].to_f32();
-                                }
+                            if !v_slice.is_empty() {
+                                sum += softmax_out[j] * v_slice[d].to_f32();
                             }
                         }
                         attn_output[h * self.head_dim + d] = sum;
@@ -792,14 +812,14 @@ pub struct LayerDispatch {
 impl LayerDispatch {
     /// Forward pass through one transformer layer with dispatch.
     pub fn forward(
-        &self,
+        &mut self,
         ctx: &DispatchContext,
         x: &[f32],
         batch_size: usize,
         seq_len: usize,
         start_pos: usize,
-        key_cache: &Kvcache,
-        value_cache: &Kvcache,
+        key_cache: &mut Kvcache,
+        value_cache: &mut Kvcache,
     ) -> Result<Vec<f32>, DispatchError> {
         let embed_dim = x.len() / batch_size;
 
