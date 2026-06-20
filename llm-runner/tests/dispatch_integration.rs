@@ -138,6 +138,29 @@ fn make_test_gguf(path: &PathBuf) {
         ("norm.weight", vec![64]),
     ];
 
+    // Build the header buffer first to know the actual data section start
+    let mut hdr = Vec::new();
+    hdr.extend_from_slice(b"GGUF");
+    hdr.extend_from_slice(&3u32.to_le_bytes());
+    hdr.extend_from_slice(&(tensor_specs.len() as u64).to_le_bytes());
+    hdr.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+    for kv in &kv_pairs {
+        let key_bytes = kv.key.as_bytes();
+        hdr.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+        hdr.extend_from_slice(key_bytes);
+        hdr.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+        write_kv_value(&mut hdr, &kv.value);
+    }
+    for (name, shape) in &tensor_specs {
+        write_tensor_info_raw(&mut hdr, name, shape, 1, 0);
+    }
+
+    // Compute aligned data section start from actual header size
+    let buf_size_before = hdr.len() as u64;
+    let data_section_start = (buf_size_before + 31) & !31;
+    println!("Buffer size: {}, aligned data_section_start: {}", buf_size_before, data_section_start);
+
+    // Compute tensor offsets relative to data_section_start
     let mut cumulative = 0u64;
     let tensor_infos: Vec<_> = tensor_specs
         .iter()
@@ -149,25 +172,11 @@ fn make_test_gguf(path: &PathBuf) {
         })
         .collect();
 
-    let data_section_start = pesti_gguf::parser::compute_data_section_start(
-        3,
-        &kv_pairs,
-        &tensor_infos
-            .iter()
-            .map(|(name, shape, offset)| pesti_gguf::GgufTensorInfo {
-                name: name.clone(),
-                shape: shape.clone(),
-                offset: *offset,
-                dtype: 1,
-            })
-            .collect::<Vec<_>>(),
-        Some(32),
-    );
-
+    // Write the final file with correct offsets
     let mut buf = Vec::new();
     buf.extend_from_slice(b"GGUF");
     buf.extend_from_slice(&3u32.to_le_bytes());
-    buf.extend_from_slice(&(tensor_infos.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&(tensor_specs.len() as u64).to_le_bytes());
     buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
     for kv in &kv_pairs {
         let key_bytes = kv.key.as_bytes();
@@ -179,39 +188,18 @@ fn make_test_gguf(path: &PathBuf) {
     for (name, shape, offset) in &tensor_infos {
         write_tensor_info_raw(&mut buf, name, shape, 1, *offset);
     }
-    
+
     let total: u64 = tensor_infos
         .iter()
         .map(|(_, shape, _)| shape.iter().product::<u64>() * 2)
         .sum();
-    
-    // Use actual buffer size as data section start (aligned)
-    let buf_size_before = buf.len() as u64;
-    let data_section_start = (buf_size_before + 31) & !31;
-    println!("Buffer size: {}, aligned data_section_start: {}", buf_size_before, data_section_start);
-    
+
     buf.resize((data_section_start + total) as usize, 0);
     for i in 0..total as usize {
         buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
     }
 
     std::fs::write(path, &buf).unwrap();
-    
-    // Read back and verify
-    let file_data = std::fs::read(path).unwrap();
-    println!("File size: {}, buffer size: {}", file_data.len(), buf.len());
-    
-    // Print bytes at position 985 (expected offset field position for tensor 5)
-    println!("Bytes at position 985-993:");
-    for i in 985..993 {
-        println!("  [{}] = 0x{:02X}", i, file_data[i]);
-    }
-    
-    // Print bytes at position 662 (expected offset field position for tensor 0)
-    println!("Bytes at position 662-670:");
-    for i in 662..670 {
-        println!("  [{}] = 0x{:02X}", i, file_data[i]);
-    }
 }
 
 #[test]
