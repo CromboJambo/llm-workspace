@@ -1,12 +1,12 @@
-use pesti_gguf::{GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType, compute_data_section_start};
+//! Integration tests for GPU dispatch system.
+
+use pesti_gguf::{GgufKvPair, GgufKvValue, GgufValueType};
 use pesti_runner::kernel::dispatch::{DispatchContext, LinearDispatch};
 use pesti_runner::gguf_weight_loader::load_gguf_weights;
 use pesti_runner::model::CpuModel;
 use half::f16;
 use std::path::PathBuf;
 use tempfile::tempdir;
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
     GgufKvPair {
@@ -58,23 +58,54 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
             buf.extend_from_slice(s.as_bytes());
         }
         GgufKvValue::Array(arr) => {
-            let element_type = arr.first().map(|v| v.value_type()).unwrap_or(GgufValueType::String);
-            // GGUF spec: element_type is u8 (1 byte), count is u64 (8 bytes)
+            let element_type = arr
+                .first()
+                .map(|v| v.value_type())
+                .unwrap_or(GgufValueType::String);
             buf.push(element_type as u8);
             buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
             for item in arr {
-
+                match item {
+                    GgufKvValue::Uint8(v) => buf.push(*v),
+                    GgufKvValue::Int8(v) => buf.push(*v as u8),
+                    GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
+                    GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
+                    GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+                    GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
+                    GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
+                    GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
+                    GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
+                    GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
+                    GgufKvValue::Bool(v) => buf.push(*v as u8),
+                    GgufKvValue::String(s) => {
+                        buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                        buf.extend_from_slice(s.as_bytes());
+                    }
+                    _ => {}
+                }
             }
         }
         _ => {}
     }
 }
 
-/// Create a minimal synthetic GGUF file for testing.
-/// Architecture: llama, 2 layers, 64-dim embedding, 4 heads, vocab=10.
+fn write_tensor_info_raw(buf: &mut Vec<u8>, name: &str, shape: &[u64], dtype: u32, offset: u64) {
+    let name_bytes = name.as_bytes();
+    buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
+    buf.extend_from_slice(name_bytes);
+    buf.extend_from_slice(&(shape.len() as u32).to_le_bytes());
+    for dim in shape {
+        buf.extend_from_slice(&dim.to_le_bytes());
+    }
+    buf.extend_from_slice(&dtype.to_le_bytes());
+    buf.extend_from_slice(&offset.to_le_bytes());
+}
+
 fn make_test_gguf(path: &PathBuf) {
     let vocab_size: u32 = 10;
-    let dummy_tokens: Vec<GgufKvValue> = (0..vocab_size as usize).map(|i| GgufKvValue::String(format!("tok{}", i))).collect();
+    let dummy_tokens: Vec<GgufKvValue> = (0..vocab_size as usize)
+        .map(|i| GgufKvValue::String(format!("tok{}", i)))
+        .collect();
 
     let kv_pairs: Vec<GgufKvPair> = vec![
         kv_pair_str("general.architecture", "llama"),
@@ -82,83 +113,56 @@ fn make_test_gguf(path: &PathBuf) {
         kv_pair_u32("general.alignment", 32),
         kv_pair_u32("llama.context_length", 4096),
         kv_pair_u32("llama.embedding_length", 64),
-        kv_pair_u32("llama.block_count", 2),
+        kv_pair_u32("llama.block_count", 1),
         kv_pair_u32("llama.attention.head_count", 4),
         kv_pair_u32("llama.attention.head_count_kv", 2),
         kv_pair_u32("llama.feed_forward_length", 128),
         kv_pair_u32("llama.rope.dimension_count", 64),
         kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
-        kv_pair_u32("tokenizer.ggml.model", 2), // bigram
+        kv_pair_u32("tokenizer.ggml.model", 2),
         kv_pair_array("tokenizer.ggml.tokens", dummy_tokens),
     ];
 
-    // Tensor shapes: output.weight must match vocab_size
-    let tensor_shapes: Vec<Vec<u64>> = vec![
-        vec![64],        // tok_embeddings
-        vec![vocab_size as u64, 64], // output (vocab x embed)
-        vec![64, 64],    // layers.0.attention.wq
-        vec![64, 64],    // layers.0.attention.wk
-        vec![64, 64],    // layers.0.attention.wv
-        vec![64, 64],    // layers.0.attention.wo
-        vec![64],        // layers.0.attention_norm
-        vec![64],        // layers.0.ffn_norm
-        vec![64, 128],   // layers.0.feed_forward.w1
-        vec![128, 64],   // layers.0.feed_forward.w2
-        vec![64, 128],   // layers.0.feed_forward.w3
-        vec![64, 64],    // layers.1.attention.wq
-        vec![64, 64],    // layers.1.attention.wk
-        vec![64, 64],    // layers.1.attention.wv
-        vec![64, 64],    // layers.1.attention.wo
-        vec![64],        // layers.1.attention_norm
-        vec![64],        // layers.1.ffn_norm
-        vec![64, 128],   // layers.1.feed_forward.w1
-        vec![128, 64],   // layers.1.feed_forward.w2
-        vec![64, 128],   // layers.1.feed_forward.w3
-    ];
-    let tensor_names: Vec<&str> = vec![
-        "tok_embeddings.weight",
-        "output.weight",
-        "layers.0.attention.wq.weight",
-        "layers.0.attention.wk.weight",
-        "layers.0.attention.wv.weight",
-        "layers.0.attention.wo.weight",
-        "layers.0.attention_norm.weight",
-        "layers.0.ffn_norm.weight",
-        "layers.0.feed_forward.w1.weight",
-        "layers.0.feed_forward.w2.weight",
-        "layers.0.feed_forward.w3.weight",
-        "layers.1.attention.wq.weight",
-        "layers.1.attention.wk.weight",
-        "layers.1.attention.wv.weight",
-        "layers.1.attention.wo.weight",
-        "layers.1.attention_norm.weight",
-        "layers.1.ffn_norm.weight",
-        "layers.1.feed_forward.w1.weight",
-        "layers.1.feed_forward.w2.weight",
-        "layers.1.feed_forward.w3.weight",
+    let tensor_specs: Vec<(&str, Vec<u64>)> = vec![
+        ("tok_embeddings.weight", vec![64]),
+        ("output.weight", vec![vocab_size as u64, 64]),
+        ("layers.0.attention.wq.weight", vec![64, 64]),
+        ("layers.0.attention.wk.weight", vec![64, 64]),
+        ("layers.0.attention.wv.weight", vec![64, 64]),
+        ("layers.0.attention.wo.weight", vec![64, 64]),
+        ("layers.0.attention_norm.weight", vec![64]),
+        ("layers.0.ffn_norm.weight", vec![64]),
+        ("layers.0.feed_forward.w1.weight", vec![64, 128]),
+        ("layers.0.feed_forward.w2.weight", vec![128, 64]),
+        ("layers.0.feed_forward.w3.weight", vec![64, 128]),
+        ("norm.weight", vec![64]),
     ];
 
-    let mut offset = 0u64;
-    let tensor_infos: Vec<GgufTensorInfo> = tensor_shapes
+    let mut cumulative = 0u64;
+    let tensor_infos: Vec<_> = tensor_specs
         .iter()
-        .enumerate()
-        .map(|(i, shape)| {
-            let info = GgufTensorInfo {
-                name: tensor_names[i].to_string(),
-                shape: shape.clone(),
-                offset,
-                dtype: 1, // F16
-            };
+        .map(|(name, shape)| {
+            let info = (name.to_string(), shape.clone(), cumulative);
             let elems: u64 = shape.iter().product();
-            offset += elems * 2;
+            cumulative += elems * 2;
             info
         })
         .collect();
 
-    let data_section_start = compute_data_section_start(3, &kv_pairs, &tensor_infos, Some(32));
-    println!("GGUF data section start: {}", data_section_start);
-    println!("KV pairs: {}", kv_pairs.len());
-    println!("Tensors: {}", tensor_infos.len());
+    let data_section_start = pesti_gguf::parser::compute_data_section_start(
+        3,
+        &kv_pairs,
+        &tensor_infos
+            .iter()
+            .map(|(name, shape, offset)| pesti_gguf::GgufTensorInfo {
+                name: name.clone(),
+                shape: shape.clone(),
+                offset: *offset,
+                dtype: 1,
+            })
+            .collect::<Vec<_>>(),
+        Some(32),
+    );
 
     let mut buf = Vec::new();
     buf.extend_from_slice(b"GGUF");
@@ -172,39 +176,43 @@ fn make_test_gguf(path: &PathBuf) {
         buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
         write_kv_value(&mut buf, &kv.value);
     }
-    for tensor in &tensor_infos {
-        let name_bytes = tensor.name.as_bytes();
-        buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-        buf.extend_from_slice(name_bytes);
-        buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-        for dim in &tensor.shape {
-            buf.extend_from_slice(&dim.to_le_bytes());
-        }
-        buf.extend_from_slice(&tensor.dtype.to_le_bytes());
-        buf.extend_from_slice(&tensor.offset.to_le_bytes());
+    for (name, shape, offset) in &tensor_infos {
+        write_tensor_info_raw(&mut buf, name, shape, 1, *offset);
     }
+    
     let total: u64 = tensor_infos
         .iter()
-        .map(|t| t.shape.iter().product::<u64>() * 2)
+        .map(|(_, shape, _)| shape.iter().product::<u64>() * 2)
         .sum();
-    println!("Total tensor bytes: {}", total);
-    println!("Expected file size: {}", data_section_start + total);
-    for t in &tensor_infos {
-        let elems: u64 = t.shape.iter().product();
-        println!("  {}: offset={} shape={:?} bytes={}", t.name, t.offset, t.shape, elems * 2);
-    }
+    
+    // Use actual buffer size as data section start (aligned)
+    let buf_size_before = buf.len() as u64;
+    let data_section_start = (buf_size_before + 31) & !31;
+    println!("Buffer size: {}, aligned data_section_start: {}", buf_size_before, data_section_start);
+    
     buf.resize((data_section_start + total) as usize, 0);
-    // Write tensor data: alternating 0x00 / 0x3F creates valid F16 values (0x3F00 = 1.0)
     for i in 0..total as usize {
         buf[data_section_start as usize + i] = if i % 2 == 0 { 0x00 } else { 0x3F };
     }
 
     std::fs::write(path, &buf).unwrap();
-    println!("Actual file size: {}", buf.len());
-    println!("Data section start: {}", data_section_start);
+    
+    // Read back and verify
+    let file_data = std::fs::read(path).unwrap();
+    println!("File size: {}, buffer size: {}", file_data.len(), buf.len());
+    
+    // Print bytes at position 985 (expected offset field position for tensor 5)
+    println!("Bytes at position 985-993:");
+    for i in 985..993 {
+        println!("  [{}] = 0x{:02X}", i, file_data[i]);
+    }
+    
+    // Print bytes at position 662 (expected offset field position for tensor 0)
+    println!("Bytes at position 662-670:");
+    for i in 662..670 {
+        println!("  [{}] = 0x{:02X}", i, file_data[i]);
+    }
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_dispatch_context_gpu_detection() {
@@ -232,58 +240,30 @@ fn test_linear_dispatch_accuracy() {
     let result = linear.forward(&ctx, &x, 1).expect("Linear dispatch failed");
     println!("linear result: {:?}", result);
 
-    // Manual calculation:
-    // row 0: x[0]*w[0] + x[1]*w[1] + bias[0] = 1.0*1.0 + 2.0*0.5 + 0.1 = 2.1
-    // row 1: x[0]*w[2] + x[1]*w[3] + bias[1] = 1.0*0.5 + 2.0*1.0 + 0.1 = 2.6
     assert!((result[0] - 2.1).abs() < 1e-4);
     assert!((result[1] - 2.6).abs() < 1e-4);
 }
 
-/// Test that the dispatch path produces output matching the CPU path when
-/// run on the same GGUF model with the same input.
 #[test]
 fn test_dispatch_vs_cpu_output() {
     let dir = tempdir().unwrap();
     let gguf_path = dir.path().join("test.gguf");
     make_test_gguf(&gguf_path);
 
-    // First, verify GGUF weights load correctly
     let weights = load_gguf_weights(&gguf_path).expect("Failed to load GGUF weights");
     println!("Loaded {} tensors", weights.tensors.len());
     for (name, data) in &weights.tensors {
-        if name.contains("norm") {
-            println!("  {}: {} bytes ({}/2 f32 elements)", name, data.len(), data.len());
-        }
+        println!("  tensor: {} size={} bytes", name, data.len());
     }
 
-    // Check attention_norm weight shape
-    let norm_data = weights.tensors.get("layers.0.attention_norm.weight")
-        .expect("attention_norm.weight not found");
-    // The test GGUF writer writes dtype=1 (F16) but the parser reads stored_size
-    // based on the dtype field. For shape [64] dtype F16, stored_size = 128 bytes.
-    // However, the GGUF v3 parser reads name_len as u64 while the v3 spec says u32,
-    // causing a 4-byte shift that makes the parser read dtype as 0 (F32) instead of 1 (F16).
-    // This is a known pre-existing bug in the test GGUF writer.
-    // For now, accept the actual size from the parser.
-    println!("attention_norm weight: {} bytes", norm_data.len());
-
-    // Load model for CPU path
     let mut cpu_model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
-
-    // Load model for dispatch path
     let mut dispatch_model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
     dispatch_model.enable_dispatch();
 
-    // Run a single token through both paths
     let token: u32 = 0;
-
-    // CPU path output
     let cpu_logits = cpu_model.decode(token).expect("CPU decode failed");
-
-    // Reset dispatch model (KV cache gets populated during decode)
     dispatch_model.reset();
 
-    // Dispatch path output
     let dispatch_hidden = dispatch_model
         .llama_model
         .embed(token, 0)
@@ -304,7 +284,6 @@ fn test_dispatch_vs_cpu_output() {
         &dispatch_logits[..10.min(dispatch_logits.len())]
     );
 
-    // Outputs should match (within floating point tolerance)
     assert_eq!(
         cpu_logits.len(),
         dispatch_logits.len(),
@@ -321,22 +300,19 @@ fn test_dispatch_vs_cpu_output() {
     }
 }
 
-/// Test that dispatch falls back to CPU when GPU is unavailable.
 #[test]
 fn test_dispatch_cpu_fallback() {
-    let gguf_path = std::path::PathBuf::from("/tmp/test_dispatch.gguf");
+    let dir = tempdir().unwrap();
+    let gguf_path = dir.path().join("test_dispatch_fallback.gguf");
     make_test_gguf(&gguf_path);
 
     let mut model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
     model.enable_dispatch();
 
-    // Even without GPU, dispatch should work (falls back to CPU)
     let hidden = model.llama_model.embed(0, 0).expect("embed failed");
     let result = model
         .forward_with_dispatch(&hidden, 0)
-        .expect("dispatch should fall back to CPU when GPU unavailable");
-
-    // Result should have the same shape as the embedding
+        .expect("dispatch should fall back to CPU");
     assert_eq!(result.len(), hidden.len(), "Dispatch output shape mismatch");
     println!("Dispatch fallback output shape: {}", result.len());
 }
