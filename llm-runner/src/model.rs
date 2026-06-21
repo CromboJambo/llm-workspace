@@ -301,7 +301,6 @@ impl Model {
                     .iter()
                     .map(|&x| x.to_f32())
                     .collect();
-                let batch_size = query.len();
                 let q = layer.attention.wq.forward(&query_host, batch_size);
                 let k = layer.attention.wk.forward(&query_host, batch_size);
                 let v = layer.attention.wv.forward(&query_host, batch_size);
@@ -438,6 +437,7 @@ impl Model {
         let num_heads = self.config.num_heads;
         let head_dim = self.config.head_dim;
         let out_dim = num_heads * head_dim;
+        let batch_size = 1;
 
         let config = self.attention_config();
         let mut last_output = DeviceBuffer::from_host(vec![0.0f32; out_dim]);
@@ -456,7 +456,6 @@ impl Model {
                     .iter()
                     .map(|&x| x.to_f32())
                     .collect();
-                let batch_size = query.len();
                 let q = layer.attention.wq.forward(&query_host, batch_size);
                 let k = layer.attention.wk.forward(&query_host, batch_size);
                 let v = layer.attention.wv.forward(&query_host, batch_size);
