@@ -788,12 +788,12 @@ impl CpuModel {
             // Use dispatch path: handles KV cache internally
             self.forward_with_dispatch(&hidden, self.seq_len)?
         } else {
-            self.llama_model.forward_layers(&hidden, self.seq_len)?;
+            let hidden_out = self.llama_model.forward_layers(&hidden, self.seq_len)?;
 
             // Store KV for all layers
-            let embed_dim = hidden.len();
+            let embed_dim = hidden_out.len();
             let kv_dim = self.config.head_dim * self.config.num_heads;
-            let key: Vec<f16> = hidden[embed_dim - kv_dim..]
+            let key: Vec<f16> = hidden_out[embed_dim - kv_dim..]
                 .iter()
                 .map(|&x| f16::from_f32(x))
                 .collect();
