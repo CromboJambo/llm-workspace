@@ -164,7 +164,7 @@
 
 ---
 
-## Near-Term Priorities (Next 2-4 Weeks)
+## Near-Term Priorities
 
 ### 1. Test Dispatch with Real GGUF Models
 
@@ -182,17 +182,13 @@ Test all Q2_K through Q8_K quant types against real GGUF models. Remove `#[ignor
 
 Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
 
-### 4. SafeTensors Weight Loading
-
-Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
-
-### 5. GGUF/SafeTensors File Writers
+### 4. GGUF/SafeTensors File Writers
 
 Currently parser-only. Add writers for both formats.
 
-### 6. HuggingFace Model Download
+### 5. HuggingFace Model Download
 
-Integrate `hf-hub` dependency for model download.
+`hf-hub` dependency is integrated; `Runtime::download_from_hf(repo_id, filename)` is wired. Verify end-to-end.
 
 ---
 
