@@ -336,14 +336,24 @@ impl DispatchContext {
         batch_size: usize,
     ) -> Result<Vec<f32>, DispatchError> {
         let m = batch_size;
-        let n = out_features;
         let k = in_features;
+        let n = out_features;
 
         // Convert input to f16 for GPU
         let x_f16: Vec<f16> = x.iter().map(|v| f16::from_f32(*v)).collect();
 
         // Dispatch GEMM: C = 1.0 * X @ W^T + 0.0 * C_zero
-        let mut result = self.dispatch_gemm(&x_f16, weights, None, m, n, k, 1.0, 0.0)?;
+        // W is stored as [out, in] but GEMM expects B as [in, out], so transpose
+        let w_t: Vec<f16> = {
+            let mut out = Vec::with_capacity(k * n);
+            for i in 0..k {
+                for j in 0..n {
+                    out.push(weights[j * k + i]);
+                }
+            }
+            out
+        };
+        let mut result = self.dispatch_gemm(&x_f16, &w_t, None, m, n, k, 1.0, 0.0)?;
 
         // Add bias if present
         if let Some(b) = bias {
