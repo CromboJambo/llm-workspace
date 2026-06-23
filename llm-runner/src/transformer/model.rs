@@ -1079,7 +1079,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    fn make_test_gguf_llama(path: &Path) {
+    pub(crate) fn make_test_gguf_llama(path: &Path) {
         // KV pairs — numeric values must use correct type tags, not String
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
