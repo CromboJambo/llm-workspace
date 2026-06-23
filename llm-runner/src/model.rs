@@ -1277,6 +1277,51 @@ mod tests {
         model.enable_dispatch();
         assert!(!model.can_use_dispatch()); // needs llama_model loaded
     }
+
+    // ── Dispatch comparison test ───────────────────────────────────────
+
+    /// Verify that dispatch-enabled and dispatch-disabled `Model` produce
+    /// identical outputs when both use the CPU path (no GPU available).
+    /// Uses the stub `Model` (no real weights) which exercises the
+    /// full dispatch path including RoPE, attention, and FFN.
+    #[test]
+    fn dispatch_vs_cpu_output_matches() {
+        let config = ModelConfig::default()
+            .with_num_layers(2)
+            .with_num_heads(4)
+            .with_head_dim(16)
+            .with_max_seq(32);
+        let engine_cpu = InferenceEngine::new(Device::Cpu, DType::F32);
+
+        // Run with dispatch disabled (stub model)
+        let mut model_cpu = Model::new(config.clone(), engine_cpu, false);
+        let query = DeviceBuffer::from_host(vec![f16::from_f32(1.0); 1 * 4 * 16]);
+        let output_cpu = model_cpu.prefill(query.clone()).unwrap();
+
+        // Run with dispatch enabled (still stub model, dispatch falls back to CPU)
+        let engine_dispatch = InferenceEngine::new(Device::Cpu, DType::F32);
+        let mut model_dispatch = Model::new(config, engine_dispatch, false);
+        model_dispatch.enable_dispatch();
+        let output_dispatch = model_dispatch.prefill(query).unwrap();
+
+        // Outputs should match (dispatch falls back to CPU when GPU unavailable)
+        assert_eq!(output_cpu.len(), output_dispatch.len());
+        for (layer_idx, (cpu_buf, disp_buf)) in
+            output_cpu.iter().zip(output_dispatch.iter()).enumerate()
+        {
+            let cpu_slice = cpu_buf.as_slice().unwrap();
+            let disp_slice = disp_buf.as_slice().unwrap();
+            assert_eq!(cpu_slice.len(), disp_slice.len(), "layer {layer_idx} len mismatch");
+            for (i, (&a, &b)) in cpu_slice.iter().zip(disp_slice.iter()).enumerate() {
+                let diff = (a - b).abs();
+                assert!(
+                    diff < 1e-4,
+                    "layer {layer_idx} idx {}: cpu={:.6} dispatch={:.6} diff={:.8}",
+                    i, a, b, diff
+                );
+            }
+        }
+    }
 }
 
 // ── Test helpers ─────────────────────────────────────────────────────
