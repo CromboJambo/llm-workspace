@@ -70,6 +70,14 @@ pub use llama::{
 };
 pub use runtime::{Runtime, RuntimeConfig, ModelState, RunnerBackend};
 
+// ── Mistral.rs backend (optional, enabled via `mistralrs` feature) ──
+#[cfg(feature = "mistralrs")]
+pub mod mistralrs_backend {
+    pub use crate::kernel::mistralrs_backend::{
+        MistralRsBackend, MistralRsGemmKernel, MistralRsAttentionKernel,
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
