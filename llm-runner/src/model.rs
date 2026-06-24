@@ -808,7 +808,7 @@ impl CpuModel {
                     .map_err(|e| RunnerError::Tensor(format!("Layer {layer_idx} KV append failed: {e}")))?;
             }
 
-            hidden
+            hidden_out
         };
 
         self.seq_len += 1;
