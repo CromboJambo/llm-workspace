@@ -178,8 +178,8 @@ Integrated `mistral.rs` as an optional production-grade GPU backend behind PESTI
 - [x] Wire `rms_norm` and `swiglu` — `candle_bridge::rms_norm` and `gelu`
 - [x] GPU-accelerated `AttentionDispatch::forward_gpu` — full RoPE + SDPA path via candle_bridge
 - [x] GPU path auto-selected in `AttentionDispatch::forward` when GPU available
-- [ ] Wire `gemm` for GEMM in `FeedForwardDispatch` (linear projections)
-- [ ] Benchmark: PESTI+candle_bridge vs PESTI+CPU vs standalone mistral.rs
+|- [x] Wire `gemm` for GEMM in `FeedForwardDispatch` (linear projections) — `candle_bridge::gemm` wired into `dispatch_linear` with GPU/CPU auto-selection
+|- [ ] Benchmark: PESTI+candle_bridge vs PESTI+CPU vs standalone mistral.rs
 - [ ] Dynamic backend selection per-operation (dispatch to best backend)
 - [ ] Single kernel fusion for hot paths
 
