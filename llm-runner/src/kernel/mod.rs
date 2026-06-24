@@ -71,6 +71,7 @@ pub mod dispatch;
 pub mod gemm;
 pub mod kvcache;
 pub mod memory;
+pub mod mistralrs_backend;
 pub mod tma_bridge;
 pub mod tma_descriptor;
 
