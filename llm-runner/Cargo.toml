@@ -7,6 +7,11 @@ license.workspace = true
 authors.workspace = true
 description = "LLM inference engine: tensor computation, model loading, tokenizer, device backend, external runner bridge"
 
+[features]
+default = []
+# Production-grade GPU kernels via mistral.rs (requires CUDA toolchain)
+mistralrs = ["dep:mistralrs"]
+
 [dependencies]
 candle-core.workspace = true
 candle-nn.workspace = true
@@ -51,6 +56,8 @@ reqwest.workspace = true
 llama-cpp-2.workspace = true
 llama-cpp-sys-2 = "0.1.146"
 nvml-wrapper = "0.12"
+# Production-grade GPU kernels (optional, enabled via `mistralrs` feature)
+mistralrs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
