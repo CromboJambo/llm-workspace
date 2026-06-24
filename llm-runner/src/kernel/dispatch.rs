@@ -32,11 +32,15 @@
 
 use crate::error::RunnerError;
 use crate::inference_engine::InferenceEngine;
+use crate::kernel::attention::{
+    AttentionArch, AttentionConfig, AttentionError, AttentionKernel, AttentionSlice,
+    CpuAttentionKernel, CudaAttentionKernel,
+};
+use crate::kernel::candle_bridge;
 use crate::kernel::device_buf::DeviceBuffer;
 use crate::kernel::gemm::{GemmArch, GemmKernel};
 use crate::kernel::kvcache::Kvcache;
 use crate::kernel::memory::MemoryManager;
-use crate::kernel::{AttentionArch, AttentionConfig, AttentionKernel, CpuAttentionKernel};
 use candle_core::{DType, Device};
 use half::f16;
 use tracing::{debug, warn};
@@ -644,19 +648,30 @@ impl AttentionDispatch {
         let k = self.wk.forward(ctx, x, batch_size)?;
         let v = self.wv.forward(ctx, x, batch_size)?;
 
-        // Apply RoPE to Q and K (per-head, per-position)
+        // GPU-accelerated path when available
+        if ctx.gpu_available() {
+            return self.forward_gpu(
+                ctx,
+                &q,
+                &k,
+                &v,
+                batch_size,
+                seq_len,
+                start_pos,
+                key_cache,
+                value_cache,
+                scale,
+            );
+        }
+
+        // CPU fallback: RoPE + manual SDPA
         let mut q_rope = q.clone();
         let mut k_rope = k.clone();
         self.apply_rope(&mut q_rope, &mut k_rope, seq_len, start_pos);
 
-        // Write current position's K and V to the KV cache.
-        // K/V from projections have shape [batch_size * seq_len, kv_dim].
-        // kv_dim = num_kv_heads * head_dim.
-        // The KV cache stores f16; convert from f32.
         let kv_dim = self.num_kv_heads * self.head_dim;
         for pos in 0..seq_len {
             let global_pos = start_pos + pos;
-            // Extract the key vector for this batch position
             let k_start = global_pos * kv_dim;
             let k_row: Vec<f16> = k[k_start..(k_start + kv_dim)]
                 .iter()
@@ -667,33 +682,22 @@ impl AttentionDispatch {
                 .iter()
                 .map(|&v| half::f16::from_f32(v))
                 .collect();
-            if key_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {
-                // Cache full — ignore (shouldn't happen in practice)
-            }
+            if key_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {}
         }
 
-        // Scaled dot-product attention: softmax(Q @ K^T / sqrt(head_dim)) @ V
-        // Output: [batch_size * seq_len, embed_dim]
         let mut output = vec![0.0f32; batch_size * seq_len * embed_dim];
-
         for b in 0..batch_size {
             for pos in 0..seq_len {
                 let q_idx = (b * seq_len + pos) * embed_dim;
                 let mut attn_weights = vec![0.0f32; start_pos + seq_len];
 
-                // Q @ K^T for this position
                 for j in 0..(start_pos + seq_len) {
                     let mut sum = 0.0f32;
                     for h in 0..self.num_heads {
                         let q_start = q_idx + h * self.head_dim;
                         let group = h / (self.num_heads / self.num_kv_heads);
-                        // Read K from cache at position j
                         let k_slice = Self::extract_head_slice(
-                            key_cache,
-                            true,
-                            group,
-                            j,
-                            self.head_dim,
+                            key_cache, true, group, j, self.head_dim,
                         );
                         if k_slice.len() == self.head_dim {
                             for d in 0..self.head_dim {
@@ -704,7 +708,6 @@ impl AttentionDispatch {
                     attn_weights[j] = sum * scale;
                 }
 
-                // Softmax
                 let max_val = attn_weights
                     .iter()
                     .cloned()
@@ -717,7 +720,6 @@ impl AttentionDispatch {
                     vec![1.0 / (start_pos + seq_len) as f32; start_pos + seq_len]
                 };
 
-                // softmax_out @ V
                 let mut attn_output = vec![0.0f32; self.num_heads * self.head_dim];
                 let cache_len = start_pos + seq_len;
                 for h in 0..self.num_heads {
@@ -726,11 +728,7 @@ impl AttentionDispatch {
                         let mut sum = 0.0f32;
                         for j in 0..cache_len {
                             let v_slice = Self::extract_head_slice(
-                                value_cache,
-                                false,
-                                group,
-                                j,
-                                self.head_dim,
+                                value_cache, false, group, j, self.head_dim,
                             );
                             if !v_slice.is_empty() {
                                 sum += softmax_out[j] * v_slice[d].to_f32();
@@ -740,7 +738,6 @@ impl AttentionDispatch {
                     }
                 }
 
-                // Output projection: attn_output @ wo^T
                 let wo_output = self.wo.forward(ctx, &attn_output, 1)?;
                 for i in 0..embed_dim {
                     output[(b * seq_len + pos) * embed_dim + i] = wo_output[i];
@@ -810,6 +807,207 @@ impl AttentionDispatch {
             }
         }
         result
+    }
+
+    // ── GPU-accelerated helpers ──────────────────────────────────────────
+
+    /// GPU-accelerated RoPE using candle_bridge.
+    fn apply_rope_gpu(
+        q: &mut [f32],
+        k: &mut [f32],
+        seq_len: usize,
+        start_pos: usize,
+        head_dim: usize,
+    ) -> Result<(), DispatchError> {
+        let cos_shape = [seq_len, head_dim / 2];
+        let (cos, sin) = candle_bridge::rope_embeddings(seq_len, head_dim, 10000.0, 0)
+            .map_err(|e| DispatchError::Kernel(format!("rope_embeddings: {e}")))?;
+
+        let q_tensor = candle_bridge::f16_to_tensor(
+            &q.iter().map(|v| half::f16::from_f32(*v)).collect::<Vec<_>>(),
+            &[1, seq_len, head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(q): {e}")))?;
+
+        let k_tensor = candle_bridge::f16_to_tensor(
+            &k.iter().map(|v| half::f16::from_f32(*v)).collect::<Vec<_>>(),
+            &[1, seq_len, head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(k): {e}")))?;
+
+        let q_out =
+            candle_bridge::apply_rope(&q_tensor, &cos, &sin, start_pos)
+                .map_err(|e| DispatchError::Kernel(format!("apply_rope(q): {e}")))?;
+        let k_out =
+            candle_bridge::apply_rope(&k_tensor, &cos, &sin, start_pos)
+                .map_err(|e| DispatchError::Kernel(format!("apply_rope(k): {e}")))?;
+
+        let q_result = candle_bridge::tensor_to_f32(&q_out)
+            .map_err(|e| DispatchError::Kernel(format!("tensor_to_f32(q): {e}")))?;
+        let k_result = candle_bridge::tensor_to_f32(&k_out)
+            .map_err(|e| DispatchError::Kernel(format!("tensor_to_f32(k): {e}")))?;
+
+        // Extract the seq_len slice (first position for decode)
+        for i in 0..head_dim {
+            q[i] = q_result[i];
+            k[i] = k_result[i];
+        }
+
+        Ok(())
+    }
+
+    /// GPU-accelerated SDPA using candle_bridge.
+    fn sdpa_gpu(
+        q: &[f32],
+        k_cache: &Kvcache,
+        v_cache: &Kvcache,
+        num_heads: usize,
+        num_kv_heads: usize,
+        head_dim: usize,
+        seq_len: usize,
+        start_pos: usize,
+        scale: f32,
+    ) -> Result<Vec<f32>, DispatchError> {
+        let cache_len = start_pos + seq_len;
+
+        // Build Q tensor: [1, seq_len, num_heads, head_dim]
+        let q_tensor = candle_bridge::f16_to_tensor(
+            &q.iter().map(|v| half::f16::from_f32(*v)).collect::<Vec<_>>(),
+            &[1, seq_len, num_heads, head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(q): {e}")))?;
+
+        // Build K and V tensors from KV cache
+        let k_buffer = k_cache.buffer();
+        let v_buffer = v_cache.buffer();
+
+        let k_slice: Vec<f16> = k_buffer.as_slice().map_or(vec![], |b| b.to_vec());
+        let v_slice: Vec<f16> = v_buffer.as_slice().map_or(vec![], |b| b.to_vec());
+
+        let k_tensor = candle_bridge::f16_to_tensor(
+            &k_slice,
+            &[1, cache_len, num_kv_heads, head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(k): {e}")))?;
+
+        let v_tensor = candle_bridge::f16_to_tensor(
+            &v_slice,
+            &[1, cache_len, num_kv_heads, head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(v): {e}")))?;
+
+        // Run SDPA
+        let attn_out =
+            candle_bridge::sdpa(&q_tensor, &k_tensor, &v_tensor, scale)
+                .map_err(|e| DispatchError::Kernel(format!("sdpa: {e}")))?;
+
+        let result = candle_bridge::tensor_to_f32(&attn_out)
+            .map_err(|e| DispatchError::Kernel(format!("tensor_to_f32: {e}")))?;
+
+        Ok(result)
+    }
+
+    /// GPU-accelerated full attention path: RoPE + SDPA via candle_bridge.
+    fn forward_gpu(
+        &self,
+        ctx: &DispatchContext,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        batch_size: usize,
+        seq_len: usize,
+        start_pos: usize,
+        key_cache: &mut Kvcache,
+        value_cache: &mut Kvcache,
+        scale: f32,
+    ) -> Result<Vec<f32>, DispatchError> {
+        let embed_dim = self.num_heads * self.head_dim;
+        let cache_len = start_pos + seq_len;
+
+        // Write K/V from projections to KV cache
+        let kv_dim = self.num_kv_heads * self.head_dim;
+        for pos in 0..seq_len {
+            let global_pos = start_pos + pos;
+            let k_start = global_pos * kv_dim;
+            let k_row: Vec<f16> = k[k_start..(k_start + kv_dim)]
+                .iter()
+                .map(|&val| half::f16::from_f32(val))
+                .collect();
+            let v_start = global_pos * kv_dim;
+            let v_row: Vec<f16> = v[v_start..(v_start + kv_dim)]
+                .iter()
+                .map(|&val| half::f16::from_f32(val))
+                .collect();
+            if key_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {}
+            if value_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {}
+        }
+
+        // Extract K/V from cache for SDPA
+        let k_buf = key_cache.buffer().as_slice().ok_or_else(|| {
+            DispatchError::Kernel("KV cache buffer not available".into())
+        })?;
+        let v_buf = value_cache.buffer().as_slice().ok_or_else(|| {
+            DispatchError::Kernel("Value cache buffer not available".into())
+        })?;
+
+        // Build K/V tensors: [1, cache_len, num_kv_heads, head_dim]
+        let k_tensor = candle_bridge::f16_to_tensor(
+            &k_buf.to_vec(),
+            &[1, cache_len, self.num_kv_heads, self.head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(k): {e}")))?;
+
+        let v_tensor = candle_bridge::f16_to_tensor(
+            &v_buf.to_vec(),
+            &[1, cache_len, self.num_kv_heads, self.head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(v): {e}")))?;
+
+        // Apply RoPE to Q
+        let cos_shape = [cache_len, self.head_dim / 2];
+        let (cos, sin) = candle_bridge::rope_embeddings(cache_len, self.head_dim, 10000.0, 0)
+            .map_err(|e| DispatchError::Kernel(format!("rope_embeddings: {e}")))?;
+
+        let q_tensor = candle_bridge::f16_to_tensor(
+            &q.iter().map(|&val| half::f16::from_f32(val)).collect::<Vec<_>>(),
+            &[1, seq_len, self.num_heads, self.head_dim],
+            None,
+        )
+        .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(q): {e}")))?;
+
+        let q_rope_tensor =
+            candle_bridge::apply_rope(&q_tensor, &cos, &sin, start_pos)
+                .map_err(|e| DispatchError::Kernel(format!("apply_rope: {e}")))?;
+
+        // Run SDPA
+        let attn_out = candle_bridge::sdpa(&q_rope_tensor, &k_tensor, &v_tensor, scale)
+            .map_err(|e| DispatchError::Kernel(format!("sdpa: {e}")))?;
+
+        let result = candle_bridge::tensor_to_f32(&attn_out)
+            .map_err(|e| DispatchError::Kernel(format!("tensor_to_f32: {e}")))?;
+
+        // Output projection: attn_output @ wo^T
+        let mut output = vec![0.0f32; batch_size * seq_len * embed_dim];
+        for b in 0..batch_size {
+            for pos in 0..seq_len {
+                let attn_start = (b * seq_len + pos) * self.num_heads * self.head_dim;
+                let attn_slice = &result[attn_start..attn_start + self.num_heads * self.head_dim];
+                let wo_output = self.wo.forward(ctx, attn_slice, 1)?;
+                let out_start = (b * seq_len + pos) * embed_dim;
+                for i in 0..embed_dim {
+                    output[out_start + i] = wo_output[i];
+                }
+            }
+        }
+
+        Ok(output)
     }
 }
 
