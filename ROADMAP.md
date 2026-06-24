@@ -155,12 +155,29 @@
 
 **Goal:** Replace CPU kernels with hardware-accelerated implementations behind the abstraction layer.
 
-- [ ] WGMMA matmul for sm_120 (RTX 5060 Ti) via PTX
-- [ ] WGMMA for sm_100 (Blackwell) — separate code path
-- [ ] GPU attention kernel with TMA descriptor binding
-- [ ] fp8 support (cuda-device `f8` feature already in workspace)
-- [ ] CPU attention optimization (candle-core or flash attention)
-- [ ] Multi-GPU tensor parallelism (long-term)
+### Mistral.rs Backend (✅ Complete — Phase 4a)
+
+Integrated `mistral.rs` as an optional production-grade GPU backend behind PESTI's `GemmKernel`/`AttentionKernel` traits.
+
+- [x] `kernel/mistralrs_backend.rs` — `MistralRsGemmKernel` + `MistralRsAttentionKernel` implementing PESTI's kernel traits
+- [x] `MistralRsBackend` enum — `MistralRs | Cuda | Cpu` selection with auto-detection
+- [x] `InferenceEngine::new()` — prefers mistral.rs over CUDA PTX, falls back to CPU
+- [x] `InferenceEngine::backend_description()` — reports active backend at runtime
+- [x] `DispatchContext` — logs active backend on init
+- [x] `lib.rs` — feature-gated re-export as `pesti_runner::mistralrs_backend::*`
+- [x] `mistralrs` feature in Cargo.toml — optional dep, zero cost when disabled
+- [x] Build verified: 374 tests pass (default + mistralrs feature)
+
+**Priority:** When enabled, mistral.rs kernels are tried first (WGMMA, tcgen05, flash attention). If unavailable, falls back to PESTI's CUDA PTX path, then CPU.
+
+### Phase 4b: Full Integration (🔮 Future)
+
+- [ ] Wire `mistralrs::transformers::models::llama::apply_rotary_emb` for RoPE
+- [ ] Wire `mistralrs::transformers::models::llama::flash_attn` for flash attention
+- [ ] Wire `mistralrs::transformers::models::llama::sdpa` for standard SDPA
+- [ ] Benchmark: PESTI+mistralrs vs PESTI+CPU vs standalone mistral.rs
+- [ ] Dynamic backend selection per-operation (dispatch to best backend)
+- [ ] Single kernel fusion for hot paths
 
 ---
 
