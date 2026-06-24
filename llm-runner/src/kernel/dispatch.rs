@@ -113,6 +113,8 @@ impl DispatchContext {
     pub fn new() -> Self {
         let engine = InferenceEngine::new(Device::Cpu, DType::F32);
         let prefer_gpu = engine.gpu_available();
+        let backend_desc = engine.backend_description();
+        tracing::info!(backend = %backend_desc, "DispatchContext initialized");
         Self {
             engine,
             memory: MemoryManager::new(),
@@ -125,6 +127,8 @@ impl DispatchContext {
     /// Create a dispatch context with explicit GPU preference.
     pub fn with_gpu_preference(prefer_gpu: bool) -> Self {
         let engine = InferenceEngine::new(Device::Cpu, DType::F32);
+        let backend_desc = engine.backend_description();
+        tracing::info!(backend = %backend_desc, prefer_gpu, "DispatchContext initialized with GPU preference");
         Self {
             engine,
             memory: MemoryManager::new(),
