@@ -172,10 +172,14 @@ Integrated `mistral.rs` as an optional production-grade GPU backend behind PESTI
 
 ### Phase 4b: Full Integration (🔮 Future)
 
-- [ ] Wire `mistralrs::transformers::models::llama::apply_rotary_emb` for RoPE
-- [ ] Wire `mistralrs::transformers::models::llama::flash_attn` for flash attention
-- [ ] Wire `mistralrs::transformers::models::llama::sdpa` for standard SDPA
-- [ ] Benchmark: PESTI+mistralrs vs PESTI+CPU vs standalone mistral.rs
+- [x] Wire `apply_rope` for RoPE — `candle_bridge::apply_rope` via `candle_core::Tensor` ops
+- [x] Wire `sdpa` for standard SDPA — `candle_bridge::sdpa` with causal mask
+- [x] Wire `gemm` for GEMM — `candle_bridge::gemm` with alpha/beta scaling
+- [x] Wire `rms_norm` and `swiglu` — `candle_bridge::rms_norm` and `gelu`
+- [x] GPU-accelerated `AttentionDispatch::forward_gpu` — full RoPE + SDPA path via candle_bridge
+- [x] GPU path auto-selected in `AttentionDispatch::forward` when GPU available
+- [ ] Wire `gemm` for GEMM in `FeedForwardDispatch` (linear projections)
+- [ ] Benchmark: PESTI+candle_bridge vs PESTI+CPU vs standalone mistral.rs
 - [ ] Dynamic backend selection per-operation (dispatch to best backend)
 - [ ] Single kernel fusion for hot paths
 
