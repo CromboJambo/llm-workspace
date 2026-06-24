@@ -66,6 +66,7 @@
 
 pub mod attention;
 pub mod builder;
+pub mod candle_bridge;
 pub mod device_buf;
 pub mod dispatch;
 pub mod gemm;
