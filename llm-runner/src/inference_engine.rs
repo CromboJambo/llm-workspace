@@ -4,6 +4,8 @@ use crate::kernel::{
     AttentionArch, AttentionConfig, AttentionError, AttentionKernel, CpuAttentionKernel,
     CudaGemmKernelBuilder, GemmArch, GemmError, GemmKernel, MemoryManager,
 };
+#[cfg(feature = "mistralrs")]
+use crate::kernel::mistralrs_backend::MistralRsBackend;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::Module;
 use half::f16;
@@ -47,16 +49,31 @@ impl InferenceEngine {
             (None, None)
         };
 
-        // Initialize GEMM kernel
+        // Initialize GEMM kernel: prefer mistral.rs if feature enabled and available,
+        // then fall back to CUDA PTX, then CPU.
         let gemm: Box<dyn GemmKernel + Send + Sync> = if let (Some(cuda_rt), Some(s)) = (&cuda_runtime, &stream) {
-            // Detect architecture from device compute capability
             let arch = if cuda_rt.device_info().supports_wgmma() {
                 GemmArch::Wgmma
             } else if cuda_rt.device_info().supports_tcgen05() {
                 GemmArch::Tcgen05
             } else {
-                GemmArch::Wgmma // fallback
+                GemmArch::Wgmma
             };
+
+            // Try mistral.rs backend first if enabled
+            #[cfg(feature = "mistralrs")]
+            {
+                let mr = MistralRsBackend::default();
+                if let Some(kernel) = mr.create_gemm_kernel(arch) {
+                    tracing::info!("Using mistral.rs GEMM kernel (arch={})", arch.name());
+                    return Self {
+                        device, dtype, gemm: kernel, attention: Box::new(CpuAttentionKernel::new()),
+                        cuda_runtime, stream, memory_manager: MemoryManager::new(),
+                        cpu_gemm: crate::kernel::CpuGemmKernel::new(),
+                        cpu_attention: CpuAttentionKernel::new(),
+                    };
+                }
+            }
 
             match CudaGemmKernelBuilder::new(arch, cuda_rt.context().clone(), s.clone(), cuda_rt.device_info().clone()).build() {
                 Ok(kernel) => Box::new(kernel),
@@ -69,8 +86,21 @@ impl InferenceEngine {
             Box::new(crate::kernel::CpuGemmKernel::new())
         };
 
-        // Initialize attention kernel
+        // Initialize attention kernel: same priority order
         let attention: Box<dyn AttentionKernel + Send + Sync> = if is_available() {
+            #[cfg(feature = "mistralrs")]
+            {
+                let mr = MistralRsBackend::default();
+                if let Some(kernel) = mr.create_attention_kernel(AttentionArch::Wgmma) {
+                    tracing::info!("Using mistral.rs attention kernel");
+                    return Self {
+                        device, dtype, gemm, attention: kernel,
+                        cuda_runtime, stream, memory_manager: MemoryManager::new(),
+                        cpu_gemm: crate::kernel::CpuGemmKernel::new(),
+                        cpu_attention: CpuAttentionKernel::new(),
+                    };
+                }
+            }
             Box::new(crate::kernel::CudaAttentionKernel::new(AttentionArch::Wgmma))
         } else {
             Box::new(crate::kernel::CpuAttentionKernel::new())
@@ -310,5 +340,25 @@ impl InferenceEngine {
     /// List available CUDA devices.
     pub fn list_devices() -> Result<Vec<crate::cuda_runtime::CudaDeviceInfo>, RunnerError> {
         enumerate_devices().map_err(|e| RunnerError::Device(e.to_string()))
+    }
+
+    /// Get a description of the active inference backend.
+    pub fn backend_description(&self) -> String {
+        #[cfg(feature = "mistralrs")]
+        if self.cuda_runtime.is_some() && self.gemm.is_available() {
+            // Check if we're using mistral.rs by checking the kernel arch
+            match self.gemm_arch() {
+                GemmArch::Wgmma | GemmArch::Tcgen05 => {
+                    // Could be either backend — use runtime info if available
+                    return format!("GPU ({})", self.full_device_info().unwrap_or_else(|_| "unknown".to_string()));
+                }
+            }
+        }
+
+        if self.gemm.is_available() {
+            "GPU (CUDA PTX)".to_string()
+        } else {
+            "CPU (reference)".to_string()
+        }
     }
 }
