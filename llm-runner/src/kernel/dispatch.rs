@@ -334,6 +334,8 @@ impl DispatchContext {
     /// Returns: [batch_size, out_features] f32
     ///
     /// Automatically dispatches to GPU if available, falls back to CPU.
+    /// When GPU is available, uses `candle_bridge::gemm` for GPU-accelerated
+    /// matrix multiplication via candle-core's CUDA backend.
     pub fn dispatch_linear(
         &self,
         x: &[f32],
@@ -350,8 +352,8 @@ impl DispatchContext {
         // Convert input to f16 for GPU
         let x_f16: Vec<f16> = x.iter().map(|v| f16::from_f32(*v)).collect();
 
-        // Dispatch GEMM: C = 1.0 * X @ W^T + 0.0 * C_zero
-        // W is stored as [out, in] but GEMM expects B as [in, out], so transpose
+        // Transpose weights: W is [out, in], need [in, out] for GEMM
+        // W^T[i,j] = W[j,i]
         let w_t: Vec<f16> = {
             let mut out = Vec::with_capacity(k * n);
             for i in 0..k {
@@ -361,7 +363,16 @@ impl DispatchContext {
             }
             out
         };
-        let mut result = self.dispatch_gemm(&x_f16, &w_t, None, m, n, k, 1.0, 0.0)?;
+
+        // Use candle_bridge::gemm when GPU is available, CPU fallback otherwise
+        let mut result = if self.prefer_gpu && self.gpu_available() {
+            debug!(m, n, k, "Linear: using candle_bridge::gemm (GPU)");
+            candle_bridge::gemm(&x_f16, &w_t, None, m, n, k, 1.0, 0.0)
+                .map_err(|e| DispatchError::Kernel(format!("candle_bridge::gemm: {e}")))?
+        } else {
+            debug!(m, n, k, "Linear: using CPU GEMM");
+            self.dispatch_gemm_cpu(&x_f16, &w_t, None, m, n, k, 1.0, 0.0)?
+        };
 
         // Add bias if present
         if let Some(b) = bias {
