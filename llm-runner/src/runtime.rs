@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::device::{DeviceType, DeviceSelector};
+use crate::device::DeviceType;
 use crate::error::Result;
 use crate::llama::{GenerationResult, LlamaRunner, SamplingConfig, StreamingResult, TokenInfo};
 use crate::model_manager::{ModelManager, ModelSpec, PreloadConfig, PreloadStats};

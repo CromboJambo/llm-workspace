@@ -1,6 +1,5 @@
 //! Context configuration for llama.cpp inference.
-
-use serde::{Deserialize, Serialize};
+#[allow(unused_imports)]
 use crate::llama::sampler::KvCacheType;
 
 /// Configuration for a [`LlamaContext`](llama_cpp_2::context::LlamaContext).

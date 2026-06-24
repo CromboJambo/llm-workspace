@@ -296,8 +296,10 @@ impl LlamaRunner {
     }
 
     /// Decode a token to string.
+    #[deprecated(since = "0.1.1", note = "Use `token_to_piece` instead")]
     pub fn token_to_str(&self, token: LlamaToken) -> Result<String> {
-        let s = self.model.token_to_str(token, llama_cpp_2::model::Special::Tokenize)?;
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let s = self.model.token_to_piece(token, &mut decoder, true, None)?;
         Ok(s)
     }
 
@@ -402,7 +404,12 @@ impl LlamaRunner {
         // Decode tokens to text
         let text: String = tokens
             .iter()
-            .filter_map(|t| self.model.token_to_str(*t, llama_cpp_2::model::Special::Tokenize).ok())
+            .filter_map(|t| {
+                let mut decoder = encoding_rs::UTF_8.new_decoder();
+                self.model
+                    .token_to_piece(*t, &mut decoder, true, None)
+                    .ok()
+            })
             .collect();
 
         // Get timings

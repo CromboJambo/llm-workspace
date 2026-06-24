@@ -35,7 +35,7 @@ use crate::inference_engine::InferenceEngine;
 use crate::kernel::device_buf::DeviceBuffer;
 use crate::kernel::gemm::{GemmArch, GemmKernel};
 use crate::kernel::kvcache::Kvcache;
-use crate::kernel::memory::{MemoryBackend, MemoryManager};
+use crate::kernel::memory::MemoryManager;
 use crate::kernel::{AttentionArch, AttentionConfig, AttentionKernel, CpuAttentionKernel};
 use candle_core::{DType, Device};
 use half::f16;
