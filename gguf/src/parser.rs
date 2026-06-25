@@ -98,14 +98,14 @@ fn parse_v3<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
 
     let mut kv_pairs = Vec::with_capacity(kv_count as usize);
     for _ in 0..kv_count {
-        kv_pairs.push(read_kv_pair(reader)?);
+        kv_pairs.push(read_kv_pair_v3(reader)?);
     }
     eprintln!("parse_v3: read {} KV pairs", kv_pairs.len());
 
     let mut tensors = Vec::with_capacity(tensor_count as usize);
     for i in 0..tensor_count {
         eprintln!("parse_v3: reading tensor {} of {}", i + 1, tensor_count);
-        tensors.push(read_tensor_info(reader)?);
+        tensors.push(read_tensor_info_v3(reader)?);
     }
     eprintln!("parse_v3: read {} tensors", tensors.len());
 
@@ -182,8 +182,30 @@ fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
     String::from_utf8(bytes).map_err(GgufError::Utf8)
 }
 
+fn read_key_v3<R: Read>(reader: &mut R) -> Result<String, GgufError> {
+    let len = reader.read_u64::<LittleEndian>()?;
+    if len > 1024 * 1024 {
+        return Err(GgufError::Io(format!("key length {len} exceeds max 1MB")));
+    }
+    let bytes = read_bytes(reader, len as usize)?;
+    String::from_utf8(bytes).map_err(GgufError::Utf8)
+}
+
 fn read_kv_pair<R: Read>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
     let key = read_key(reader)?;
+    let value_type = read_value_type(reader)?;
+    let value = read_kv_value(reader, value_type)?;
+    #[cfg(debug_assertions)]
+    eprintln!("KV key='{}' type={}", key, value_type.to_u32());
+    Ok(GgufKvPair {
+        key,
+        value_type,
+        value,
+    })
+}
+
+fn read_kv_pair_v3<R: Read>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
+    let key = read_key_v3(reader)?;
     let value_type = read_value_type(reader)?;
     let value = read_kv_value(reader, value_type)?;
     #[cfg(debug_assertions)]
@@ -318,6 +340,19 @@ fn read_tensor_info<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError
     let dtype = reader.read_u32::<LittleEndian>()?;
     let offset = reader.read_u64::<LittleEndian>()?;
     eprintln!("  read_tensor_info: name={} dims={} dtype={} offset={}", name, n_dims, dtype, offset);
+    Ok(GgufTensorInfo { name, shape, offset, dtype })
+}
+
+fn read_tensor_info_v3<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError> {
+    let name = read_string(reader)?;
+    let n_dims = reader.read_u32::<LittleEndian>()?;
+    let mut shape = Vec::with_capacity(n_dims as usize);
+    for _ in 0..n_dims {
+        shape.push(reader.read_u64::<LittleEndian>()?);
+    }
+    let dtype = reader.read_u32::<LittleEndian>()?;
+    let offset = reader.read_u64::<LittleEndian>()?;
+    eprintln!("  read_tensor_info_v3: name={} dims={} dtype={} offset={}", name, n_dims, dtype, offset);
     Ok(GgufTensorInfo { name, shape, offset, dtype })
 }
 
