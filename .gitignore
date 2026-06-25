@@ -10,3 +10,5 @@ Cargo.lock
 guard.db
 knowledge.db
 cobertura.xml
+models
+projects
