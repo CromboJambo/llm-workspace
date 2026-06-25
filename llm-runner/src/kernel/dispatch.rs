@@ -559,6 +559,10 @@ impl LinearDispatch {
         x: &[f32],
         batch_size: usize,
     ) -> Result<Vec<f32>, DispatchError> {
+        if !ctx.prefer_gpu() || !ctx.gpu_available() {
+            return self.forward_cpu(x, batch_size);
+        }
+
         ctx.dispatch_linear(
             x,
             &self.weights_f16,
@@ -683,17 +687,18 @@ impl AttentionDispatch {
         let kv_dim = self.num_kv_heads * self.head_dim;
         for pos in 0..seq_len {
             let global_pos = start_pos + pos;
-            let k_start = global_pos * kv_dim;
-            let k_row: Vec<f16> = k[k_start..(k_start + kv_dim)]
+            let k_start = pos * kv_dim;
+            let k_row: Vec<f16> = k_rope[k_start..(k_start + kv_dim)]
                 .iter()
                 .map(|&v| half::f16::from_f32(v))
                 .collect();
-            let v_start = global_pos * kv_dim;
+            let v_start = pos * kv_dim;
             let v_row: Vec<f16> = v[v_start..(v_start + kv_dim)]
                 .iter()
                 .map(|&v| half::f16::from_f32(v))
                 .collect();
             if key_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {}
+            if value_cache.write_kv_at(global_pos, &k_row, &v_row).is_err() {}
         }
 
         let mut output = vec![0.0f32; batch_size * seq_len * embed_dim];
@@ -777,16 +782,20 @@ impl AttentionDispatch {
                     let sin = freq.sin();
 
                     // Rotate Q
-                    let q0 = q[q_start + 2 * i];
-                    let q1 = q[q_start + 2 * i + 1];
-                    q[q_start + 2 * i] = q0 * cos - q1 * sin;
-                    q[q_start + 2 * i + 1] = q0 * sin + q1 * cos;
+                    let q0_idx = q_start + i;
+                    let q1_idx = q0_idx + dim / 2;
+                    let q0 = q[q0_idx];
+                    let q1 = q[q1_idx];
+                    q[q0_idx] = q0 * cos - q1 * sin;
+                    q[q1_idx] = q0 * sin + q1 * cos;
 
                     // Rotate K
-                    let k0 = k[k_start + 2 * i];
-                    let k1 = k[k_start + 2 * i + 1];
-                    k[k_start + 2 * i] = k0 * cos - k1 * sin;
-                    k[k_start + 2 * i + 1] = k0 * sin + k1 * cos;
+                    let k0_idx = k_start + i;
+                    let k1_idx = k0_idx + dim / 2;
+                    let k0 = k[k0_idx];
+                    let k1 = k[k1_idx];
+                    k[k0_idx] = k0 * cos - k1 * sin;
+                    k[k1_idx] = k0 * sin + k1 * cos;
                 }
             }
         }
@@ -806,10 +815,9 @@ impl AttentionDispatch {
         let head_offset = head_idx * head_dim;
         let v_base = head_stride * max_seq;
         let base = if is_key { 0 } else { v_base };
-        let head_base = base + head_stride * head_offset;
 
         let src = cache.buffer().as_slice().unwrap_or(&[]);
-        let row_start = head_base + head_stride * seq_pos;
+        let row_start = base + head_stride * seq_pos + head_offset;
         let mut result = Vec::with_capacity(head_dim);
         for d in 0..head_dim {
             let idx = row_start + d;
