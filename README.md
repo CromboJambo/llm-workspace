@@ -120,9 +120,33 @@ llm-workspace/
 
 **Phase 1.5 (Hybrid Routing): ✅ Complete** — GPU → Remote → CPU device selector with health checks.
 
-**Phase 2 (GPU Acceleration): 🟡 In Progress** — CUDA runtime wired, kernels stubbed. See `ROADMAP.md`.
+**Phase 2 (Backend Abstraction): ✅ Complete** — Trait layer, tensor interfaces, execution dispatch, error handling overhaul.
 
-**Phase 3 (Production): 🔴 Not Started** — Runner bridge, streaming, model download.
+**Phase 3 (Runtime): ✅ Complete** — Runner bridge, streaming, model management, SafeTensors weight loading, HF download.
+
+**Phase 4a (Mistral.rs Backend): ✅ Complete** — Production GPU kernels via mistral.rs (WGMMA, tcgen05, flash attention, FP8).
+
+**Phase 4b (Candle Bridge): ✅ Complete** — candle-core tensor bridge for GPU-accelerated gemm/sdpa/rope/rms_norm/swiglu.
+
+**Phase 4c (Dispatch Layer): ✅ Complete** — LayerDispatch, full forward pass, GPU/CPU auto-select, async memory transfers.
+
+**Phase 5 (Validation & Polish): 🔮 Next** — Real-model dispatch testing, benchmarking, file writers.
+
+### Build & Test Health
+
+| Metric | Value |
+|--------|-------|
+| Rust files | 74 |
+| Lines (llm-runner/src) | ~21,400 |
+| Tests passing | 372 / 379 |
+| Tests failing | 6 (GGUF v3 test data helpers stale) |
+| Clippy warnings | 15 |
+| Build (default) | ✅ Clean |
+| Build (mistralrs) | ✅ Clean |
+
+### Known Test Failures
+
+6 tests fail with `UnexpectedEof: failed to fill whole buffer` due to the GGUF v3 parser refactoring (commit `04cf2c0`). The parser correctly implements the v3 wire format, but test data generators (`make_*_bytes()` helpers) still produce v2 layout. See `AGENTS.md` "Format Version Mismatch" pattern for the fix procedure.
 
 ## License
 
