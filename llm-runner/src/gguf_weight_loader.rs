@@ -1009,7 +1009,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
@@ -1081,7 +1081,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
@@ -1138,7 +1138,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
             buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
