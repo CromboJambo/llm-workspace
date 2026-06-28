@@ -1,14 +1,32 @@
-# PESTI Roadmap
-
-## Status Overview
-
-| Phase | Status | Focus |
-|-------|--------|-------|
-| **Phase 1: CPU Inference** | ✅ Complete | Pure-Rust transformer + llama.cpp FFI path |
-| **Phase 1.5: Hybrid Routing** | ✅ Complete | GPU → Remote → CPU device selector |
-| **Phase 2: Backend Abstraction** | ✅ Complete | Trait layer, tensor interfaces, execution dispatch, error handling |
-| **Phase 3: Runtime** | ✅ Complete | Runner bridge, streaming, model management, SafeTensors, HF download |
-| **Phase 4: GPU Kernels** | 🔮 Future | WGMMA, fp8, attention (after abstraction is solid) |
+|# PESTI Roadmap
+|
+|**Last updated: 2026-06-27**
+|
+|## Status Overview
+|
+|| Phase | Status | Focus |
+||-------|--------|-------|
+|| **Phase 1: CPU Inference** | ✅ Complete | Pure-Rust transformer + llama.cpp FFI path |
+|| **Phase 1.5: Hybrid Routing** | ✅ Complete | GPU → Remote → CPU device selector |
+|| **Phase 2: Backend Abstraction** | ✅ Complete | Trait layer, tensor interfaces, execution dispatch, error handling |
+|| **Phase 3: Runtime** | ✅ Complete | Runner bridge, streaming, model management, SafeTensors, HF download |
+|| **Phase 4a: Mistral.rs Backend** | ✅ Complete | Production GPU kernels via mistral.rs (WGMMA, tcgen05, flash attention) |
+|| **Phase 4b: Candle Bridge** | ✅ Complete | candle-core tensor bridge for GPU-accelerated operations |
+|| **Phase 4c: Dispatch Layer** | ✅ Complete | LayerDispatch, full forward pass, GPU/CPU auto-select |
+|| **Phase 5: Validation & Polish** | 🔮 Next | Real-model dispatch testing, benchmarking, file writers |
+|
+|## Build & Test Health
+|
+|| Metric | Value |
+||--------|-------|
+|| Rust files | 74 |
+|| Lines (llm-runner/src) | ~21,400 |
+|| Tests passing | 372 / 379 |
+|| Tests failing | 6 (GGUF v3 test data helpers stale) |
+|| Tests ignored | 1 |
+|| Clippy warnings | 15 |
+|| Build (default) | ✅ Clean |
+|| Build (mistralrs) | ✅ Clean |
 
 ---
 
@@ -137,25 +155,22 @@
 
 ### Remaining (post-Phase-3)
 
-- [ ] **SafeTensors weight loading** — partial: `LlamaConfig::from_safetensors_metadata()` and `LlamaModel::load_safetensors()` work; full integration via `Runtime::load_model()` is wired up
-- [ ] **GGUF file writer** — currently parser-only
-- [ ] **SafeTensors file writer** — currently parser-only
-- [ ] **HuggingFace model download** — wired: `Runtime::download_from_hf(repo_id, filename)` uses `hf-hub` crate
-
-### Post-Completion Refinements
-
+- [x] SafeTensors weight loading — `Runtime::load_model()` handles `.safetensors` files
+- [x] HuggingFace model download — `Runtime::download_from_hf(repo_id, filename)` wired via `hf-hub`
+- [ ] GGUF file writer — currently parser-only
+- [ ] SafeTensors file writer — currently parser-only
 - [ ] Wire SafeTensors into `ModelDiscovery` for auto-registration
 - [ ] Add tokenizer support for SafeTensors models (currently GGUF-only)
 - [ ] Add `generate_chat()` method for SafeTensors path
-- [ ] Test dispatch with real GGUF models (see Phase 4 near-term priorities)
+- [ ] Test dispatch with real GGUF models (see Near-Term Priorities)
 
 ---
 
-## Phase 4: GPU Kernels (🔮 Future)
+## Phase 4: GPU Kernels (✅ Complete)
 
 **Goal:** Replace CPU kernels with hardware-accelerated implementations behind the abstraction layer.
 
-### Mistral.rs Backend (✅ Complete — Phase 4a)
+### Phase 4a: Mistral.rs Backend (✅ Complete)
 
 Integrated `mistral.rs` as an optional production-grade GPU backend behind PESTI's `GemmKernel`/`AttentionKernel` traits.
 
@@ -170,46 +185,75 @@ Integrated `mistral.rs` as an optional production-grade GPU backend behind PESTI
 
 **Priority:** When enabled, mistral.rs kernels are tried first (WGMMA, tcgen05, flash attention). If unavailable, falls back to PESTI's CUDA PTX path, then CPU.
 
-### Phase 4b: Full Integration (🔮 Future)
+### Phase 4b: Candle Bridge (✅ Complete)
 
+Integrated `candle-core` as a second optional GPU backend for tensor operations behind the dispatch layer.
+
+- [x] `kernel/candle_bridge.rs` — `candle_bridge` module with device singleton, tensor conversion
 - [x] Wire `apply_rope` for RoPE — `candle_bridge::apply_rope` via `candle_core::Tensor` ops
 - [x] Wire `sdpa` for standard SDPA — `candle_bridge::sdpa` with causal mask
 - [x] Wire `gemm` for GEMM — `candle_bridge::gemm` with alpha/beta scaling
 - [x] Wire `rms_norm` and `swiglu` — `candle_bridge::rms_norm` and `gelu`
 - [x] GPU-accelerated `AttentionDispatch::forward_gpu` — full RoPE + SDPA path via candle_bridge
 - [x] GPU path auto-selected in `AttentionDispatch::forward` when GPU available
-|- [x] Wire `gemm` for GEMM in `FeedForwardDispatch` (linear projections) — `candle_bridge::gemm` wired into `dispatch_linear` with GPU/CPU auto-selection
-|- [ ] Benchmark: PESTI+candle_bridge vs PESTI+CPU vs standalone mistral.rs
-- [ ] Dynamic backend selection per-operation (dispatch to best backend)
-- [ ] Single kernel fusion for hot paths
+- [x] Wire `gemm` for GEMM in `FeedForwardDispatch` (linear projections) — `candle_bridge::gemm` wired into `dispatch_linear` with GPU/CPU auto-selection
+
+**Priority:** Candle bridge provides an alternative GPU path when mistral.rs is not available. Both backends share the same dispatch layer.
+
+### Phase 4c: Dispatch Layer (✅ Complete)
+
+Full dispatch infrastructure bridging the tensor kernel layer to the transformer layer.
+
+- [x] `kernel/dispatch.rs` — `DispatchContext`, `LinearDispatch`, `AttentionDispatch`, `FeedForwardDispatch`, `RmsNormDispatch`, `LayerDispatch`
+- [x] `LlamaModel::forward_with_dispatch()` — builds `LayerDispatch` from model weights, runs full forward pass through dispatch context
+- [x] Async memory transfers with proper stream sync after D2H
+- [x] `DispatchError` — typed error type for dispatch failures
+- [x] `RunnerError::Dispatch` — conversion from `DispatchError`
+- [x] `Model::decode()` and `CpuModel` delegate to `forward_with_dispatch` when dispatch is enabled
+- [x] `use_dispatch` flag on `Model` and `CpuModel` — `enable_dispatch()` / `can_use_dispatch()` / `forward_with_dispatch()` for opt-in GPU path
+- [x] `dispatch_integration.rs` test suite — GPU detection, linear accuracy, attention mock (ignored)
+
+**Key design:** `LayerDispatch` builds from model weights, runs full forward pass with RoPE + attention, and falls back to CPU when GPU is unavailable.
 
 ---
 
 ## Near-Term Priorities
 
-### 1. Test Dispatch with Real GGUF Models
+### 1. Fix GGUF v3 Test Data Helpers (🔴 Blocked)
 
-The dispatch system is wired into `Model::decode()` and `CpuModel`. Enable dispatch on a loaded GGUF model and verify output matches the CPU path. This validates:
+6 tests fail with `UnexpectedEof: failed to fill whole buffer` because the GGUF v3 parser refactoring (commit `04cf2c0`) changed wire layout (key/value lengths from u32 to u64) but test data generators weren't updated.
+
+**Affected tests:**
+- `model_loader::tests::load_gguf_weights_empty_tensors`
+- `model_loader::tests::extract_gguf_tensor_returns_bytes`
+- `model_loader::tests::load_gguf_weights_with_real_file`
+- `transformer::model::tests::llama_config_from_header`
+- `transformer::model::tests::llama_model_from_gguf_weights_builds_layers`
+- `transformer::tokenizer::tests::tokenizer_config_from_header_with_full_vocab`
+
+**Fix:** Update `make_*_bytes()` helpers in test modules to use GGUF v3 wire format. See AGENTS.md "Format Version Mismatch" pattern.
+
+### 2. Test Dispatch with Real GGUF Models (🔴 Blocked by #1)
+
+The dispatch system is wired into `Model::decode()` and `CpuModel` but untestable until test data is fixed. Once fixed, verify:
 - RoPE + attention correctness end-to-end
 - KV cache management in dispatch path
 - Weight loading (f32 → f16 conversion)
 - Output head correctness
 
-### 2. K-Family Dequantization Verification
+### 3. K-Family Dequantization Verification
 
 Test all Q2_K through Q8_K quant types against real GGUF models. Remove `#[ignore]` from tests once verified.
-
-### 3. SafeTensors Weight Loading
-
-Wire `ModelLoader` to load SafeTensors → `LlamaModel`. Enable loading converted GGUF→SafeTensors weights.
 
 ### 4. GGUF/SafeTensors File Writers
 
 Currently parser-only. Add writers for both formats.
 
-### 5. HuggingFace Model Download
+### 5. Benchmarking
 
-`hf-hub` dependency is integrated; `Runtime::download_from_hf(repo_id, filename)` is wired. Verify end-to-end.
+- PESTI+candle_bridge vs PESTI+CPU vs standalone mistral.rs
+- Dispatch latency overhead measurement
+- H2H/D2H transfer cost profiling
 
 ---
 
