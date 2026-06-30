@@ -141,7 +141,10 @@ pub fn compute_data_section_start(
     data_alignment: Option<u64>,
 ) -> u64 {
     let header_base: u64 = 4 + 4 + 8 + 8; // magic + version + tensor_count + kv_count
-    let kv_size: u64 = kv_pairs.iter().map(|p| p.raw_byte_size() as u64).sum();
+    let kv_size: u64 = match version {
+        3 => kv_pairs.iter().map(|p| p.raw_byte_size_v3() as u64).sum(),
+        _ => kv_pairs.iter().map(|p| p.raw_byte_size() as u64).sum(),
+    };
     let tensor_size: u64 = tensors.iter().map(|t| t.raw_byte_size() as u64).sum();
     let mut data_section = header_base
         .checked_add(kv_size)
