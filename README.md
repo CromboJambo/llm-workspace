@@ -36,6 +36,7 @@ The lasting contribution is the runtime, the abstractions, and the tensor interf
 | `safetensors` | SQLite-backed weight storage, SafeTensors parser, GGUF-to-SafeTensors conversion |
 | `llm-plug-in` | Weight manifest generation, inference protocol, prompt templates |
 | `llm-runner` | Inference engine with CPU transformer + llama.cpp FFI + device routing |
+| `train-extract` | Training dataset extraction pipeline with provenance tracking |
 
 ## Inference Paths
 
@@ -111,6 +112,7 @@ llm-workspace/
 │   │   └── tma_descriptor.rs TMA binding (SPECULATIVE) ⚠️
 │   └── model_loader.rs      SafeTensors weight loading
 ├── cuda-oxide/              CUDA host/device crates (one backend)
+├── train-extract/           Training dataset extraction pipeline
 └── rust-toolchain.toml      Pinned nightly
 ```
 
@@ -136,17 +138,21 @@ llm-workspace/
 
 | Metric | Value |
 |--------|-------|
-| Rust files | 74 |
-| Lines (llm-runner/src) | ~21,400 |
-| Tests passing | 372 / 379 |
-| Tests failing | 6 (GGUF v3 test data helpers stale) |
+| Rust files | 69 |
+| Lines (llm-runner/src) | ~21,377 |
+| Tests passing | 77 / 79 |
+| Tests failing | 2 (GGUF v3 test data helpers stale) |
 | Clippy warnings | 15 |
 | Build (default) | ✅ Clean |
 | Build (mistralrs) | ✅ Clean |
 
+### Metric Notes
+
+Test count discrepancy: README previously claimed 372/379; actual is 77/79 (verified 2026-06-28). Rust file count is 69 (was claimed as 74).
+
 ### Known Test Failures
 
-6 tests fail with `UnexpectedEof: failed to fill whole buffer` due to the GGUF v3 parser refactoring (commit `04cf2c0`). The parser correctly implements the v3 wire format, but test data generators (`make_*_bytes()` helpers) still produce v2 layout. See `AGENTS.md` "Format Version Mismatch" pattern for the fix procedure.
+2 tests fail with `UnexpectedEof: failed to fill whole buffer` due to the GGUF v3 parser refactoring (commit `04cf2c0`). The parser correctly implements the v3 wire format, but test data generators (`make_*_bytes()` helpers) still produce v2 layout. See `AGENTS.md` "Format Version Mismatch" pattern for the fix procedure.
 
 ## License
 
