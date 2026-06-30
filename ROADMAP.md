@@ -1,6 +1,6 @@
 |# PESTI Roadmap
 |
-|**Last updated: 2026-06-27**
+|**Last updated: 2026-06-28**
 |
 |## Status Overview
 |
@@ -13,20 +13,27 @@
 || **Phase 4a: Mistral.rs Backend** | ✅ Complete | Production GPU kernels via mistral.rs (WGMMA, tcgen05, flash attention) |
 || **Phase 4b: Candle Bridge** | ✅ Complete | candle-core tensor bridge for GPU-accelerated operations |
 || **Phase 4c: Dispatch Layer** | ✅ Complete | LayerDispatch, full forward pass, GPU/CPU auto-select |
-|| **Phase 5: Validation & Polish** | 🔮 Next | Real-model dispatch testing, benchmarking, file writers |
+|| **Phase 5: Validation & Polish** | 🔮 Next | Real-model dispatch testing, benchmarking, file writers, train-extract integration |
+| **train-extract** | ✅ Complete | Training dataset extraction pipeline with provenance tracking |
 |
 |## Build & Test Health
 |
-|| Metric | Value |
-||--------|-------|
-|| Rust files | 74 |
-|| Lines (llm-runner/src) | ~21,400 |
-|| Tests passing | 372 / 379 |
-|| Tests failing | 6 (GGUF v3 test data helpers stale) |
-|| Tests ignored | 1 |
-|| Clippy warnings | 15 |
-|| Build (default) | ✅ Clean |
-|| Build (mistralrs) | ✅ Clean |
+| **Metric** | **Value** |
+|--------|-------|
+| Rust files | 69 |
+| Lines (llm-runner/src) | ~21,377 |
+| Tests passing | 77 / 79 |
+| Tests failing | 2 (GGUF v3 test data helpers stale) |
+| Tests ignored | 0 |
+| Clippy warnings | 15 |
+| Build (default) | ✅ Clean |
+| Build (mistralrs) | ✅ Clean |
+
+### Metric Notes
+
+- Test count discrepancy: roadmap previously claimed 372/379; actual is 77/79 (verified 2026-06-28). The 372 figure was stale — either tests were deleted or the count was never accurate.
+- Rust file count: 69 (was claimed as 74). Counted via `find . -name '*.rs' -path '*/src/*' | wc -l`.
+- Clippy warnings: 15 (lib only, not including test code).
 
 ---
 
@@ -282,6 +289,7 @@ pesti/
 │   │   └── tma_descriptor.rs TMA binding (SPECULATIVE) ⚠️
 │   └── model_loader.rs      SafeTensors weight loading
 ├── cuda-oxide/              Host/device crates (one backend)
+├── train-extract/           Training dataset extraction pipeline
 └── rust-toolchain.toml      Pinned nightly
 ```
 
