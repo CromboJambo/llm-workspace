@@ -123,8 +123,20 @@ pub struct GgufKvPair {
 
 impl GgufKvPair {
     /// Total byte size of this KV pair in the GGUF file (key_len + key + type + value).
+    /// For GGUF v2 and earlier: key_len is u32 (4 bytes).
     pub fn raw_byte_size(&self) -> usize {
+        self.raw_byte_size_for_version(2)
+    }
+
+    /// Total byte size of this KV pair in GGUF v3 wire format (u64 key length).
+    pub fn raw_byte_size_v3(&self) -> usize {
+        self.raw_byte_size_for_version(3)
+    }
+
+    /// Compute raw byte size for a specific GGUF version.
+    fn raw_byte_size_for_version(&self, version: u32) -> usize {
         let key_bytes = self.key.len();
+        let key_len_bytes = if version >= 3 { 8 } else { 4 };
         let value_bytes = match &self.value {
             GgufKvValue::Uint8(..)
             | GgufKvValue::Int8(..)
@@ -154,7 +166,7 @@ impl GgufKvPair {
                 1 + 8 + arr.len() * elem_size
             }
         };
-        4 + key_bytes + 4 + value_bytes
+        key_len_bytes + key_bytes + 4 + value_bytes
     }
 }
 
