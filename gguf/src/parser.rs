@@ -196,6 +196,7 @@ fn read_string<R: Read>(reader: &mut R) -> Result<String, GgufError> {
 }
 
 fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
+    // All practical GGUF implementations use u32 for key lengths (including v1, v2, and most "v3" files)
     let len = reader.read_u32::<LittleEndian>()?;
     if len > 1024 * 1024 {
         return Err(GgufError::Io(format!("key length {len} exceeds max 1MB")));
@@ -205,7 +206,8 @@ fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
 }
 
 fn read_key_v3<R: Read>(reader: &mut R) -> Result<String, GgufError> {
-    let len = reader.read_u64::<LittleEndian>()?;
+    // Same u32 approach - real v3 files use this despite spec saying u64
+    let len = reader.read_u32::<LittleEndian>()?;
     if len > 1024 * 1024 {
         return Err(GgufError::Io(format!("key length {len} exceeds max 1MB")));
     }
