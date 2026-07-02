@@ -146,7 +146,8 @@ fn make_test_gguf(path: &PathBuf) {
     hdr.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
     for kv in &kv_pairs {
         let key_bytes = kv.key.as_bytes();
-        hdr.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
+        // V3 uses u64 for key lengths (unlike v1/v2 which use u32)
+        hdr.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
         hdr.extend_from_slice(key_bytes);
         hdr.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
         write_kv_value(&mut hdr, &kv.value);
