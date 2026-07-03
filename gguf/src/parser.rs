@@ -53,7 +53,8 @@ fn parse_v1<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
 
     let alignment = read_alignment_from_kv(&kv_pairs);
 
-    let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, alignment);
+    // Use v1 size calculation (u32 key length) for v1 format
+    let data_section_start = compute_data_section_start(1, &kv_pairs, &tensors, alignment);
 
     Ok(GgufHeader {
         version: 3,
@@ -206,8 +207,8 @@ fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
 }
 
 fn read_key_v3<R: Read>(reader: &mut R) -> Result<String, GgufError> {
-    // Same u32 approach - real v3 files use this despite spec saying u64
-    let len = reader.read_u32::<LittleEndian>()?;
+    // Per GGUF spec: KV keys are always u64 length in v3 format
+    let len = reader.read_u64::<LittleEndian>()?;
     if len > 1024 * 1024 {
         return Err(GgufError::Io(format!("key length {len} exceeds max 1MB")));
     }
