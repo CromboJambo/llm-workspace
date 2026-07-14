@@ -29,10 +29,9 @@ impl GgufVersion {
 
 /// GGUF key-value value type.
 ///
-/// Maps to GGUF spec value types:
+/// Maps to GGUF spec value types (per actual llama.cpp implementation):
 /// UINT8=0, INT8=1, UINT16=2, INT16=3, UINT32=4, INT32=5,
-/// UINT64=6, INT64=7, STRING=8, FLOAT32=9, FLOAT64=10,
-/// BOOL=11, ARRAY=12, BFLOAT16=15
+/// UINT64=6, INT64=7, FLOAT32=8, BOOL=9, STRING=10, ARRAY=11, BFLOAT16=15
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GgufValueType {
     Uint8,
@@ -64,9 +63,9 @@ impl GgufValueType {
             5 => Some(Self::Int32),
             6 => Some(Self::Uint64),
             7 => Some(Self::Int64),
-            8 => Some(Self::Float32),
-            9 => Some(Self::Bool),
-            10 => Some(Self::String),
+            8 => Some(Self::String), // llama.cpp uses 8 for STRING (not 10 per spec)
+            9 => Some(Self::Float32),
+            10 => Some(Self::Bool),
             11 => Some(Self::Array),
             12 => Some(Self::Int8Array),
             13 => Some(Self::Uint8Array),
@@ -86,9 +85,9 @@ impl GgufValueType {
             Self::Int32 => 5,
             Self::Uint64 => 6,
             Self::Int64 => 7,
-            Self::Float32 => 8,
-            Self::Bool => 9,
-            Self::String => 10,
+            Self::String => 8, // llama.cpp uses 8 for STRING (not 10 per spec)
+            Self::Float32 => 9,
+            Self::Bool => 10,
             Self::Array => 11,
             Self::Int8Array => 12,
             Self::Uint8Array => 13,
