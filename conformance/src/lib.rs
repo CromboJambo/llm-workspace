@@ -3,6 +3,7 @@
 //! Differential testing against reference implementations (llama.cpp FFI, candle-core GPU).
 //! Implements the pattern from lumen-state and pon: catch silent corruption before it reaches mainline.
 
+use pesti_gguf::parser;
 use pesti_gguf::GgufHeader;
 use std::path::{Path, PathBuf};
 
@@ -43,12 +44,19 @@ pub struct FailureInfo {
 pub fn run_conformance(
     config: &ConformanceConfig,
 ) -> Result<ConformanceResult, Box<dyn std::error::Error + Send + Sync>> {
-    let mut passed = Vec::new();
-    let mut failures = Vec::new();
-
     // Discover GGUF files in corpus directory
     let models = discover_models(&config.corpus_dir)?;
-    tracing::info!("Discovered {} models in {}", models.len(), config.corpus_dir.display());
+    
+    if !models.is_empty() {
+        tracing::info!(
+            "Discovered {} models in {}", 
+            models.len(), 
+            config.corpus_dir.display()
+        );
+    }
+
+    let mut passed: Vec<String> = vec![];
+    let mut failures: Vec<FailureInfo> = vec![];
 
     for model_path in models {
         let model_name = model_path
@@ -65,26 +73,28 @@ pub fn run_conformance(
             Err(e) => {
                 tracing::warn!("✗ FAIL: {} - {:?}", model_name, e);
                 failures.push(FailureInfo {
-                    model_name,
-                    expected_hash: "unknown".to_string(), // Would contain hash in real impl
-                    actual_hash: "divergent".to_string(),
+                    model_name: model_name.clone(),
+                    expected_hash: "unknown".to_string(),
+                    actual_hash: format!("{}", e),
                 });
             }
         }
     }
 
-    let result = ConformanceResult {
-        total_models: passed.len() + failures.len(),
-        passed,
-        failures,
-    };
-
+    let total = passed.len() + failures.len();
+    
     tracing::info!(
         "Conformance complete: {}/{} passed ({:.1}%)",
         passed.len(),
-        result.total_models,
-        (passed.len() as f64 / result.total_models as f64) * 100.0
+        total,
+        if total > 0 { (passed.len() as f64 / total as f64) * 100.0 } else { 0.0 }
     );
+
+    let result = ConformanceResult {
+        total_models: total,
+        passed: passed.clone(),
+        failures: failures.clone(),
+    };
 
     Ok(result)
 }
@@ -100,8 +110,8 @@ fn run_single_model_conformance(
     // 3. If reference_llama_cpp specified, run same input through llama.cpp CLI
     // 4. Compare outputs byte-for-byte or hash comparison
     
-    // For now, just verify the model loads without error
-    let _header = GgufHeader::parse(model_path)?;
+    // For now, just verify the model loads without error by parsing header
+    let _header = parser::parse_gguf(model_path)?;
 
     Ok(())
 }
