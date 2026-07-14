@@ -472,6 +472,7 @@ impl GgufKvValue {
             GgufKvValue::Uint8(v) => Some(*v as u32),
             GgufKvValue::Uint16(v) => Some(*v as u32),
             GgufKvValue::Uint32(v) => Some(*v),
+            GgufKvValue::Uint64(v) => Some(*v as u32),
             _ => None,
         }
     }

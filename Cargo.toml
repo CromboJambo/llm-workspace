@@ -1,6 +1,7 @@
 
 [workspace]
 members = [
+    "conformance",
     "llm-runner",
     "llm-plug-in",
     "safetensors",
