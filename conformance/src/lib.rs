@@ -3,17 +3,19 @@
 //! Differential testing against reference implementations (llama.cpp FFI, candle-core GPU).
 
 use pesti_gguf::parser;
-use std::collections::hash_map::{DefaultHasher};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Configuration for a conformance test run.
 #[derive(Debug)]
 pub struct ConformanceConfig {
+    /// Path to model corpus directory (GGUF files)
     pub corpus_dir: PathBuf,
+    /// Reference llama.cpp binary path (optional)
     pub reference_llama_cpp: Option<PathBuf>,
+    /// Expected minimum pass count (floor file threshold)
     pub floor_pass_count: usize,
 }
 
@@ -28,8 +30,11 @@ pub struct ConformanceResult {
 /// Information about a conformance failure.
 #[derive(Debug, Clone)]
 pub struct FailureInfo {
+    /// Model name/path
     pub model_name: String,
+    /// Expected output hash (from reference)
     pub expected_hash: String,
+    /// Actual pesti output hash
     pub actual_hash: String,
 }
 
@@ -50,17 +55,18 @@ pub fn run_conformance(
     let mut passed: Vec<String> = vec![];
     let mut failures: Vec<FailureInfo> = vec![];
 
-    for model_path in models {
+    for model_path in &models {
         let model_name = model_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        match run_single_model_conformance(&model_path, config) {
+        match run_single_model_conformance(model_path, config) {
             Ok(output_hash) => {
                 tracing::info!("✓ PASS: {}", model_name);
-                passed.push(format!("{} - hash={}", model_name, &output_hash[..8.min(output_hash.len())]));
+                let hash_prefix = &output_hash[..8.min(output_hash.len())];
+                passed.push(format!("{} - hash={}", model_name, hash_prefix));
             }
             Err(e) => {
                 tracing::warn!("✗ FAIL: {} - {:?}", model_name, e);
@@ -91,7 +97,7 @@ pub fn run_conformance(
     Ok(result)
 }
 
-/// Run conformance test on a single model using pesti inference.
+/// Run conformance test on a single model using pesti inference + optional reference comparison.
 fn run_single_model_conformance(
     model_path: &Path,
     config: &ConformanceConfig,
@@ -99,10 +105,10 @@ fn run_single_model_conformance(
     // Step 1: Load GGUF header to get model config
     let _header = parser::parse_gguf(model_path)?;
 
-    // Step 2: Check if we have a reference llama.cpp binary
+    // Step 2: Check if we have a reference llama.cpp binary for differential testing
     let reference_output = if let Some(ref llama_cpp) = &config.reference_llama_cpp {
         if llama_cpp.exists() {
-            tracing::info!("Running llama.cpp with model {:?}", model_path);
+            tracing::info!("Running llama.cpp reference with model {:?}", model_path);
             let output = Command::new(llama_cpp.as_path())
                 .arg("-m")
                 .arg(model_path.to_str().unwrap_or_default())
@@ -118,7 +124,10 @@ fn run_single_model_conformance(
                 let stdout = String::from_utf8(output.stdout)?;
                 Some(stdout)
             } else {
-                tracing::warn!("llama.cpp CLI failed: {}", String::from_utf8_lossy(&output.stderr));
+                tracing::warn!(
+                    "llama.cpp CLI failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
                 None
             }
         } else {
@@ -134,7 +143,7 @@ fn run_single_model_conformance(
         Some("".to_string())
     };
 
-    // Step 3: Run pesti inference (placeholder)
+    // Step 3: Run actual pesti inference via LlamaModel.load_gguf() + forward pass
     let pesti_output = run_pesti_inference(model_path)?;
 
     // Step 4: Compare outputs if we have reference
@@ -160,6 +169,93 @@ fn run_single_model_conformance(
     Ok(format!("{:016x}", hash))
 }
 
+/// Run actual pesti inference on a model using LlamaModel.load_gguf() + forward pass.
+fn run_pesti_inference(model_path: &Path) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // Load the model via pesti-runner's LlamaModel (pure-Rust transformer path)
+    let model = pesti_runner::LlamaModel::load_gguf(model_path)
+        .map_err(|e| format!("Failed to load model: {}", e))?;
+
+    let config = &model.config;
+    let batch_size = 1usize;
+    let seq_len = 4usize;  // Small context for conformance test (deterministic)
+
+    // Initialize token embeddings from loaded weights
+    let embed_dim = config.embed_dim;
+    let vocab_size = model.vocab_size as usize;
+
+    // Create a simple input: tokens [0, 1, 2, ..., seq_len-1]
+    let input_tokens: Vec<i32> = (0..seq_len).map(|i| i as i32).collect();
+
+    // Get token embeddings from loaded weights
+    let embed_weights = model.token_embeddings.as_ref()
+        .ok_or("Model missing token embeddings")?;
+
+    // Build input tensor: [batch_size, seq_len] -> [seq_len * embed_dim]
+    // Each row is the embedding for one token
+    let mut input_tensor = Vec::with_capacity(seq_len * embed_dim);
+    for &token in &input_tokens {
+        if (token as usize) < vocab_size && !embed_weights.weight.is_empty() {
+            // Extract embedding row from weight matrix
+            // Weight layout: [vocab_size, embed_dim] stored flat
+            let offset = token as usize * embed_dim;
+            let end = offset + embed_dim;
+            if end <= embed_weights.weight.len() {
+                input_tensor.extend_from_slice(&embed_weights.weight[offset..end]);
+            } else {
+                return Err(format!(
+                    "Embedding index out of range: token={}, offset={}, weight_len={}",
+                    token, end, embed_weights.weight.len()
+                ).into());
+            }
+        } else {
+            // Pad with zeros for unknown tokens or empty vocab
+            input_tensor.extend(vec![0.0f32; embed_dim]);
+        }
+    }
+
+    // Run forward pass through transformer layers using layer.forward() API
+    let mut hidden = input_tensor;
+
+    for (layer_idx, layer) in model.layers.iter().enumerate() {
+        tracing::debug!(
+            "Running layer {} of {}",
+            layer_idx + 1,
+            config.num_layers
+        );
+
+        // Use TransformerLayer::forward which handles:
+        // - attention_norm -> attention -> residual
+        // - ffn_norm -> feed_forward -> residual
+        hidden = layer.forward(&hidden, batch_size, seq_len, 0);
+    }
+
+    // Apply final norm if available (qwen2/qwen3)
+    if let Some(final_norm) = &model.final_norm {
+        hidden = final_norm.forward(&hidden, batch_size);
+    }
+
+    // Compute output logits via LM head
+    let output_logits = model.output.as_ref()
+        .map(|output_layer| output_layer.forward(&hidden, batch_size))
+        .ok_or("Model missing output (LM head)")?;
+
+    // Sample the highest probability token for conformance hash
+    let sampled_token = argmax(&output_logits);
+    
+    // Build a deterministic output string from the forward pass
+    let output_str = format!(
+        "peasti: tokens={} embed_dim={} layers={} heads={} kv_heads={} sampled_token={}",
+        input_tokens.len(),
+        config.embed_dim,
+        config.num_layers,
+        config.num_heads,
+        config.num_kv_heads,
+        sampled_token
+    );
+
+    Ok(output_str)
+}
+
 /// Simple 64-bit hash for output comparison.
 fn simple_hash<T: Hash + ?Sized>(data: &T) -> u64 {
     let mut s = DefaultHasher::new();
@@ -167,16 +263,13 @@ fn simple_hash<T: Hash + ?Sized>(data: &T) -> u64 {
     s.finish()
 }
 
-/// Run conformance test on a single model using pesti inference.
-fn run_pesti_inference(model_path: &Path) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    // For now, read first 1024 bytes as "output" to simulate inference
-    let file = std::fs::File::open(model_path)?;
-    let mut reader = io::BufReader::new(file);
-    let mut buffer = [0u8; 1024];
-    let _bytes_read = reader.read(&mut buffer[..])?;
-
-    // Simulate token output as string (in real impl, this calls pesti-runner LlamaModel)
-    Ok("The quick brown fox jumps over the lazy dog. Test complete.".to_string())
+/// Find the index of the maximum value in a slice (argmax).
+fn argmax(v: &[f32]) -> usize {
+    v.iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0)
 }
 
 /// Discover all .gguf files in a directory (recursively).
