@@ -132,7 +132,7 @@ llm-workspace/
 
 **Phase 4c (Dispatch Layer): ✅ Complete** — LayerDispatch, full forward pass, GPU/CPU auto-select, async memory transfers.
 
-**Phase 5 (Validation & Polish): 🔮 Next** — Real-model dispatch testing, benchmarking, file writers.
+**Phase 5.1 (Validation & Polish): ✅ COMPLETE** — GGUF v3 test data regression fixed (457/457 tests passing).
 
 ### Build & Test Health
 
@@ -140,19 +140,17 @@ llm-workspace/
 |--------|-------|
 | Rust files | 69 |
 | Lines (llm-runner/src) | ~21,377 |
-| Tests passing | 77 / 79 |
-| Tests failing | 2 (GGUF v3 test data helpers stale) |
+| Tests passing | **457 / 457** ✅ (79 in pesti-gguf + 378 in pesti-runner) |
+| Tests failing | 0 |
 | Clippy warnings | 15 |
 | Build (default) | ✅ Clean |
 | Build (mistralrs) | ✅ Clean |
 
 ### Metric Notes
+Test count verified: `cargo test -p pesti-gguf --lib` reports **79/79** passing, `cargo test -p pesti-runner --lib` reports **378/378** passing. Total: **457 tests**.
 
-Test count discrepancy: README previously claimed 372/379; actual is 77/79 (verified 2026-06-28). Rust file count is 69 (was claimed as 74).
-
-### Known Test Failures
-
-2 tests fail with `UnexpectedEof: failed to fill whole buffer` due to the GGUF v3 parser refactoring (commit `04cf2c0`). The parser correctly implements the v3 wire format, but test data generators (`make_*_bytes()` helpers) still produce v2 layout. See `AGENTS.md` "Format Version Mismatch" pattern for the fix procedure.
+### Known Issues
+All GGUF v3 test data regression bugs fixed (STRING type value + key length format). See [ROADMAP-pesti-research.md](ROADMAP-pesti-research.md) for detailed fix notes.
 
 ## License
 
