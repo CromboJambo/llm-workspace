@@ -1084,15 +1084,15 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
-            kv_pair_u32("llama.context_length", 4096),
-            kv_pair_u32("llama.embedding_length", 64),
-            kv_pair_u32("llama.block_count", 2),
-            kv_pair_u32("llama.attention.head_count", 4),
-            kv_pair_u32("llama.attention.head_count_kv", 2),
-            kv_pair_u32("llama.feed_forward_length", 128),
+            kv_pair_u64("llama.context_length", 4096),
+            kv_pair_u64("llama.embedding_length", 64),
+            kv_pair_u64("llama.block_count", 2),
+            kv_pair_u64("llama.attention.head_count", 4),
+            kv_pair_u64("llama.attention.head_count_kv", 2),
+            kv_pair_u64("llama.feed_forward_length", 128),
             kv_pair_i32("llama.rope.dimension_count", 64),
             kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
-            kv_pair_u32("tokenizer.ggml.tokens", 32000),
+            kv_pair_u64("tokenizer.ggml.tokens", 32000),
         ];
 
         // Tensor metadata — compute sizes first
@@ -1266,11 +1266,11 @@ mod tests {
         }
     }
 
-    fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
+    fn kv_pair_u64(key: &str, value: u64) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: pesti_gguf::GgufValueType::Uint32,
-            value: pesti_gguf::GgufKvValue::Uint32(value),
+            value_type: pesti_gguf::GgufValueType::Uint64,
+            value: pesti_gguf::GgufKvValue::Uint64(value),
         }
     }
 
@@ -1411,9 +1411,9 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
             name: "tok_embeddings.weight".to_string(),
@@ -1528,12 +1528,12 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "F16"),
-            kv_pair_u32("llama.context_length", 4096),
-            kv_pair_u32("llama.embedding_length", 64),
-            kv_pair_u32("llama.block_count", 2),
-            kv_pair_u32("llama.attention.head_count", 4),
-            kv_pair_u32("llama.attention.head_count_kv", 2),
-            kv_pair_u32("llama.feed_forward_length", 128),
+            kv_pair_u64("llama.context_length", 4096),
+            kv_pair_u64("llama.embedding_length", 64),
+            kv_pair_u64("llama.block_count", 2),
+            kv_pair_u64("llama.attention.head_count", 4),
+            kv_pair_u64("llama.attention.head_count_kv", 2),
+            kv_pair_u64("llama.feed_forward_length", 128),
             // No rope.dimension_count — should fall back to head_dim
             kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
         ];
@@ -1586,15 +1586,15 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "gemma"),
             kv_pair_str("general.file_type", "F16"),
-            kv_pair_u32("embedding_length", 64),
-            kv_pair_u32("attention.head_count", 4),
-            kv_pair_u32("context_length", 4096),
-            kv_pair_u32("gemma.embedding_length", 64),
-            kv_pair_u32("gemma.block_count", 2),
-            kv_pair_u32("gemma.attention.head_count", 4),
-            kv_pair_u32("gemma.attention.head_count_kv", 2),
-            kv_pair_u32("gemma.feed_forward_length", 128),
-            kv_pair_u32("gemma.attention.layer_norm_rms_epsilon", 1000000u32), // gemma uses 1e6 scaled by 1e6
+            kv_pair_u64("embedding_length", 64),
+            kv_pair_u64("attention.head_count", 4),
+            kv_pair_u64("context_length", 4096),
+            kv_pair_u64("gemma.embedding_length", 64),
+            kv_pair_u64("gemma.block_count", 2),
+            kv_pair_u64("gemma.attention.head_count", 4),
+            kv_pair_u64("gemma.attention.head_count_kv", 2),
+            kv_pair_u64("gemma.feed_forward_length", 128),
+            kv_pair_u64("gemma.attention.layer_norm_rms_epsilon", 1000000u64), // gemma uses 1e6 scaled by 1e6
             kv_pair_i32("gemma.rope.dimension_count", 64),
         ];
         let tensors: Vec<GgufTensorInfo> = vec![
@@ -1713,18 +1713,18 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "qwen2"),
             kv_pair_str("general.file_type", "F16"),
-            kv_pair_u32("embedding_length", 64),
-            kv_pair_u32("attention.head_count", 4),
-            kv_pair_u32("context_length", 4096),
-            kv_pair_u32("qwen2.context_length", 4096),
-            kv_pair_u32("qwen2.embedding_length", 64),
-            kv_pair_u32("qwen2.block_count", 2),
-            kv_pair_u32("qwen2.attention.head_count", 4),
-            kv_pair_u32("qwen2.attention.head_count_kv", 2),
-            kv_pair_u32("qwen2.feed_forward_length", 128),
-            kv_pair_u32("qwen2.attention.layer_norm_rms_epsilon", 1000000u32),
+            kv_pair_u64("embedding_length", 64),
+            kv_pair_u64("attention.head_count", 4),
+            kv_pair_u64("context_length", 4096),
+            kv_pair_u64("qwen2.context_length", 4096),
+            kv_pair_u64("qwen2.embedding_length", 64),
+            kv_pair_u64("qwen2.block_count", 2),
+            kv_pair_u64("qwen2.attention.head_count", 4),
+            kv_pair_u64("qwen2.attention.head_count_kv", 2),
+            kv_pair_u64("qwen2.feed_forward_length", 128),
+            kv_pair_u64("qwen2.attention.layer_norm_rms_epsilon", 1000000u64),
             kv_pair_i32("qwen2.rope.dimension_count", 64),
-            kv_pair_u32("qwen2.num_key_value_heads", 2),
+            kv_pair_u64("qwen2.num_key_value_heads", 2),
         ];
         let tensors: Vec<GgufTensorInfo> = vec![
             GgufTensorInfo {
@@ -1851,15 +1851,15 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "phi3"),
             kv_pair_str("general.file_type", "F16"),
-            kv_pair_u32("embedding_length", 64),
-            kv_pair_u32("attention.head_count", 4),
-            kv_pair_u32("context_length", 4096),
-            kv_pair_u32("phi3.context_length", 4096),
-            kv_pair_u32("phi3.embedding_length", 64),
-            kv_pair_u32("phi3.block_count", 2),
-            kv_pair_u32("phi3.attention.head_count", 4),
-            kv_pair_u32("phi3.attention.head_count_kv", 2),
-            kv_pair_u32("phi3.feed_forward_length", 128),
+            kv_pair_u64("embedding_length", 64),
+            kv_pair_u64("attention.head_count", 4),
+            kv_pair_u64("context_length", 4096),
+            kv_pair_u64("phi3.context_length", 4096),
+            kv_pair_u64("phi3.embedding_length", 64),
+            kv_pair_u64("phi3.block_count", 2),
+            kv_pair_u64("phi3.attention.head_count", 4),
+            kv_pair_u64("phi3.attention.head_count_kv", 2),
+            kv_pair_u64("phi3.feed_forward_length", 128),
             kv_pair_f32("phi3.attention.layer_norm_epsilon", 1e-5),
             kv_pair_i32("phi3.rope.dimension_count", 64),
         ];
@@ -1956,9 +1956,9 @@ mod tests {
         // Test llama prefix
         let kv_llama: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_llama = GgufHeader {
             version: 3,
@@ -1975,9 +1975,9 @@ mod tests {
         // Test gemma prefix
         let kv_gemma: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "gemma"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_gemma = GgufHeader {
             version: 3,
@@ -1994,9 +1994,9 @@ mod tests {
         // Test qwen2 prefix
         let kv_qwen: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "qwen2"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_qwen = GgufHeader {
             version: 3,
@@ -2013,9 +2013,9 @@ mod tests {
         // Test phi3 prefix (llama-style)
         let kv_phi3: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "phi3"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_phi3 = GgufHeader {
             version: 3,
@@ -2034,9 +2034,9 @@ mod tests {
     fn llama_config_embedding_output_names_per_arch() -> () {
         let kv_llama: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_llama = GgufHeader {
             version: 3,
@@ -2051,9 +2051,9 @@ mod tests {
 
         let kv_gemma: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "gemma"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_gemma = GgufHeader {
             version: 3,
@@ -2068,9 +2068,9 @@ mod tests {
 
         let kv_qwen: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "qwen2"),
-            kv_pair_u32("embedding_length", 4096),
-            kv_pair_u32("attention.head_count", 32),
-            kv_pair_u32("context_length", 4096),
+            kv_pair_u64("embedding_length", 4096),
+            kv_pair_u64("attention.head_count", 32),
+            kv_pair_u64("context_length", 4096),
         ];
         let h_qwen = GgufHeader {
             version: 3,

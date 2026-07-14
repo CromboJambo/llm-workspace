@@ -902,11 +902,11 @@ mod tests {
         let path = std::path::PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
         let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
-            kv_pair_u32("llama.context_length", 2048),
-            kv_pair_u32("llama.embedding_length", 64),
-            kv_pair_u32("llama.block_count", 4),
-            kv_pair_u32("llama.attention.head_count", 8),
-            kv_pair_u32("llama.attention.head_count_kv", 4),
+            kv_pair_u64("llama.context_length", 2048u64),
+            kv_pair_u64("llama.embedding_length", 64u64),
+            kv_pair_u64("llama.block_count", 4u64),
+            kv_pair_u64("llama.attention.head_count", 8u64),
+            kv_pair_u64("llama.attention.head_count_kv", 4u64),
         ];
         let tensors: Vec<pesti_gguf::GgufTensorInfo> = vec![pesti_gguf::GgufTensorInfo {
             name: "tok_embeddings.weight".to_string(),
@@ -1334,11 +1334,11 @@ fn kv_pair_str(key: &str, value: &str) -> pesti_gguf::GgufKvPair {
     }
 }
 
-fn kv_pair_u32(key: &str, value: u32) -> pesti_gguf::GgufKvPair {
+fn kv_pair_u64(key: &str, value: u64) -> pesti_gguf::GgufKvPair {
     pesti_gguf::GgufKvPair {
         key: key.to_string(),
-        value_type: pesti_gguf::GgufValueType::Uint32,
-        value: pesti_gguf::GgufKvValue::Uint32(value),
+        value_type: pesti_gguf::GgufValueType::Uint64,
+        value: pesti_gguf::GgufKvValue::Uint64(value),
     }
 }
 
