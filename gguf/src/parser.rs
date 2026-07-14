@@ -688,16 +688,8 @@ mod tests {
         let key = "general.architecture";
         buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
-        buf.extend_from_slice(&(5u32).to_le_bytes()); // "llama" length
-        buf.extend_from_slice(b"llama");
-
-        // KV pair 2: general.file_type = 1 (F16) (uint32)
-        let key = "general.architecture";
-        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
-        buf.extend_from_slice(&(5u32).to_le_bytes()); // "llama" length
+        buf.extend_from_slice(&(8u32).to_le_bytes()); // STRING type (llama.cpp uses 8, not 10 per spec)
+        buf.extend_from_slice(&(5u64).to_le_bytes()); // "llama" length (v3 uses u64 for string values)
         buf.extend_from_slice(b"llama");
 
         // KV pair 2: general.file_type = 1 (F16) (uint32)
@@ -707,18 +699,11 @@ mod tests {
         buf.extend_from_slice(&(4u32).to_le_bytes()); // UINT32 type
         buf.extend_from_slice(&1u32.to_le_bytes());
 
-        // KV pair 3: general.alignment was already written above, skip this duplicate
-        let key = "general.alignment";
-        buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
-        buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(4u32).to_le_bytes()); // UINT32 type
-        buf.extend_from_slice(&32u32.to_le_bytes());
-
         // Tensor 1: token_embd.weight (shape [4096], dtype F16, offset 0)
         let name = "token_embd.weight";
-        buf.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&(name.len() as u64).to_le_bytes()); // v3 spec uses u64 for tensor names
         buf.extend_from_slice(name.as_bytes());
-        buf.extend_from_slice(&1u32.to_le_bytes()); // 1 dim
+        buf.extend_from_slice(&1u32.to_le_bytes()); // 1 dim (v3 spec: tensor ndims is u32)
         buf.extend_from_slice(&4096u64.to_le_bytes()); // shape[0]
         buf.extend_from_slice(&1u32.to_le_bytes()); // dtype F16
         buf.extend_from_slice(&0u64.to_le_bytes()); // offset
@@ -853,7 +838,7 @@ mod tests {
         let key = "general.architecture";
         buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
+        buf.extend_from_slice(&(8u32).to_le_bytes()); // STRING type (llama.cpp uses 8, not 10 per spec)
         buf.extend_from_slice(&(5u64).to_le_bytes()); // "llama" length
         buf.extend_from_slice(b"llama");
 
@@ -888,7 +873,7 @@ mod tests {
         let key = "general.architecture";
         buf.extend_from_slice(&(key.len() as u32).to_le_bytes());
         buf.extend_from_slice(key.as_bytes());
-        buf.extend_from_slice(&(10u32).to_le_bytes()); // STRING type
+        buf.extend_from_slice(&(8u32).to_le_bytes()); // STRING type (llama.cpp uses 8, not 10 per spec)
         buf.extend_from_slice(&(5u64).to_le_bytes()); // "qwen2" length
         buf.extend_from_slice(b"qwen2");
 
