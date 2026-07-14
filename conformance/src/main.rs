@@ -1,9 +1,7 @@
-//! PESTI Conformance Test Runner
-//!
-//! Usage: conformance run --corpus ./models/
+//! PESTI Conformance Test Runner Binary
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use pesti_conformance::ConformanceConfig;
 
 #[derive(Parser)]
 #[command(name = "pesti-conformance")]
@@ -19,29 +17,28 @@ enum Commands {
     Run {
         /// Path to GGUF model corpus directory
         #[arg(short, long, default_value = "./models/")]
-        corpus_dir: PathBuf,
+        corpus_dir: std::path::PathBuf,
         /// Reference llama.cpp binary path (optional)
         #[arg(long)]
-        reference_llama_cpp: Option<PathBuf>,
+        reference_llama_cpp: Option<std::path::PathBuf>,
         /// Minimum passing count threshold
         #[arg(long, default_value = "0")]
         floor_pass_count: usize,
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match &cli.command {
         Commands::Run { corpus_dir, reference_llama_cpp, floor_pass_count } => {
-            let config = conformance::ConformanceConfig {
+            let config = ConformanceConfig {
                 corpus_dir: corpus_dir.clone(),
                 reference_llama_cpp: reference_llama_cpp.clone(),
                 floor_pass_count: *floor_pass_count,
             };
 
-            match conformance::run_conformance(&config) {
+            match pesti_conformance::run_conformance(&config) {
                 Ok(result) => {
                     println!(
                         "Conformance complete: {}/{} passed ({:.1}%)",
@@ -51,8 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
 
                     for failure in &result.failures {
-                        eprintln!("FAILURE: {} - expected={} actual={}", 
-                            failure.model_name, failure.expected_hash, failure.actual_hash);
+                        eprintln!(
+                            "FAILURE: {} - expected={} actual={}",
+                            failure.model_name, failure.expected_hash, failure.actual_hash
+                        );
                     }
                 }
                 Err(e) => {
