@@ -978,7 +978,7 @@ mod tests {
         let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("general.file_type", "Q4_0"),
-            kv_pair_u32("general.alignment", 32),
+            kv_pair_u64("general.alignment", 32),
         ];
 
         // Tensor metadata
@@ -1062,7 +1062,7 @@ mod tests {
 
         let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
-            kv_pair_u32("general.alignment", 32),
+            kv_pair_u64("general.alignment", 32),
         ];
 
         let tensor_info = pesti_gguf::GgufTensorInfo {
@@ -1119,7 +1119,7 @@ mod tests {
 
         let kv_pairs: Vec<pesti_gguf::GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
-            kv_pair_u32("general.alignment", 32),
+            kv_pair_u64("general.alignment", 32),
         ];
 
         let tensor_info = pesti_gguf::GgufTensorInfo {
@@ -1179,11 +1179,11 @@ mod tests {
         }
     }
 
-    fn kv_pair_u32(key: &str, value: u32) -> pesti_gguf::GgufKvPair {
+    fn kv_pair_u64(key: &str, value: u64) -> pesti_gguf::GgufKvPair {
         pesti_gguf::GgufKvPair {
             key: key.to_string(),
-            value_type: pesti_gguf::GgufValueType::Uint32,
-            value: pesti_gguf::GgufKvValue::Uint32(value),
+            value_type: pesti_gguf::GgufValueType::Uint64,
+            value: pesti_gguf::GgufKvValue::Uint64(value),
         }
     }
 

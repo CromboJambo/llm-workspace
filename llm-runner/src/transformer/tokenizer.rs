@@ -206,8 +206,8 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("tokenizer.ggml.model", "llama"),
-            kv_pair_u32("tokenizer.ggml.tokens", 5),
-            kv_pair_u32("tokenizer.ggml.bos_token_id", 1),
+            kv_pair_u64("tokenizer.ggml.tokens", 5),
+            kv_pair_u64("tokenizer.ggml.bos_token_id", 1),
         ];
 
         // Tensor metadata
@@ -264,11 +264,11 @@ mod tests {
         }
     }
 
-    fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
+    fn kv_pair_u64(key: &str, value: u64) -> GgufKvPair {
         GgufKvPair {
             key: key.to_string(),
-            value_type: pesti_gguf::GgufValueType::Uint32,
-            value: pesti_gguf::GgufKvValue::Uint32(value),
+            value_type: pesti_gguf::GgufValueType::Uint64,
+            value: pesti_gguf::GgufKvValue::Uint64(value),
         }
     }
 
@@ -453,13 +453,13 @@ mod tests {
         let kv_pairs: Vec<GgufKvPair> = vec![
             kv_pair_str("general.architecture", "llama"),
             kv_pair_str("tokenizer.ggml.model", "llama"),
-            kv_pair_u32("tokenizer.ggml.tokens", 3),
+            kv_pair_u64("tokenizer.ggml.tokens", 3),
             kv_pair_str("tokenizer.ggml.tokens.0", "<s>"),
             kv_pair_str("tokenizer.ggml.tokens.1", "</s>"),
             kv_pair_str("tokenizer.ggml.tokens.2", "hello"),
-            kv_pair_u32("tokenizer.ggml.bos_token_id", 0),
-            kv_pair_u32("tokenizer.ggml.eos_token_id", 1),
-            kv_pair_u32("tokenizer.ggml.unk_token_id", 2),
+            kv_pair_u64("tokenizer.ggml.bos_token_id", 0),
+            kv_pair_u64("tokenizer.ggml.eos_token_id", 1),
+            kv_pair_u64("tokenizer.ggml.unk_token_id", 2),
             kv_pair_str("tokenizer.ggml.pre", "default"),
             kv_pair_str("tokenizer.ggml.postprocess", "none"),
             kv_pair_str("tokenizer.ggml.token_type", "byte"),

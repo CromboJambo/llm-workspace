@@ -16,7 +16,7 @@ fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
     }
 }
 
-fn kv_pair_u32(key: &str, value: u32) -> GgufKvPair {
+fn kv_pair_u64(key: &str, value: u32) -> GgufKvPair {
     GgufKvPair {
         key: key.to_string(),
         value_type: GgufValueType::Uint32,
@@ -110,16 +110,16 @@ fn make_test_gguf(path: &PathBuf) {
     let kv_pairs: Vec<GgufKvPair> = vec![
         kv_pair_str("general.architecture", "llama"),
         kv_pair_str("general.file_type", "F16"),
-        kv_pair_u32("general.alignment", 32),
-        kv_pair_u32("llama.context_length", 4096),
-        kv_pair_u32("llama.embedding_length", 64),
-        kv_pair_u32("llama.block_count", 1),
-        kv_pair_u32("llama.attention.head_count", 4),
-        kv_pair_u32("llama.attention.head_count_kv", 2),
-        kv_pair_u32("llama.feed_forward_length", 128),
-        kv_pair_u32("llama.rope.dimension_count", 64),
+        kv_pair_u64("general.alignment", 32),
+        kv_pair_u64("llama.context_length", 4096),
+        kv_pair_u64("llama.embedding_length", 64),
+        kv_pair_u64("llama.block_count", 1),
+        kv_pair_u64("llama.attention.head_count", 4),
+        kv_pair_u64("llama.attention.head_count_kv", 2),
+        kv_pair_u64("llama.feed_forward_length", 128),
+        kv_pair_u64("llama.rope.dimension_count", 64),
         kv_pair_f32("llama.attention.layer_norm_rms_epsilon", 1e-5),
-        kv_pair_u32("tokenizer.ggml.model", 2),
+        kv_pair_u64("tokenizer.ggml.model", 2),
         kv_pair_array("tokenizer.ggml.tokens", dummy_tokens),
     ];
 
