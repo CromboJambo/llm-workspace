@@ -767,9 +767,9 @@ mod tests {
         assert_eq!(GgufValueType::from_u32(0), Some(GgufValueType::Uint8));
         assert_eq!(GgufValueType::from_u32(6), Some(GgufValueType::Uint64));
         assert_eq!(GgufValueType::from_u32(7), Some(GgufValueType::Int64));
-        assert_eq!(GgufValueType::from_u32(8), Some(GgufValueType::Float32));
-        assert_eq!(GgufValueType::from_u32(9), Some(GgufValueType::Bool));
-        assert_eq!(GgufValueType::from_u32(10), Some(GgufValueType::String));
+        assert_eq!(GgufValueType::from_u32(8), Some(GgufValueType::String)); // llama.cpp practical format
+        assert_eq!(GgufValueType::from_u32(9), Some(GgufValueType::Float32));
+        assert_eq!(GgufValueType::from_u32(10), Some(GgufValueType::Bool));
         assert_eq!(GgufValueType::from_u32(11), Some(GgufValueType::Array));
         assert_eq!(GgufValueType::from_u32(12), Some(GgufValueType::Int8Array));
         assert_eq!(GgufValueType::from_u32(13), Some(GgufValueType::Uint8Array));
