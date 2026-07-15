@@ -186,9 +186,9 @@ fn read_bytes<R: Read>(reader: &mut R, len: usize) -> Result<Vec<u8>, GgufError>
 }
 
 fn read_string_v3<R: Read>(reader: &mut R) -> Result<String, GgufError> {
-    // Practical llama.cpp GGUF v3 files use u32 for key lengths but u64 for string value lengths.
+    // Practical llama.cpp GGUF v3 files use u64 for string lengths (tensor names and KV values)
     let len = reader.read_u64::<LittleEndian>()?;
-    if len > 1024 * 1024 {
+    if len > 1024 * 1024u64 {
         return Err(GgufError::Io(format!(
             "string length {len} exceeds max 1MB"
         )));
@@ -220,9 +220,9 @@ fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
 }
 
 fn read_key_v3<R: Read>(reader: &mut R) -> Result<String, GgufError> {
-    // Practical llama.cpp v3 files (like Qwen3.6) use u32 for key lengths, not u64.
-    let len = reader.read_u32::<LittleEndian>()?;
-    if len > 1024 * 1024 {
+    // Practical llama.cpp GGUF v3 files use u64 for key lengths (with alignment padding to 8 bytes)
+    let len = reader.read_u64::<LittleEndian>()?;
+    if len > 1024 * 1024u64 {
         return Err(GgufError::Io(format!("key length {} exceeds max 1MB", len)));
     }
     let bytes = read_bytes(reader, len as usize)?;
@@ -316,7 +316,7 @@ fn read_kv_value<R: Read>(
             Ok(GgufKvValue::Bool(v))
         }
         GgufValueType::String => {
-            // Qwen3.6 and some llama.cpp v3 files use u64 for string length prefixes
+            // Practical llama.cpp GGUF v3 files use u64 for string value length prefixes
             let len = reader.read_u64::<LittleEndian>()?;
             if len > 1024 * 1024u64 {
                 return Err(GgufError::Io(format!(
