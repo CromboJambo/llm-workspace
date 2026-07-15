@@ -24,6 +24,9 @@ enum Commands {
         /// Minimum passing count threshold
         #[arg(long, default_value = "0")]
         floor_pass_count: usize,
+        /// Floor file for CI gating (optional)
+        #[arg(long)]
+        floor_file: Option<std::path::PathBuf>,
     },
 }
 
@@ -31,11 +34,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::Run { corpus_dir, reference_llama_cpp, floor_pass_count } => {
+        Commands::Run {
+            corpus_dir,
+            reference_llama_cpp,
+            floor_pass_count,
+            floor_file,
+        } => {
             let config = ConformanceConfig {
                 corpus_dir: corpus_dir.clone(),
                 reference_llama_cpp: reference_llama_cpp.clone(),
                 floor_pass_count: *floor_pass_count,
+                floor_file: floor_file.clone(),
             };
 
             match pesti_conformance::run_conformance(&config) {
@@ -55,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    eprintln!("Error: {:?}", e);
                     std::process::exit(1);
                 }
             }
