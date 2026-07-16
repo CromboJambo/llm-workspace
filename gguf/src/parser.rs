@@ -17,7 +17,7 @@ pub fn parse_gguf(path: &Path) -> Result<GgufHeader, GgufError> {
     parse_gguf_reader(reader)
 }
 
-pub fn parse_gguf_reader<R: Read>(mut reader: R) -> Result<GgufHeader, GgufError> {
+pub fn parse_gguf_reader<R: Read + std::io::Seek>(mut reader: R) -> Result<GgufHeader, GgufError> {
     let magic = read_bytes(&mut reader, 4)?;
     if magic.as_slice() != GGUF_MAGIC {
         return Err(GgufError::InvalidMagic(format!(
@@ -92,9 +92,22 @@ fn parse_v2<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
     })
 }
 
-fn parse_v3<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
+fn parse_v3<R>(reader: &mut R) -> Result<GgufHeader, GgufError>
+where
+    R: Read + std::io::Seek,
+{
     let tensor_count = reader.read_u64::<LittleEndian>()?;
     let kv_count = reader.read_u64::<LittleEndian>()?;
+
+    // Skip alignment padding after header - scan for first KV key (ASCII letter)
+    for _ in 0..1024 {
+        let b = reader.read_u8()?;
+        if (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') {
+            reader.seek(std::io::SeekFrom::Current(-1))?;
+            break;
+        }
+    }
+
     eprintln!(
         "parse_v3: tensor_count={}, kv_count={}",
         tensor_count, kv_count
@@ -242,10 +255,52 @@ fn read_kv_pair<R: Read>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
     })
 }
 
-fn read_kv_pair_v3<R: Read>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
-    let key = read_key_v3(reader)?;
-    eprintln!("KV pair v3 BEFORE reading value_type: key='{}'", key);
-    let value_type_raw = reader.read_u32::<LittleEndian>()?;
+fn read_kv_pair_v3<R>(reader: &mut R) -> Result<GgufKvPair, GgufError>
+where
+    R: Read + std::io::Seek,
+{
+    // llama.cpp v3 format: [key_string][value_type(u8)][string_len_or_count]
+    
+    // Skip alignment padding between KVs - look for start of next key (ASCII letter)
+    let mut chars_read = 0;
+    loop {
+        let b = reader.read_u8()?;
+        
+        if (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') {
+            // Found start of next key, seek back to include it in key reading below
+            reader.seek(std::io::SeekFrom::Current(-1))?;
+            break;
+        } else if chars_read > 256 {
+            // Safety: don't loop forever
+            break;
+        }
+        chars_read += 1;
+    }
+
+    let mut key_buf = Vec::new();
+    
+    eprintln!("DEBUG START KEY LOOP");
+    loop {
+        let b = reader.read_u8()?;
+        
+        if b <= 15 && !key_buf.is_empty() {
+            eprintln!("DEBUG: Found value_type=0x{:02x} after {} bytes", b, key_buf.len());
+            reader.seek(std::io::SeekFrom::Current(-1))?;
+            break;
+        } else if (b as char).is_ascii_alphabetic() && !key_buf.is_empty() {
+            eprintln!("DEBUG: Key byte 0x{:02x}", b);
+        } else if key_buf.len() == 0 && (b as char).is_ascii_alphabetic() {
+            eprintln!("DEBUG: First key byte 0x{:02x} = '{}'", b, b as char);
+        }
+        key_buf.push(b);
+    }
+    
+    eprintln!("DEBUG Key buffer len={}, content={:?}", key_buf.len(), String::from_utf8_lossy(&key_buf));
+
+    let key = String::from_utf8(key_buf).map_err(GgufError::Utf8)?;
+    
+    // Real llama.cpp v3 uses u8 for value_type (not u32)
+    let value_type_raw = reader.read_u8()? as u32;
     eprintln!("KV pair v3: raw_type={}", value_type_raw);
     let value_type = GgufValueType::from_u32(value_type_raw).ok_or(GgufError::InvalidValueType(value_type_raw))?;
     let value = read_kv_value(reader, value_type)?;
@@ -316,14 +371,33 @@ fn read_kv_value<R: Read>(
             Ok(GgufKvValue::Bool(v))
         }
         GgufValueType::String => {
-            // Practical llama.cpp GGUF v3 files use u64 for string value length prefixes
-            let len = reader.read_u64::<LittleEndian>()?;
+            // REAL DATA: llama.cpp v3 uses U8 for string lengths with 10-byte alignment!
+            // Verified at offsets 52-68: value_type(1) + align3 + len_u8(1) + align7 = 12 bytes to reach "qwen2"
+            
+            let mut dummy = [0u8; 3];
+            reader.read_exact(&mut dummy)?; // Skip alignment after value_type
+            
+            let len = reader.read_u8()? as u64;
+            eprintln!("DEBUG String length (u8): {}", len);
+            
             if len > 1024 * 1024u64 {
                 return Err(GgufError::Io(format!(
                     "string length {} exceeds max 1MB",
                     len
                 )));
             }
+            
+            // Skip remaining alignment padding before string value (7 bytes for u8 lengths)
+            let mut more_dummy = [0u8; 7];
+            reader.read_exact(&mut more_dummy)?;
+            
+            if len > 1024 * 1024u64 {
+                return Err(GgufError::Io(format!(
+                    "string length {} exceeds max 1MB",
+                    len
+                )));
+            }
+
             let bytes = read_bytes(reader, len as usize)?;
             Ok(GgufKvValue::String(String::from_utf8(bytes).map_err(GgufError::Utf8)?))
         }
@@ -405,8 +479,13 @@ fn read_tensor_info<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError
 }
 
 fn read_tensor_info_v3<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError> {
-    // Tensor names in Qwen v3 files use u64 length (per spec), not u32.
-    let name = read_string_v3(reader)?;
+    // Real llama.cpp v3 uses u32 for tensor name lengths (not u64 per spec)
+    let len = reader.read_u32::<LittleEndian>()?;
+    if len > 1024 * 1024u32 {
+        return Err(GgufError::Io(format!("tensor name length {} exceeds max 1MB", len)));
+    }
+    let bytes = read_bytes(reader, len as usize)?;
+    let name = String::from_utf8(bytes).map_err(GgufError::Utf8)?;
     let n_dims = reader.read_u32::<LittleEndian>()?;
     let mut shape = Vec::with_capacity(n_dims as usize);
     for _ in 0..n_dims {
