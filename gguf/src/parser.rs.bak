@@ -1,0 +1,468 @@
+use byteorder::{LittleEndian, ReadBytesExt};
+use std::io::{BufReader, Read, Seek};
+use std::path::Path;
+
+use crate::error::GgufError;
+use crate::types::{GgufDtype, GgufHeader, GgufKvPair, GgufKvValue, GgufTensorInfo, GgufValueType};
+
+const GGUF_MAGIC: &[u8; 4] = b"GGUF";
+const GGUF_VERSION_1: u32 = 1;
+const GGUF_VERSION_2: u32 = 2;
+const GGUF_VERSION_3: u32 = 3;
+
+pub fn parse_gguf(path: &Path) -> Result<GgufHeader, GgufError> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| GgufError::Io(format!("open {}: {e}", path.display())))?;
+    let reader = BufReader::new(file);
+    parse_gguf_reader(reader)
+}
+
+pub fn parse_gguf_reader<R: Read + std::io::Seek>(mut reader: R) -> Result<GgufHeader, GgufError> {
+    let magic = read_bytes(&mut reader, 4)?;
+    if magic.as_slice() != GGUF_MAGIC {
+        return Err(GgufError::InvalidMagic(format!(
+            "expected GGUF, got {}",
+            String::from_utf8_lossy(&magic)
+        )));
+    }
+
+    let version = reader.read_u32::<LittleEndian>()?;
+    let header = match version {
+        GGUF_VERSION_1 => parse_v1(&mut reader)?,
+        GGUF_VERSION_2 => parse_v2(&mut reader)?,
+        GGUF_VERSION_3 => parse_v3(&mut reader)?,
+        _ => return Err(GgufError::UnsupportedVersion(version)),
+    };
+
+    Ok(header)
+}
+
+fn parse_v1<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
+    let tensor_count = reader.read_u64::<LittleEndian>()?;
+    let kv_count = reader.read_u64::<LittleEndian>()?;
+
+    let mut kv_pairs = Vec::with_capacity(kv_count as usize);
+    for _ in 0..kv_count {
+        kv_pairs.push(read_kv_pair(reader)?);
+    }
+
+    let mut tensors = Vec::with_capacity(tensor_count as usize);
+    for _ in 0..tensor_count {
+        tensors.push(read_tensor_info(reader)?);
+    }
+
+    let alignment = read_alignment_from_kv(&kv_pairs);
+
+    // Use v1 size calculation (u32 key length) for v1 format
+    let data_section_start = compute_data_section_start(1, &kv_pairs, &tensors, alignment);
+
+    Ok(GgufHeader {
+        version: 3,
+        kv_pairs,
+        tensors,
+        data_alignment: alignment,
+        data_section_start,
+    })
+}
+
+fn parse_v2<R: Read>(reader: &mut R) -> Result<GgufHeader, GgufError> {
+    let tensor_count = reader.read_u64::<LittleEndian>()?;
+    let kv_count = reader.read_u64::<LittleEndian>()?;
+
+    let mut kv_pairs = Vec::with_capacity(kv_count as usize);
+    for _ in 0..kv_count {
+        kv_pairs.push(read_kv_pair(reader)?);
+    }
+
+    let mut tensors = Vec::with_capacity(tensor_count as usize);
+    for _ in 0..tensor_count {
+        tensors.push(read_tensor_info(reader)?);
+    }
+
+    // Read alignment from KV pairs (same as v3)
+    let alignment = read_alignment_from_kv(&kv_pairs);
+    let data_section_start = compute_data_section_start(2, &kv_pairs, &tensors, alignment);
+
+    Ok(GgufHeader {
+        version: 3,
+        kv_pairs,
+        tensors,
+        data_alignment: alignment,
+        data_section_start,
+    })
+}
+
+fn parse_v3<R>(reader: &mut R) -> Result<GgufHeader, GgufError>
+where
+    R: Read + std::io::Seek,
+{
+    let tensor_count = reader.read_u64::<LittleEndian>()?;
+    let kv_count = reader.read_u64::<LittleEndian>()?;
+
+    // llama.cpp v3 may have alignment padding after header - scan forward to find first KV key
+    for _ in 0..1024 {
+        let b = reader.read_u8()?;
+
+        if (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') {
+            // Found start of key, seek back to include this byte in key reading below
+            reader.seek(std::io::SeekFrom::Current(-1))?;
+            break;
+        }
+    }
+
+    let mut kv_pairs = Vec::with_capacity(kv_count as usize);
+    for _ in 0..kv_count {
+        kv_pairs.push(read_kv_pair_v3(reader)?);
+    }
+
+    eprintln!("parse_v3: read {} KV pairs", kv_pairs.len());
+
+    let mut tensors = Vec::with_capacity(tensor_count as usize);
+    for i in 0..tensor_count {
+        eprintln!("parse_v3: reading tensor {} of {}", i + 1, tensor_count);
+        tensors.push(read_tensor_info_v3(reader)?);
+    }
+    eprintln!("parse_v3: read {} tensors", tensors.len());
+
+    let alignment = read_alignment_from_kv(&kv_pairs);
+    let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, alignment);
+    eprintln!(
+        "parse_v3: computed data_section_start={}, alignment={:?}",
+        data_section_start, alignment
+    );
+    eprintln!("parse_v3: returning Ok with {} tensors", tensors.len());
+
+    Ok(GgufHeader {
+        version: 3,
+        kv_pairs,
+        tensors,
+        data_alignment: alignment,
+        data_section_start,
+    })
+}
+
+/// Compute the byte offset where the tensor data section begins.
+///
+/// GGUF tensor offsets are relative to the data section start, not the file start.
+/// The data section starts after the header (magic + version + counts + KV pairs + tensor metadata),
+/// aligned up to `data_alignment` for v3.
+pub fn compute_data_section_start(
+    version: u32,
+    kv_pairs: &[GgufKvPair],
+    tensors: &[GgufTensorInfo],
+    data_alignment: Option<u64>,
+) -> u64 {
+    let header_base: u64 = 4 + 4 + 8 + 8; // magic + version + tensor_count + kv_count
+    let kv_size: u64 = match version {
+        3 => kv_pairs.iter().map(|p| p.raw_byte_size_v3() as u64).sum(),
+        _ => kv_pairs.iter().map(|p| p.raw_byte_size() as u64).sum(),
+    };
+    let tensor_size: u64 = tensors.iter().map(|t| t.raw_byte_size() as u64).sum();
+    let mut data_section = header_base
+        .checked_add(kv_size)
+        .and_then(|v| v.checked_add(tensor_size))
+        .unwrap_or(u64::MAX);
+
+    if version == 3 && data_alignment.map_or(false, |a| a > 0) {
+        let remainder = data_section % data_alignment.unwrap();
+        if remainder != 0 {
+            data_section += data_alignment.unwrap() - remainder;
+        }
+    }
+
+    data_section
+}
+
+/// Read the `general.alignment` value from KV pairs (GGUF v3).
+fn read_alignment_from_kv(kv_pairs: &[GgufKvPair]) -> Option<u64> {
+    kv_pairs
+        .iter()
+        .find(|p| p.key == "general.alignment")
+        .and_then(|p| p.value.as_u64())
+}
+
+fn read_bytes<R: Read>(reader: &mut R, len: usize) -> Result<Vec<u8>, GgufError> {
+    let mut buf = vec![0u8; len];
+    reader
+        .read_exact(&mut buf)
+        .map_err(|e| GgufError::Io(format!("read {len} bytes: {e}")))?;
+    Ok(buf)
+}
+
+fn read_string<R: Read>(reader: &mut R) -> Result<String, GgufError> {
+    // v1/v2 spec uses u64 for string lengths in tensor names and KV string values.
+    let len = reader.read_u64::<LittleEndian>()?;
+    if len > 1024 * 1024 {
+        return Err(GgufError::Io(format!(
+            "string length {len} exceeds max 1MB"
+        )));
+    }
+    let bytes = read_bytes(reader, len as usize)?;
+    String::from_utf8(bytes).map_err(GgufError::Utf8)
+}
+
+fn read_key<R: Read>(reader: &mut R) -> Result<String, GgufError> {
+    // All practical GGUF implementations use u32 for key lengths (including v1, v2, and most "v3" files)
+    let len = reader.read_u32::<LittleEndian>()?;
+    if len > 1024 * 1024 {
+        return Err(GgufError::Io(format!("key length {len} exceeds max 1MB")));
+    }
+    let bytes = read_bytes(reader, len as usize)?;
+    String::from_utf8(bytes).map_err(GgufError::Utf8)
+}
+
+fn read_kv_pair<R: Read>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
+    let key = read_key(reader)?;
+    let value_type = read_value_type(reader)?;
+    let value = read_kv_value(reader, value_type)?;
+    #[cfg(debug_assertions)]
+    eprintln!("KV key='{}' type={}", key, value_type.to_u32());
+    Ok(GgufKvPair {
+        key,
+        value_type,
+        value,
+    })
+}
+
+fn read_kv_pair_v3<R>(reader: &mut R) -> Result<GgufKvPair, GgufError>
+where
+    R: Read + std::io::Seek,
+{
+    // llama.cpp v3 format: [key_string][value_type(u8)][string_len_or_count(u64)][value_data]
+    // Key has no explicit length prefix - ends when value_type byte (0-15) appears
+
+    let mut key_buf = Vec::new();
+    loop {
+        // Read next byte
+        let b = reader.read_u8()?;
+
+        // Check if this could be end of key (value_type byte 0-15 after non-empty key)
+        if b <= 15 && !key_buf.is_empty() {
+            // Found value_type, seek back to re-read it as part of value parsing
+            reader.seek(std::io::SeekFrom::Current(-1))?;
+            break;
+        } else {
+            key_buf.push(b);
+        }
+    }
+
+    let key = String::from_utf8(key_buf).map_err(GgufError::Utf8)?;
+    
+    // Read value_type as u8 (not u32 per real llama.cpp format)
+    let value_type_raw = reader.read_u8()? as u32;
+    eprintln!("KV pair v3: raw_type={}", value_type_raw);
+    let value_type = GgufValueType::from_u32(value_type_raw).ok_or(GgufError::InvalidValueType(value_type_raw))?;
+    
+    let value = read_kv_value(reader, value_type)?;
+    #[cfg(debug_assertions)]
+    eprintln!("KV key='{}' type={}", key, value_type.to_u32());
+    Ok(GgufKvPair {
+        key,
+        value_type,
+        value,
+    })
+}
+
+fn read_value_type<R: Read>(reader: &mut R) -> Result<GgufValueType, GgufError> {
+    let raw = reader.read_u32::<LittleEndian>()?;
+    GgufValueType::from_u32(raw).ok_or(GgufError::InvalidValueType(raw))
+}
+
+/// Read element_type for an array — per GGUF spec this is u8 (1 byte).
+fn read_array_element_type<R: Read>(reader: &mut R) -> Result<GgufValueType, GgufError> {
+    let raw = reader.read_u8()?;
+    GgufValueType::from_u32(raw as u32).ok_or(GgufError::InvalidValueType(raw as u32))
+}
+
+fn read_kv_value<R: Read>(
+    reader: &mut R,
+    value_type: GgufValueType,
+) -> Result<GgufKvValue, GgufError> {
+    eprintln!("read_kv_value: type={:?}", value_type);
+    match value_type {
+        GgufValueType::Uint8 => {
+            let v = reader.read_u8()?;
+            Ok(GgufKvValue::Uint8(v))
+        }
+        GgufValueType::Int8 => {
+            let v = reader.read_i8()?;
+            Ok(GgufKvValue::Int8(v))
+        }
+        GgufValueType::Uint16 => {
+            let v = reader.read_u16::<LittleEndian>()?;
+            Ok(GgufKvValue::Uint16(v))
+        }
+        GgufValueType::Int16 => {
+            let v = reader.read_i16::<LittleEndian>()?;
+            Ok(GgufKvValue::Int16(v))
+        }
+        GgufValueType::Uint32 => {
+            let v = reader.read_u32::<LittleEndian>()?;
+            Ok(GgufKvValue::Uint32(v))
+        }
+        GgufValueType::Int32 => {
+            let v = reader.read_i32::<LittleEndian>()?;
+            Ok(GgufKvValue::Int32(v))
+        }
+        GgufValueType::Uint64 => {
+            let v = reader.read_u64::<LittleEndian>()?;
+            Ok(GgufKvValue::Uint64(v))
+        }
+        GgufValueType::Int64 => {
+            let v = reader.read_i64::<LittleEndian>()?;
+            Ok(GgufKvValue::Int64(v))
+        }
+        GgufValueType::Float32 => {
+            let v = reader.read_f32::<LittleEndian>()?;
+            Ok(GgufKvValue::Float32(v))
+        }
+        GgufValueType::Bool => {
+            let v = reader.read_u8()? != 0;
+            Ok(GgufKvValue::Bool(v))
+        }
+        GgufValueType::String => {
+            // Real llama.cpp v3 uses u64 for string lengths
+            let len = reader.read_u64::<LittleEndian>()?;
+            if len > 1024 * 1024u64 {
+                return Err(GgufError::Io(format!(
+                    "string length {} exceeds max 1MB",
+                    len
+                )));
+            }
+            let bytes = read_bytes(reader, len as usize)?;
+            Ok(GgufKvValue::String(String::from_utf8(bytes).map_err(GgufError::Utf8)?))
+        }
+        GgufValueType::Array => {
+            let element_type = read_array_element_type(reader)?;
+            let count = reader.read_u64::<LittleEndian>()?;
+            match element_type {
+                GgufValueType::Int8Array => {
+                    let mut vals = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        vals.push(reader.read_i8()?);
+                    }
+                    Ok(GgufKvValue::Int8Array(vals))
+                }
+                GgufValueType::Uint8Array => {
+                    let mut vals = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        vals.push(reader.read_u8()?);
+                    }
+                    Ok(GgufKvValue::Uint8Array(vals))
+                }
+                _ => {
+                    let mut values = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        values.push(read_kv_value(reader, element_type)?);
+                    }
+                    Ok(GgufKvValue::Array(values))
+                }
+            }
+        }
+        GgufValueType::Float16 => {
+            let raw = reader.read_u16::<LittleEndian>()?;
+            Ok(GgufKvValue::Float16(raw))
+        }
+        GgufValueType::Int8Array => {
+            let count = reader.read_u64::<LittleEndian>()?;
+            let mut vals = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                vals.push(reader.read_i8()?);
+            }
+            Ok(GgufKvValue::Int8Array(vals))
+        }
+        GgufValueType::Uint8Array => {
+            let count = reader.read_u64::<LittleEndian>()?;
+            let mut vals = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                vals.push(reader.read_u8()?);
+            }
+            Ok(GgufKvValue::Uint8Array(vals))
+        }
+        GgufValueType::Bfloat16 => {
+            let raw = reader.read_u16::<LittleEndian>()?;
+            let v = (raw as u32) << 16;
+            let f = f32::from_bits(v);
+            Ok(GgufKvValue::Bfloat16(f))
+        }
+    }
+}
+
+fn read_tensor_info<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError> {
+    let name = read_string(reader)?;
+    let n_dims = reader.read_u32::<LittleEndian>()?;
+    let mut shape = Vec::with_capacity(n_dims as usize);
+    for _ in 0..n_dims {
+        shape.push(reader.read_u64::<LittleEndian>()?);
+    }
+    let dtype = reader.read_u32::<LittleEndian>()?;
+    let offset = reader.read_u64::<LittleEndian>()?;
+    eprintln!(
+        "  read_tensor_info: name={} dims={} dtype={} offset={}",
+        name, n_dims, dtype, offset
+    );
+    Ok(GgufTensorInfo {
+        name,
+        shape,
+        offset,
+        dtype,
+    })
+}
+
+fn read_tensor_info_v3<R: Read>(reader: &mut R) -> Result<GgufTensorInfo, GgufError> {
+    // llama.cpp v3 uses u32 for tensor name lengths (same as KV keys), not u64 per spec
+    let len = reader.read_u32::<LittleEndian>()?;
+    if len > 1024 * 1024u32 {
+        return Err(GgufError::Io(format!("tensor name length {} exceeds max 1MB", len)));
+    }
+    let bytes = read_bytes(reader, len as usize)?;
+    let name = String::from_utf8(bytes).map_err(GgufError::Utf8)?;
+    let n_dims = reader.read_u32::<LittleEndian>()?;
+    let mut shape = Vec::with_capacity(n_dims as usize);
+    for _ in 0..n_dims {
+        shape.push(reader.read_u64::<LittleEndian>()?);
+    }
+    let dtype = reader.read_u32::<LittleEndian>()?;
+    let offset = reader.read_u64::<LittleEndian>()?;
+    eprintln!(
+        "  read_tensor_info_v3: name={} dims={} dtype={} offset={}",
+        name, n_dims, dtype, offset
+    );
+    Ok(GgufTensorInfo {
+        name,
+        shape,
+        offset,
+        dtype,
+    })
+}
+
+/// Extract raw tensor bytes from a GGUF file at a given offset.
+pub fn extract_tensor_bytes(path: &Path, offset: u64, size: usize) -> Result<Vec<u8>, GgufError> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| GgufError::Io(format!("open {}: {e}", path.display())))?;
+
+    file.seek(std::io::SeekFrom::Start(offset))
+        .map_err(|e| GgufError::Io(format!("seek to offset {offset}: {e}")))?;
+
+    let mut buffer = vec![0u8; size];
+    file.read_exact(&mut buffer)
+        .map_err(|e| GgufError::Io(format!("read {size} bytes at offset {offset}: {e}")))?;
+
+    Ok(buffer)
+}
+
+/// Extract raw tensor bytes from a GGUF file using the header's data section offset.
+pub fn extract_tensor_bytes_with_header(
+    path: &Path,
+    header: &GgufHeader,
+    tensor: &GgufTensorInfo,
+) -> Result<Vec<u8>, GgufError> {
+    let file_offset = header.data_section_start + tensor.offset;
+    extract_tensor_bytes(path, file_offset, tensor.stored_size() as usize)
+}
+
+/// Extract tensor bytes from an already-opened file handle.
+pub fn extract_tensor_bytes_from<R: std::io::Read + std::io::Seek>(
+    reader: &mut R,
+    offset: u64,
+    size: usize,
