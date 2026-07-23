@@ -21,3 +21,4 @@ conformance-corpus/*.gguf
 *.swo
 *~
 models
+llm-runner/examples/tcgen05_gemm/target/

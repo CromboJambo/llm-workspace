@@ -1,12 +1,13 @@
 
 [workspace]
 members = [
-    "conformance",
-    "llm-runner",
+    "pesti-conformance",
+    "pesti-runner",
     "llm-plug-in",
-    "safetensors",
-    "gguf",
-    "gguf-cli", "cuda-oxide",
+    "pesti-safetensors",
+    "pesti-gguf",
+    "pesti-gguf-cli",
+    "cuda-oxide",
 ]
 resolver = "2"
 
