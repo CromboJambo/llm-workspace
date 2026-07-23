@@ -22,3 +22,4 @@ conformance-corpus/*.gguf
 *~
 models
 llm-runner/examples/tcgen05_gemm/target/
+pesti-conformance/test-corpus/tiny-model.gguf
