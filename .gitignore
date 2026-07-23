@@ -1,15 +1,23 @@
+# Build artifacts (top-level and nested)
 target/
-target/debug/
-target/.rustc_info.json
-cargo.lock
-target/flycheck0/
-target/release/
-target/.future-incompat-report.json
-tarpaulin-report.html
+**/target/
 Cargo.lock
 guard.db
 knowledge.db
 cobertura.xml
-models
-projects
+
+# Generated files
+tarpaulin-report.html
+
+# Model weights / large binary blobs
+models/
+projects/
 state-docs/
+conformance-corpus/*.gguf
+
+# OS/editor junk
+.DS_Store
+*.swp
+*.swo
+*~
+models
