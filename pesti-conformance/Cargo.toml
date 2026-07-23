@@ -1,0 +1,19 @@
+[package]
+name = "pesti-conformance"
+version = "0.1.0"
+edition = "2021"
+description = "Differential conformance testing for pesti against reference implementations"
+
+[[bin]]
+name = "conformance"
+path = "src/main.rs"
+
+[dependencies]
+pesti-runner = { path = "../pesti-runner" }
+pesti-gguf = { path = "../pesti-gguf" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4.4", features = ["derive"] }
+tempfile = "3.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+md-5 = "0.10"
