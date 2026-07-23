@@ -23,3 +23,6 @@ conformance-corpus/*.gguf
 models
 llm-runner/examples/tcgen05_gemm/target/
 pesti-conformance/test-corpus/tiny-model.gguf
+pesti-gguf/src/parser.rs.bak
+pesti-gguf/src/parser.rs.fixed
+pesti-gguf/src/string_case.tmp
