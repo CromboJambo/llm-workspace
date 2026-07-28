@@ -1,4 +1,4 @@
-////! Integration tests for GPU dispatch system.
+//.//! Integration tests for GPU dispatch system.
 
 use pesti_gguf::{GgufKvPair, GgufKvValue, GgufValueType};
 use pesti_runner::kernel::dispatch::{DispatchContext, LinearDispatch};
