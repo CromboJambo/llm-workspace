@@ -302,11 +302,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -375,7 +378,9 @@ mod tests {
             GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
             GgufKvValue::Bool(v) => buf.push(*v as u8),
             GgufKvValue::String(s) => {
-                buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                // v3 practical format: 4-byte alignment padding after value_type(u8), then string length u32
+                buf.extend_from_slice(&[0u8; 4]); // alignment padding
+                buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
                 buf.extend_from_slice(s.as_bytes());
             }
             GgufKvValue::Int8Array(arr) => {
@@ -422,11 +427,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -473,11 +481,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -524,11 +535,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -575,11 +589,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -626,11 +643,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -674,11 +694,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -743,11 +766,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -796,11 +822,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -844,11 +873,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -889,11 +921,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
@@ -950,11 +985,14 @@ mod tests {
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+
+        // v3 practical format: ~10-byte alignment padding after counts to reach 8-byte boundary
+        buf.extend_from_slice(&[0u8; 10]);
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
             buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes()); // v3 practical format uses u32 for keys, not u64
             buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
+            buf.push(kv.value_type.to_u8()); // v3 practical format: value_type is u8, not u32
             write_kv_value(&mut buf, &kv.value);
         }
         let total: u64 = tensors

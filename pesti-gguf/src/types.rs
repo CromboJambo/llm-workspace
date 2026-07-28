@@ -96,6 +96,10 @@ impl GgufValueType {
         }
     }
 
+    pub const fn to_u8(self) -> u8 {
+        self.to_u32() as u8
+    }
+
     pub fn is_array(self) -> bool {
         self == Self::Array
     }
