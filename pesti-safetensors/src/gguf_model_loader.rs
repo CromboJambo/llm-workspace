@@ -1,4 +1,4 @@
-use crate::error::SafetensorsError;
+use std::fs::File;
 use crate::gguf_converter::{convert_gguf_to_safetensors, GgufConversionResult};
 use crate::safetensors_store::SafetensorsStore;
 use crate::schema::TensorMetadataRow;
@@ -90,7 +90,8 @@ pub fn load_gguf_tensor(
     let stored_size = tensor.stored_size() as usize;
     let file_offset = header.data_section_start + tensor.offset;
 
-    let raw_data = extract_tensor_bytes(gguf_path, file_offset, stored_size).map_err(|e| {
+    let mut file = File::open(gguf_path).map_err(|e| SafetensorsError::Load(format!("open gguf: {e}")))?;
+    let raw_data = extract_tensor_bytes(&mut file, tensor.dtype, tensor.element_count() as u64, tensor.offset, header.data_section_start).map_err(|e| {
         SafetensorsError::Load(format!("extract tensor bytes: {e}"))
     })?;
 
