@@ -144,17 +144,26 @@ fn read_bytes<R>(reader: &mut R, len: usize) -> Result<Vec<u8>, GgufError> where
 }
 
 fn read_kv_pair_v3<R>(reader: &mut R) -> Result<GgufKvPair, GgufError> where R: Read + std::io::Seek {
-    // v3 practical format (verified against conformance-corpus/): [key_bytes][value_type(u32)][string_length(u32)]
+    use std::io::Read as _;
+
+    // v3 format: [key_bytes][value_type(u32)][string_length(u32) or element_count]
+    // After each KV pair's value data, there are 8 bytes of zero-padding (alignment).
+    // We need to seek back to the end of the previous value and re-read from the start.
 
     let mut key_buf = Vec::new();
+    let mut in_value_mode = false;
+    let mut value_type_bytes = [0u8; 4];
+    let mut length_bytes = [0u8; 4];
+    let mut element_or_string_len: u32 = 0;
 
+    // Phase 1: Read key bytes until we hit a value_type byte (< 32) or buffer the rest
     loop {
         let b = reader.read_u8()?;
 
         eprintln!("DEBUG read_kv_pair_v3: byte={:#04x} (value={})", b, b);
 
         // Value_type detected! Read u32 and then length directly (no alignment between them)
-        if b < 32 || b <= 15 {
+        if !in_value_mode && (b < 32 || b <= 15) {
             eprintln!("DEBUG: Triggered value_type detection at byte 0x{:02x}", b);
 
             // The trigger byte IS the first byte of value_type u32, so prepend it to buffer
@@ -164,24 +173,64 @@ fn read_kv_pair_v3<R>(reader: &mut R) -> Result<GgufKvPair, GgufError> where R: 
             let value_type_raw = u32::from_le_bytes(vtype_bytes);
             eprintln!("DEBUG: value_type_raw = {} (expected STRING=8 or TENSOR_COUNT=12)", value_type_raw);
 
-            let value_type = GgufValueType::from_u32(value_type_raw).ok_or(GgufError::InvalidValueType(value_type_raw))?;
-
             // Read string length u32
-            let mut length_bytes = [0u8; 4]; reader.read_exact(&mut length_bytes)?;
-            let element_or_string_len: u32 = u32::from_le_bytes(length_bytes);
+            reader.read_exact(&mut length_bytes)?;
+            element_or_string_len = u32::from_le_bytes(length_bytes);
             eprintln!("DEBUG: string_length = {}", element_or_string_len);
+
+            let value_type = GgufValueType::from_u32(value_type_raw).ok_or(GgufError::InvalidValueType(value_type_raw))?;
 
             // Read value based on type and length/count
             let value = match value_type {
                 GgufValueType::String => {
-                    let bytes = read_bytes(reader, element_or_string_len as usize)?;
-                    GgufKvValue::String(String::from_utf8(bytes).map_err(GgufError::Utf8)?)
+                    if element_or_string_len > 0 {
+                        let bytes = read_bytes(reader, element_or_string_len as usize)?;
+                        eprintln!("DEBUG: read {} bytes for string value (key='{}')", bytes.len(), String::from_utf8_lossy(&key_buf));
+                        GgufKvValue::String(String::from_utf8(bytes).map_err(GgufError::Utf8)?)
+                    } else {
+                        eprintln!("DEBUG: empty string value for key '{}'", String::from_utf8(key_buf.clone()).unwrap_or_default());
+                        GgufKvValue::String(String::default())
+                    }
                 }
                 _ => read_kv_value(reader, value_type)?,
             };
 
             let key = String::from_utf8(key_buf).map_err(GgufError::Utf8)?;
             eprintln!("KV v3: key='{}' type={} len={}", key, value_type_raw, element_or_string_len);
+            return Ok(GgufKvPair { key, value_type, value });
+        } else if !in_value_mode {
+            // Value mode started - read the next 3 bytes of value_type
+            in_value_mode = true;
+            let vtype_start = b;
+            reader.read_exact(&mut value_type_bytes[1..4])?;
+
+            let value_type_raw = u32::from_le_bytes([vtype_start, value_type_bytes[1], value_type_bytes[2], value_type_bytes[3]]);
+            eprintln!("DEBUG: value_type_raw (alt) = {} (expected STRING=8 or TENSOR_COUNT=12)", value_type_raw);
+
+            // Read string length u32
+            reader.read_exact(&mut length_bytes)?;
+            element_or_string_len = u32::from_le_bytes(length_bytes);
+            eprintln!("DEBUG: string_length (alt) = {}", element_or_string_len);
+
+            let value_type = GgufValueType::from_u32(value_type_raw).ok_or(GgufError::InvalidValueType(value_type_raw))?;
+
+            // Read value based on type and length/count
+            let value = match value_type {
+                GgufValueType::String => {
+                    if element_or_string_len > 0 {
+                        let bytes = read_bytes(reader, element_or_string_len as usize)?;
+                        eprintln!("DEBUG: read {} bytes for string value (key='{}')", bytes.len(), String::from_utf8_lossy(&key_buf));
+                        GgufKvValue::String(String::from_utf8(bytes).map_err(GgufError::Utf8)?)
+                    } else {
+                        eprintln!("DEBUG: empty string value for key '{}'", String::from_utf8(key_buf.clone()).unwrap_or_default());
+                        GgufKvValue::String(String::default())
+                    }
+                }
+                _ => read_kv_value(reader, value_type)?,
+            };
+
+            let key = String::from_utf8(key_buf).map_err(GgufError::Utf8)?;
+            eprintln!("KV v3 (alt): key='{}' type={} len={}", key, value_type_raw, element_or_string_len);
             return Ok(GgufKvPair { key, value_type, value });
         } else {
             // Printable char - part of the key name
