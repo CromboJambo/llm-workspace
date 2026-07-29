@@ -1223,8 +1223,7 @@ mod tests {
 
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
@@ -1232,8 +1231,7 @@ mod tests {
         // Write tensor metadata
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1429,15 +1427,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1495,15 +1491,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1551,15 +1545,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1673,15 +1665,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1808,15 +1798,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1885,15 +1873,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
@@ -1930,15 +1916,13 @@ mod tests {
         buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
         for kv in &kv_pairs {
             let key_bytes = kv.key.as_bytes();
-            buf.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
-            buf.extend_from_slice(key_bytes);
+                        buf.extend_from_slice(key_bytes);
             buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
             write_kv_value(&mut buf, &kv.value);
         }
         for tensor in &tensors {
             let name_bytes = tensor.name.as_bytes();
-            buf.extend_from_slice(&(name_bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(name_bytes);
+                        buf.extend_from_slice(name_bytes);
             buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
             for dim in &tensor.shape {
                 buf.extend_from_slice(&dim.to_le_bytes());
