@@ -1,4 +1,5 @@
 use std::fs::File;
+use crate::SafetensorsError;
 use crate::gguf_converter::{convert_gguf_to_safetensors, GgufConversionResult};
 use crate::safetensors_store::SafetensorsStore;
 use crate::schema::TensorMetadataRow;
