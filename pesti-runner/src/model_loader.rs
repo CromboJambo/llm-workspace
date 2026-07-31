@@ -159,8 +159,8 @@ impl ModelLoader {
             )))
         })?;
 
-        let size = tensor.element_count() as usize;
-        pesti_gguf::parser::extract_tensor_bytes(path, tensor.offset, size)
+        let size = tensor.stored_size() as usize;
+        pesti_gguf::parser::extract_tensor_bytes_from_path(path, tensor.offset, size)
             .map_err(RunnerError::Gguf)
     }
 

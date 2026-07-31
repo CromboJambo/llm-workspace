@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use pesti_gguf::parser::{extract_tensor_bytes, parse_gguf};
+use pesti_gguf::parser::{extract_tensor_bytes_from_path, parse_gguf};
 use pesti_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
 
 use crate::error::{Result, RunnerError};
@@ -60,7 +60,7 @@ pub fn load_gguf_weights(gguf_path: &Path) -> Result<GgufWeights> {
         eprintln!("  extract: {} offset={} stored_size={} file_total={}", 
             tensor.name, file_offset, stored_size, std::fs::metadata(gguf_path).map(|m| m.len()).unwrap_or(0));
 
-        let raw_data = extract_tensor_bytes(gguf_path, file_offset, stored_size).map_err(|e| {
+        let raw_data = extract_tensor_bytes_from_path(gguf_path, file_offset, stored_size).map_err(|e| {
             RunnerError::Gguf(pesti_gguf::GgufError::Io(format!(
                 "extract {} at {} size {}: {e}", tensor.name, file_offset, stored_size
             )))
@@ -89,7 +89,7 @@ pub fn load_gguf_tensor(gguf_path: &Path, tensor_name: &str) -> Result<(GgufHead
     let stored_size = tensor.stored_size() as usize;
     let file_offset = header.data_section_start + tensor.offset;
 
-    let raw_data = extract_tensor_bytes(gguf_path, file_offset, stored_size)?;
+    let raw_data = extract_tensor_bytes_from_path(gguf_path, file_offset, stored_size)?;
 
     let dequantized = dequantize_tensor(tensor, &raw_data)?;
 
@@ -1415,5 +1415,148 @@ mod tests {
         assert_eq!(weights.header.architecture(), Some("llama"));
         assert_eq!(weights.tensors.len(), 0); // vocab files have no tensors
         assert!(weights.header.kv_pairs.len() > 0);
+    }
+
+    // ========== Dequantization Tests ==========
+
+    #[test]
+    fn dequantize_q4_0_basic() {
+        // Q4_0: 32 elements = 18 bytes (2 byte scale + 16 byte nibbles)
+        let mut data = vec![0x00, 0x00]; // scale
+        data.extend_from_slice(&vec![0xFF; 16]);
+
+        let result = dequantize_q4_0(&data, 32).unwrap();
+        assert_eq!(result.len(), 32);
+    }
+
+    #[test]
+    fn dequantize_q4_0_partial_block() {
+        // Q4_0 with 16 elements (partial block)
+        let data: Vec<u8> = vec![
+            0x00, 0x00, // scale
+            0xFF, 0xFF, // partial quantized data
+        ];
+
+        let result = dequantize_q4_0(&data, 16).unwrap();
+        assert_eq!(result.len(), 16);
+    }
+
+    #[test]
+    fn dequantize_q4_0_too_small_data() {
+        let data: Vec<u8> = vec![0x00, 0x00]; // Too small for any elements
+        
+        let result = dequantize_q4_0(&data, 32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dequantize_q8_0_basic() {
+        // Q8_0: 32 elements = 34 bytes (2 byte scale + 32 int8 values)
+        let mut data = vec![0x00, 0x00]; // scale
+        data.extend_from_slice(&vec![0x00; 32]);
+
+        let result = dequantize_q8_0(&data, 32).unwrap();
+        assert_eq!(result.len(), 32);
+    }
+
+    #[test]
+    fn dequantize_q8_0_too_small_data() {
+        let data: Vec<u8> = vec![0x00, 0x00]; // Too small
+        
+        let result = dequantize_q8_0(&data, 32);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dequantize_f16_to_f32() {
+        // F16 data for 4 elements
+        let f16_data: Vec<u8> = vec![
+            0x00, 0x3C, // 1.0
+            0x00, 0x40, // 2.0
+            0x00, 0x3E, // 0.5
+            0x00, 0xBF, // -1.0
+        ];
+
+        let result = half_f32(&f16_data);
+        assert_eq!(result.len(), 4);
+        assert!((result[0] - 1.0).abs() < 1e-5);
+        assert!((result[1] - 2.0).abs() < 1e-5);
+        assert!((result[2] - 0.5).abs() < 1e-5);
+        assert!((result[3] - (-1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dequantize_bf16_to_f32() {
+        // BF16 data for 4 elements
+        let bf16_data: Vec<u8> = vec![
+            0x00, 0x3C, // 1.0 (top 16 bits of f32)
+            0x00, 0x40, // 2.0
+            0x00, 0x3E, // 0.5
+            0x80, 0xBF, // -1.0
+        ];
+
+        let result = bf16_f32(&bf16_data);
+        assert_eq!(result.len(), 4);
+        assert!((result[0] - 1.0).abs() < 1e-5);
+        assert!((result[1] - 2.0).abs() < 1e-5);
+        assert!((result[2] - 0.5).abs() < 1e-5);
+        assert!((result[3] - (-1.0)).abs() < 1e-5);
+    }
+
+    // ========== GgufWeights Tests ==========
+
+    #[test]
+    fn gguf_weights_empty_tensors() {
+        let header = GgufHeader {
+            version: 3,
+            kv_pairs: vec![],
+            tensors: vec![],
+            data_alignment: Some(32),
+            data_section_start: 0,
+        };
+        let tensors: HashMap<String, Vec<u8>> = HashMap::new();
+        
+        let weights = GgufWeights { header, tensors };
+        assert_eq!(weights.tensors.len(), 0);
+    }
+
+    #[test]
+    fn gguf_weights_single_tensor() {
+        let mut tensors = HashMap::new();
+        tensors.insert("tensor1".to_string(), vec![1u8, 2, 3, 4]);
+        
+        let header = GgufHeader {
+            version: 3,
+            kv_pairs: vec![],
+            tensors: vec![],
+            data_alignment: Some(32),
+            data_section_start: 0,
+        };
+        let weights = GgufWeights { header, tensors };
+        
+        assert_eq!(weights.tensors.len(), 1);
+        assert_eq!(weights.tensors.get("tensor1"), Some(&vec![1u8, 2, 3, 4]));
+    }
+
+    #[test]
+    fn gguf_weights_multiple_tensors() {
+        let mut tensors = HashMap::new();
+        tensors.insert("weight".to_string(), vec![1, 2, 3]);
+        tensors.insert("bias".to_string(), vec![4, 5, 6]);
+        tensors.insert("norm".to_string(), vec![7, 8, 9]);
+        
+        let header = GgufHeader {
+            version: 3,
+            kv_pairs: vec![],
+            tensors: vec![],
+            data_alignment: Some(32),
+            data_section_start: 0,
+        };
+        let weights = GgufWeights { header, tensors };
+        
+        assert_eq!(weights.tensors.len(), 3);
+        assert!(weights.tensors.contains_key("weight"));
+        assert!(weights.tensors.contains_key("bias"));
+        assert!(weights.tensors.contains_key("norm"));
     }
 }
