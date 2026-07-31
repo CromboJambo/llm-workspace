@@ -40,14 +40,15 @@ pub enum GgufValueType {
     Int16,
     Uint32,
     Int32,
+    Float32, // llama.cpp uses 6 for FLOAT32
     Uint64,
     Int64,
-    Float32,
     Bool,
     String,
     Array,
     Int8Array,
     Uint8Array,
+    Float64, // llama.cpp uses 12 for FLOAT64
     Bfloat16,
     Float16,
 }
@@ -61,16 +62,17 @@ impl GgufValueType {
             3 => Some(Self::Int16),
             4 => Some(Self::Uint32),
             5 => Some(Self::Int32),
-            6 => Some(Self::Uint64),
-            7 => Some(Self::Int64),
-            8 => Some(Self::String), // llama.cpp uses 8 for STRING (not 10 per spec)
-            9 => Some(Self::Float32),
-            10 => Some(Self::Bool),
-            11 => Some(Self::Array),
-            12 => Some(Self::Int8Array),
-            13 => Some(Self::Uint8Array),
-            14 => Some(Self::Bfloat16),
-            15 => Some(Self::Float16),
+            6 => Some(Self::Float32), // llama.cpp uses 6 for FLOAT32
+            7 => Some(Self::Bool),     // llama.cpp uses 7 for BOOL
+            8 => Some(Self::String),   // llama.cpp uses 8 for STRING
+            9 => Some(Self::Array),    // llama.cpp uses 9 for ARRAY
+            10 => Some(Self::Uint64),  // llama.cpp uses 10 for UINT64
+            11 => Some(Self::Int64),   // llama.cpp uses 11 for INT64
+            12 => Some(Self::Float64), // llama.cpp uses 12 for FLOAT64 (extra type)
+            13 => Some(Self::Int8Array),
+            14 => Some(Self::Uint8Array),
+            15 => Some(Self::Bfloat16),
+            16 => Some(Self::Float16),
             _ => None,
         }
     }
@@ -83,16 +85,17 @@ impl GgufValueType {
             Self::Int16 => 3,
             Self::Uint32 => 4,
             Self::Int32 => 5,
-            Self::Uint64 => 6,
-            Self::Int64 => 7,
-            Self::String => 8, // llama.cpp uses 8 for STRING (not 10 per spec)
-            Self::Float32 => 9,
-            Self::Bool => 10,
-            Self::Array => 11,
-            Self::Int8Array => 12,
-            Self::Uint8Array => 13,
-            Self::Bfloat16 => 14,
-            Self::Float16 => 15,
+            Self::Float32 => 6, // llama.cpp uses 6 for FLOAT32
+            Self::Bool => 7,     // llama.cpp uses 7 for BOOL
+            Self::String => 8,   // llama.cpp uses 8 for STRING
+            Self::Array => 9,    // llama.cpp uses 9 for ARRAY
+            Self::Uint64 => 10,  // llama.cpp uses 10 for UINT64
+            Self::Int64 => 11,   // llama.cpp uses 11 for INT64
+            Self::Float64 => 12, // llama.cpp uses 12 for FLOAT64
+            Self::Int8Array => 13,
+            Self::Uint8Array => 14,
+            Self::Bfloat16 => 15,
+            Self::Float16 => 16,
         }
     }
 
@@ -108,9 +111,8 @@ impl GgufValueType {
         match self {
             Self::Uint8 | Self::Int8 | Self::Bool | Self::Int8Array | Self::Uint8Array => Some(1),
             Self::Uint16 | Self::Int16 | Self::Bfloat16 | Self::Float16 => Some(2),
-            Self::Uint32 | Self::Int32 => Some(4),
-            Self::Uint64 | Self::Int64 => Some(8),
-            Self::Float32 => Some(4),
+            Self::Uint32 | Self::Int32 | Self::Float32 => Some(4),
+            Self::Uint64 | Self::Int64 | Self::Float64 => Some(8),
             Self::String | Self::Array => None,
         }
     }
@@ -149,7 +151,9 @@ impl GgufKvPair {
             GgufKvValue::Uint32(..)
             | GgufKvValue::Int32(..)
             | GgufKvValue::Float32(..) => 4,
-            GgufKvValue::Uint64(..) | GgufKvValue::Int64(..) => 8,
+            GgufKvValue::Uint64(..)
+            | GgufKvValue::Int64(..)
+            | GgufKvValue::Float64(..) => 8,
             GgufKvValue::String(s) => 8 + s.len(),
             GgufKvValue::Int8Array(arr) => 8 + arr.len(),
             GgufKvValue::Uint8Array(arr) => 8 + arr.len(),
@@ -440,14 +444,15 @@ pub enum GgufKvValue {
     Int32(i32),
     Uint64(u64),
     Int64(i64),
-    String(String),
     Float32(f32),
     Bool(bool),
+    String(String),
     Array(Vec<GgufKvValue>),
     Int8Array(Vec<i8>),
     Uint8Array(Vec<u8>),
-    Float16(u16),
+    Float64(f64), // llama.cpp uses 12 for FLOAT64
     Bfloat16(f32),
+    Float16(u16),
 }
 
 impl GgufKvValue {
@@ -535,6 +540,7 @@ impl GgufKvValue {
             GgufKvValue::Array(..) => GgufValueType::Array,
             GgufKvValue::Int8Array(..) => GgufValueType::Int8Array,
             GgufKvValue::Uint8Array(..) => GgufValueType::Uint8Array,
+            GgufKvValue::Float64(..) => GgufValueType::Float64,
             GgufKvValue::Float16(..) => GgufValueType::Float16,
             GgufKvValue::Bfloat16(..) => GgufValueType::Bfloat16,
         }
@@ -556,6 +562,7 @@ impl GgufKvValue {
             GgufKvValue::Array(_) => "array",
             GgufKvValue::Int8Array(_) => "i8[]",
             GgufKvValue::Uint8Array(_) => "u8[]",
+            GgufKvValue::Float64(_) => "f64",
             GgufKvValue::Float16(_) => "f16",
             GgufKvValue::Bfloat16(_) => "bf16",
         }

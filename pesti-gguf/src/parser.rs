@@ -148,14 +148,19 @@ where
     // - Key name: raw bytes
     // - Value type: u32 LE
     
+    eprintln!("DEBUG: read_kv_pair_v3 called");
+    
     // 1. Read key length (u64 LE)
     let key_len = reader.read_u64::<LittleEndian>()? as usize;
+    eprintln!("DEBUG: key_len = {}", key_len);
+    
     if key_len == 0 || key_len > 1024 * 1024 {
         return Err(GgufError::Io(format!("key length {} out of range", key_len)));
     }
 
     // 2. Read key name (raw bytes)
     let key_bytes = read_bytes(reader, key_len)?;
+    eprintln!("DEBUG: key_bytes = {:?}", String::from_utf8_lossy(&key_bytes));
     let key = String::from_utf8(key_bytes).map_err(GgufError::Utf8)?;
 
     // 3. Read value type (u32 LE)
