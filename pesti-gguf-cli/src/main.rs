@@ -143,7 +143,7 @@ fn main() {
         if let Some(tensor) = header.get_tensor(tensor_name) {
             let stored = tensor.stored_size();
             println!("  extracting {} ({} bytes stored, {} dequantized)...", tensor_name, stored, tensor.element_count());
-            match pesti_gguf::parser::extract_tensor_bytes(
+            match pesti_gguf::parser::extract_tensor_bytes_from_path(
                 &args.gguf_path,
                 tensor.offset,
                 stored as usize,
