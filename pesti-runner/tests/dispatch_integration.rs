@@ -58,27 +58,15 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
             buf.extend_from_slice(s.as_bytes());
         }
         GgufKvValue::Array(arr) => {
-            let element_type = arr
-                .first()
-                .map(|v| v.value_type())
-                .unwrap_or(GgufValueType::String);
-            buf.push(element_type as u8);
+            // GGUF v3: element_type (u32), count (u64), then elements
+            let element_type: u32 = 8; // GgufValueType::String
+            buf.extend_from_slice(&element_type.to_le_bytes());
             buf.extend_from_slice(&(arr.len() as u64).to_le_bytes());
             for item in arr {
                 match item {
-                    GgufKvValue::Uint8(v) => buf.push(*v),
-                    GgufKvValue::Int8(v) => buf.push(*v as u8),
-                    GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                    GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
-                    GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                    GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
-                    GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                    GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
-                    GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-                    GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
-                    GgufKvValue::Bool(v) => buf.push(*v as u8),
                     GgufKvValue::String(s) => {
-                        buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
+                        // String array elements: u32 length + data
+                        buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
                         buf.extend_from_slice(s.as_bytes());
                     }
                     _ => {}
@@ -138,15 +126,16 @@ fn make_test_gguf(path: &PathBuf) {
         ("norm.weight", vec![64]),
     ];
 
-    // Build the header buffer first to know the actual data section start
+    // Build header to compute alignment
     let mut hdr = Vec::new();
     hdr.extend_from_slice(b"GGUF");
     hdr.extend_from_slice(&3u32.to_le_bytes());
-    hdr.extend_from_slice(&(tensor_specs.len() as u64).to_le_bytes());
-    hdr.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
+    let tensor_count = tensor_specs.len() as u64;
+    let kv_count = kv_pairs.len() as u64;
+    hdr.extend_from_slice(&tensor_count.to_le_bytes());
+    hdr.extend_from_slice(&kv_count.to_le_bytes());
     for kv in &kv_pairs {
         let key_bytes = kv.key.as_bytes();
-        // V3 uses u64 for key lengths (unlike v1/v2 which use u32)
         hdr.extend_from_slice(&(key_bytes.len() as u64).to_le_bytes());
         hdr.extend_from_slice(key_bytes);
         hdr.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
@@ -156,12 +145,9 @@ fn make_test_gguf(path: &PathBuf) {
         write_tensor_info_raw(&mut hdr, name, shape, 1, 0);
     }
 
-    // Compute aligned data section start from actual header size
     let buf_size_before = hdr.len() as u64;
     let data_section_start = (buf_size_before + 31) & !31;
-    println!("Buffer size: {}, aligned data_section_start: {}", buf_size_before, data_section_start);
 
-    // Compute tensor offsets relative to data_section_start
     let mut cumulative = 0u64;
     let tensor_infos: Vec<_> = tensor_specs
         .iter()
@@ -173,7 +159,7 @@ fn make_test_gguf(path: &PathBuf) {
         })
         .collect();
 
-    // Write the final file with correct offsets
+    // Write final file
     let mut buf = Vec::new();
     buf.extend_from_slice(b"GGUF");
     buf.extend_from_slice(&3u32.to_le_bytes());
@@ -239,12 +225,14 @@ fn test_dispatch_vs_cpu_output() {
     let dir = tempdir().unwrap();
     let gguf_path = dir.path().join("test.gguf");
     make_test_gguf(&gguf_path);
+    
+    let debug_path = std::path::PathBuf::from("/tmp/debug_test.gguf");
+    if let Err(_) = std::fs::copy(&gguf_path, &debug_path) {
+        println!("Saved test GGUF to {:?}", debug_path);
+    }
 
     let weights = load_gguf_weights(&gguf_path).expect("Failed to load GGUF weights");
     println!("Loaded {} tensors", weights.tensors.len());
-    for (name, data) in &weights.tensors {
-        println!("  tensor: {} size={} bytes", name, data.len());
-    }
 
     let mut cpu_model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
     let mut dispatch_model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
@@ -264,15 +252,6 @@ fn test_dispatch_vs_cpu_output() {
     let dispatch_logits = dispatch_model
         .apply_output_head(&dispatch_hidden)
         .expect("apply_output_head failed");
-
-    println!(
-        "CPU logits (first 10): {:?}",
-        &cpu_logits[..10.min(cpu_logits.len())]
-    );
-    println!(
-        "Dispatch logits (first 10): {:?}",
-        &dispatch_logits[..10.min(dispatch_logits.len())]
-    );
 
     assert_eq!(
         cpu_logits.len(),

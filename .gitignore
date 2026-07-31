@@ -29,3 +29,4 @@ pesti-gguf/src/string_case.tmp
 conformance-corpus/
 lms-models/
 test_real_file_bin
+tarpaulin-report.json
