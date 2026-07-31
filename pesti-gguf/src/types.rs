@@ -777,17 +777,17 @@ mod tests {
     #[test]
     fn test_value_type_from_u32() {
         assert_eq!(GgufValueType::from_u32(0), Some(GgufValueType::Uint8));
-        assert_eq!(GgufValueType::from_u32(6), Some(GgufValueType::Uint64));
-        assert_eq!(GgufValueType::from_u32(7), Some(GgufValueType::Int64));
+        assert_eq!(GgufValueType::from_u32(6), Some(GgufValueType::Float32)); // llama.cpp uses 6 for FLOAT32
+        assert_eq!(GgufValueType::from_u32(7), Some(GgufValueType::Bool));
         assert_eq!(GgufValueType::from_u32(8), Some(GgufValueType::String)); // llama.cpp practical format
-        assert_eq!(GgufValueType::from_u32(9), Some(GgufValueType::Float32));
-        assert_eq!(GgufValueType::from_u32(10), Some(GgufValueType::Bool));
-        assert_eq!(GgufValueType::from_u32(11), Some(GgufValueType::Array));
-        assert_eq!(GgufValueType::from_u32(12), Some(GgufValueType::Int8Array));
-        assert_eq!(GgufValueType::from_u32(13), Some(GgufValueType::Uint8Array));
-        assert_eq!(GgufValueType::from_u32(14), Some(GgufValueType::Bfloat16));
-        assert_eq!(GgufValueType::from_u32(15), Some(GgufValueType::Float16));
-        assert_eq!(GgufValueType::from_u32(16), None);
+        assert_eq!(GgufValueType::from_u32(9), Some(GgufValueType::Array));
+        assert_eq!(GgufValueType::from_u32(10), Some(GgufValueType::Uint64));
+        assert_eq!(GgufValueType::from_u32(11), Some(GgufValueType::Int64));
+        assert_eq!(GgufValueType::from_u32(12), Some(GgufValueType::Float64));
+        assert_eq!(GgufValueType::from_u32(13), Some(GgufValueType::Int8Array));
+        assert_eq!(GgufValueType::from_u32(14), Some(GgufValueType::Uint8Array));
+        assert_eq!(GgufValueType::from_u32(15), Some(GgufValueType::Bfloat16));
+        assert_eq!(GgufValueType::from_u32(16), Some(GgufValueType::Float16));
     }
 
     #[test]
@@ -1453,7 +1453,8 @@ mod tests {
     #[test]
     fn test_value_type_from_u32_unmapped_reserved() {
         assert!(GgufValueType::from_u32(17).is_none());
-        assert!(GgufValueType::from_u32(16).is_none());
+        // Value 16 is now Float16, so it should return Some
+        assert_eq!(GgufValueType::from_u32(16), Some(GgufValueType::Float16));
     }
 
     #[test]
