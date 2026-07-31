@@ -1380,5 +1380,6 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &pesti_gguf::GgufKvValue) {
         GgufKvValue::Float16(v) => {
             buf.extend_from_slice(&(*v as u16).to_le_bytes())
         }
+        GgufKvValue::Float64(v) => buf.extend_from_slice(&v.to_le_bytes()),
     }
 }
