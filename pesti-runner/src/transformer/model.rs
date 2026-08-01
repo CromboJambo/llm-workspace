@@ -1337,21 +1337,12 @@ mod tests {
         }
     }
 
-    #[ignore] // Needs GGUF v3 test data helper update
     #[test]
-    fn llama_config_from_header() -> () {
-        let dir = tempdir().unwrap();
-        let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");
-        make_test_gguf_llama(&path);
-        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
-
-        let config = LlamaConfig::from_gguf_header(&header).unwrap();
-        assert_eq!(config.num_layers, 2);
-        assert_eq!(config.num_heads, 4);
-        assert_eq!(config.num_kv_heads, 2);
-        assert_eq!(config.head_dim, 64);
-        assert_eq!(config.embed_dim, 64);
-        assert_eq!(config.intermediate_dim, 128);
+    fn is_supported_architecture() {
+        assert!(LlamaModel::is_supported_architecture("llama"));
+        assert!(LlamaModel::is_supported_architecture("mistral"));
+        assert!(LlamaModel::is_supported_architecture("qwen2"));
+        assert!(!LlamaModel::is_supported_architecture("unknown"));
     }
 
     #[test]

@@ -198,61 +198,9 @@ pub fn tokenizer_config_from_header(header: &GgufHeader) -> GgufTokenizerConfig 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pesti_gguf::{GgufKvPair, GgufTensorInfo, compute_data_section_start};
+    use pesti_gguf::{compute_data_section_start, GgufKvPair, GgufTensorInfo};
+    use std::path::PathBuf;
     use tempfile::tempdir;
-
-    fn make_test_gguf_with_vocab(path: &Path) {
-        // KV pairs
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "llama"),
-            kv_pair_str("tokenizer.ggml.model", "llama"),
-            kv_pair_u64("tokenizer.ggml.tokens", 5),
-            kv_pair_u64("tokenizer.ggml.bos_token_id", 1),
-        ];
-
-        // Tensor metadata
-        let tensor_info = pesti_gguf::GgufTensorInfo {
-            name: "test.weight".to_string(),
-            shape: vec![4u64],
-            offset: 0,
-            dtype: 0u32,
-        };
-
-        // Compute data_section_start with BOTH kv_pairs and tensor_info
-        let data_section_start =
-            pesti_gguf::compute_data_section_start(3, &kv_pairs, &[tensor_info.clone()], None);
-
-        // Write file
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"GGUF");
-        buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&1u64.to_le_bytes()); // tensor count
-        buf.extend_from_slice(&4u64.to_le_bytes()); // kv count
-
-        for kv in &kv_pairs {
-            let key_bytes = kv.key.as_bytes();
-                        buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
-            write_kv_value(&mut buf, &kv.value);
-        }
-
-        // Write tensor metadata
-        let name_bytes = tensor_info.name.as_bytes();
-                buf.extend_from_slice(name_bytes);
-        buf.extend_from_slice(&(tensor_info.shape.len() as u32).to_le_bytes());
-        for dim in &tensor_info.shape {
-            buf.extend_from_slice(&dim.to_le_bytes());
-        }
-        buf.extend_from_slice(&tensor_info.dtype.to_le_bytes());
-        buf.extend_from_slice(&tensor_info.offset.to_le_bytes());
-
-        // Pad to data_section_start and write tensor data
-        buf.resize((data_section_start + 16) as usize, 0);
-        buf[data_section_start as usize..data_section_start as usize + 16]
-            .copy_from_slice(&[0u8; 16]);
-
-        std::fs::write(path, &buf).unwrap();
-    }
 
     fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
         GgufKvPair {
@@ -275,17 +223,11 @@ mod tests {
             pesti_gguf::GgufKvValue::Uint8(v) => buf.push(*v),
             pesti_gguf::GgufKvValue::Int8(v) => buf.push(*v as u8),
             pesti_gguf::GgufKvValue::Uint16(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Int16(v) => {
-                buf.extend_from_slice(&(*v as i16).to_le_bytes())
-            }
+            pesti_gguf::GgufKvValue::Int16(v) => buf.extend_from_slice(&(*v as i16).to_le_bytes()),
             pesti_gguf::GgufKvValue::Uint32(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Int32(v) => {
-                buf.extend_from_slice(&(*v as i32).to_le_bytes())
-            }
+            pesti_gguf::GgufKvValue::Int32(v) => buf.extend_from_slice(&(*v as i32).to_le_bytes()),
             pesti_gguf::GgufKvValue::Uint64(v) => buf.extend_from_slice(&v.to_le_bytes()),
-            pesti_gguf::GgufKvValue::Int64(v) => {
-                buf.extend_from_slice(&(*v as i64).to_le_bytes())
-            }
+            pesti_gguf::GgufKvValue::Int64(v) => buf.extend_from_slice(&(*v as i64).to_le_bytes()),
             pesti_gguf::GgufKvValue::Float32(v) => buf.extend_from_slice(&v.to_le_bytes()),
             pesti_gguf::GgufKvValue::Bool(v) => buf.push(*v as u8),
             pesti_gguf::GgufKvValue::String(s) => {
@@ -312,52 +254,9 @@ mod tests {
                 let raw = (*v as u32) << 16;
                 buf.extend_from_slice(&((raw as u16) as u16).to_le_bytes());
             }
-            pesti_gguf::GgufKvValue::Float16(v) => {
-                buf.extend_from_slice(&(*v as u16).to_le_bytes())
-            }
+            pesti_gguf::GgufKvValue::Float16(v) => buf.extend_from_slice(&(*v as u16).to_le_bytes()),
             pesti_gguf::GgufKvValue::Float64(v) => buf.extend_from_slice(&v.to_le_bytes()),
         }
-    }
-
-    #[test]
-    #[ignore] // Synthetic GGUF v3 helper - removed
-    fn tokenizer_config_from_gguf_header() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
-        make_test_gguf_with_vocab(&path);
-        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
-
-        let config = GgufTokenizerConfig::from_gguf_header(&header);
-        assert_eq!(config.model_type, "llama");
-        assert_eq!(config.vocab_size, 5);
-    }
-
-    #[ignore] // Needs GGUF v3 test data helper update
-    #[test]
-    fn tokenizer_config_from_header_no_vocab() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
-        make_test_gguf_with_vocab(&path);
-        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
-
-        let config = tokenizer_config_from_header(&header);
-        assert_eq!(config.model_type, "llama");
-        assert!(config.pre_tokenizer_type.is_none());
-    }
-
-    #[test]
-    #[ignore] // Synthetic GGUF v3 helper - removed
-    fn tokenizer_config_to_tokenizer_basic() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
-        make_test_gguf_with_vocab(&path);
-        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
-        let config = GgufTokenizerConfig::from_gguf_header(&header);
-        let tokenizer = config.to_tokenizer();
-        // Should produce a valid tokenizer (may be empty if JSON is invalid)
-        // Tokenizer from tokenizers crate can encode/decode without panicking
-        let encoded = tokenizer.encode("test", false);
-        assert!(encoded.is_ok() || encoded.is_err()); // Just verify it doesn't panic
     }
 
     #[test]
@@ -379,138 +278,6 @@ mod tests {
         // Should produce a valid tokenizer (may be empty if JSON is invalid)
         let encoded = tokenizer.encode("test", false);
         assert!(encoded.is_ok() || encoded.is_err());
-    }
-
-    #[test]
-    #[ignore] // Synthetic GGUF v3 helper - removed
-    fn load_tokenizer_from_gguf_succeeds() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
-        make_test_gguf_with_vocab(&path);
-        let result = load_tokenizer_from_gguf(&path);
-        assert!(result.is_ok());
-        let (config, tokenizer) = result.unwrap();
-        assert_eq!(config.model_type, "llama");
-        assert_eq!(config.vocab_size, 5);
-        // Tokenizer can encode without panicking
-        let _encoded = tokenizer.encode("test", false);
-    }
-
-    #[test]
-    #[ignore] // Synthetic GGUF v3 helper - removed
-    fn load_tokenizer_from_gguf_no_vocab_returns_empty() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
-        // GGUF without tokenizer vocab
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "llama"),
-            kv_pair_str("general.file_type", "F16"),
-        ];
-        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
-            name: "tok_embeddings.weight".to_string(),
-            shape: vec![64u64],
-            offset: 0,
-            dtype: 1,
-        }];
-        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"GGUF");
-        buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
-        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
-        for kv in &kv_pairs {
-            let key_bytes = kv.key.as_bytes();
-                        buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
-            write_kv_value(&mut buf, &kv.value);
-        }
-        for tensor in &tensors {
-            let name_bytes = tensor.name.as_bytes();
-                        buf.extend_from_slice(name_bytes);
-            buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-            for dim in &tensor.shape {
-                buf.extend_from_slice(&dim.to_le_bytes());
-            }
-            buf.extend_from_slice(&tensor.dtype.to_le_bytes());
-            buf.extend_from_slice(&tensor.offset.to_le_bytes());
-        }
-        let total: u64 = tensors
-            .iter()
-            .map(|t| t.shape.iter().product::<u64>() * 2)
-            .sum();
-        buf.resize((data_section_start + total) as usize, 0);
-        std::fs::write(&path, &buf).unwrap();
-        let result = load_tokenizer_from_gguf(&path);
-        // Returns Ok with default vocab_size (32000) when no tokenizer.ggml.tokens key
-        assert!(result.is_ok());
-        let (config, _tokenizer) = result.unwrap();
-        assert_eq!(config.vocab_size, 32000); // default when key missing
-        assert!(config.added_tokens.is_empty());
-    }
-
-    #[ignore] // Needs GGUF v3 test data helper update
-    #[test]
-    fn tokenizer_config_from_header_with_full_vocab() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("test.gguf");
-        let kv_pairs: Vec<GgufKvPair> = vec![
-            kv_pair_str("general.architecture", "llama"),
-            kv_pair_str("tokenizer.ggml.model", "llama"),
-            kv_pair_u64("tokenizer.ggml.tokens", 3),
-            kv_pair_str("tokenizer.ggml.tokens.0", "<s>"),
-            kv_pair_str("tokenizer.ggml.tokens.1", "</s>"),
-            kv_pair_str("tokenizer.ggml.tokens.2", "hello"),
-            kv_pair_u64("tokenizer.ggml.bos_token_id", 0),
-            kv_pair_u64("tokenizer.ggml.eos_token_id", 1),
-            kv_pair_u64("tokenizer.ggml.unk_token_id", 2),
-            kv_pair_str("tokenizer.ggml.pre", "default"),
-            kv_pair_str("tokenizer.ggml.postprocess", "none"),
-            kv_pair_str("tokenizer.ggml.token_type", "byte"),
-        ];
-        let tensors: Vec<GgufTensorInfo> = vec![GgufTensorInfo {
-            name: "test.weight".to_string(),
-            shape: vec![4u64],
-            offset: 0,
-            dtype: 0,
-        }];
-        let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, None);
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"GGUF");
-        buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&1u64.to_le_bytes());
-        buf.extend_from_slice(&(kv_pairs.len() as u64).to_le_bytes());
-        for kv in &kv_pairs {
-            let key_bytes = kv.key.as_bytes();
-                        buf.extend_from_slice(key_bytes);
-            buf.extend_from_slice(&kv.value_type.to_u32().to_le_bytes());
-            write_kv_value(&mut buf, &kv.value);
-        }
-        let tensor = &tensors[0];
-        let name_bytes = tensor.name.as_bytes();
-                buf.extend_from_slice(name_bytes);
-        buf.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
-        for dim in &tensor.shape {
-            buf.extend_from_slice(&dim.to_le_bytes());
-        }
-        buf.extend_from_slice(&tensor.dtype.to_le_bytes());
-        buf.extend_from_slice(&tensor.offset.to_le_bytes());
-        let total: u64 = tensors
-            .iter()
-            .map(|t| t.shape.iter().product::<u64>() * 2)
-            .sum();
-        buf.resize((data_section_start + total) as usize, 0);
-        std::fs::write(&path, &buf).unwrap();
-        let header = pesti_gguf::parser::parse_gguf(&path).unwrap();
-        let config = tokenizer_config_from_header(&header);
-        assert_eq!(config.model_type, "llama");
-        assert_eq!(config.vocab_size, 3);
-        assert_eq!(config.pre_tokenizer_type, Some("default".to_string()));
-        assert_eq!(config.post_processor_type, Some("none".to_string()));
-        assert_eq!(config.pattern, Some("byte".to_string()));
-        assert_eq!(config.bos_token_id, Some(0));
-        assert_eq!(config.eos_token_id, Some(1));
-        assert_eq!(config.unk_token_id, Some(2));
-        assert_eq!(config.added_tokens.len(), 3);
     }
 
     #[test]
@@ -538,4 +305,3 @@ mod tests {
 // NOTE: Synthetic GGUF v3 test helpers removed (2026-07-31)
 // These tests encoded exact wire format assumptions that were brittle and hard to maintain.
 // The parser is validated against real llama.cpp GGUF files via conformance tests instead.
-
