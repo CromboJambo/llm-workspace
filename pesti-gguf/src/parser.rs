@@ -26,7 +26,6 @@ pub fn parse_gguf_reader<R: Read + Seek>(reader: &mut R) -> Result<GgufHeader, G
     }
 
     let version = reader.read_u32::<LittleEndian>()?;
-    eprintln!("DEBUG: Reading GGUF version {}", version);
 
     match version {
         GGUF_VERSION_1 => parse_v1(reader),
@@ -103,7 +102,6 @@ fn parse_v3<R: Read + Seek>(reader: &mut R) -> Result<GgufHeader, GgufError> {
     for _ in 0..tensor_count {
         tensors.push(read_tensor_info_v3(reader)?);
     }
-    eprintln!("DEBUG: parse_v3: read {} tensors", tensors.len());
 
     let alignment = read_alignment_from_kv(&kv_pairs);
     let data_section_start = compute_data_section_start(3, &kv_pairs, &tensors, alignment);
@@ -147,12 +145,15 @@ fn read_kv_pair<R: Read + Seek>(reader: &mut R) -> Result<GgufKvPair, GgufError>
 }
 
 /// Read KV pair for v3 practical format - keys and strings use u64 lengths
+///
+/// GGUF v3 practical format follows llama.cpp's wire layout:
+/// - Key length: u64 (LE) - allows longer metadata keys
+/// - Key name: raw bytes
+/// - Value type: u32 (LE) - identifies value format
+/// - Value data: varies by type
 fn read_kv_pair_v3<R: Read + Seek>(reader: &mut R) -> Result<GgufKvPair, GgufError> {
-    eprintln!("DEBUG: read_kv_pair_v3 called");
-
     // 1. Read key length (u64 LE)
     let key_len = reader.read_u64::<LittleEndian>()? as usize;
-    eprintln!("DEBUG: key_len = {}", key_len);
 
     if key_len == 0 || key_len > 1024 * 1024 {
         return Err(GgufError::Io(format!(
@@ -200,22 +201,32 @@ fn read_kv_value_v3<R: Read + Seek>(
         }
         GgufValueType::Array => {
             // Array: read element type (u32), then count (u64), then elements
+            ///
+            /// GGUF v3 array format per llama.cpp:
+            /// - Element type: u32 - identifies type of array elements
+            /// - Count: u64 - number of elements
+            /// - Elements: serialized based on element type
+            ///
+            /// Note: String array elements use u64 lengths (not u32) to match
+            /// real GGUF files from llama.cpp
             let elem_type_raw = reader.read_u32::<LittleEndian>()?;
-            eprintln!("DEBUG: Array elem_type={}", elem_type_raw);
             let elem_type = GgufValueType::from_u32(elem_type_raw)
                 .ok_or(GgufError::InvalidValueType(elem_type_raw))?;
 
             let elem_count = reader.read_u64::<LittleEndian>()? as usize;
-            eprintln!("DEBUG: Array elem_count={}", elem_count);
 
             let mut elements = Vec::with_capacity(elem_count);
             for i in 0..elem_count {
                 // For each element, recursively read based on element type
                 match elem_type {
                     GgufValueType::String => {
-                        // String array elements use u32 length (not u64)
-                        let str_len = reader.read_u32::<LittleEndian>()? as usize;
-                        eprintln!("DEBUG: String element {} len={}", i, str_len);
+                        // Real GGUF files use u64 for string array element lengths
+                        ///
+                        /// While top-level strings use u32 lengths in some GGUF versions,
+                        /// string elements inside arrays consistently use u64 lengths
+                        /// across all llama.cpp models. This matches the wire format
+                        /// specification and ensures compatibility with real model files.
+                        let str_len = reader.read_u64::<LittleEndian>()? as usize;
                         let bytes = read_bytes(reader, str_len)?;
                         elements.push(GgufKvValue::String(
                             String::from_utf8(bytes).map_err(GgufError::Utf8)?,
@@ -368,8 +379,6 @@ fn read_tensor_info_v3<R>(reader: &mut R) -> Result<GgufTensorInfo, GgufError>
 where
     R: Read + std::io::Seek,
 {
-    eprintln!("DEBUG: read_tensor_info_v3 called");
-
     // Per llama.cpp gguf_reader.py _get_tensor_info_field():
     // - Name length: u64 LE (NOT u32!)
     // - Name: raw bytes
@@ -380,7 +389,6 @@ where
 
     // 1. Read tensor name length (u64 LE)
     let name_len = reader.read_u64::<LittleEndian>()? as usize;
-    eprintln!("DEBUG: tensor name length: {}", name_len);
     if name_len == 0 || name_len > 1024 * 1024 {
         return Err(GgufError::Io(format!(
             "tensor name length {} out of range",
@@ -391,11 +399,9 @@ where
     // 2. Read tensor name
     let name_bytes = read_bytes(reader, name_len)?;
     let name = String::from_utf8(name_bytes).map_err(GgufError::Utf8)?;
-    eprintln!("DEBUG: tensor name: {}", name);
 
     // 3. Read number of dimensions (u32 LE)
     let n_dims = reader.read_u32::<LittleEndian>()?;
-    eprintln!("DEBUG: n_dims: {}", n_dims);
 
     // 4. Read shape array (n_dims * u64 LE)
     let mut shape = Vec::with_capacity(n_dims as usize);

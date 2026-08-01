@@ -5,7 +5,8 @@ pub mod parser;
 #[cfg(test)]
 mod tests {
     mod defensive_tests;
-    // mod gguf_v3_conformance; // Disabled - uses file-based API that doesn't exist
+    mod gguf_v3_conformance;
+    mod large_model_conformance;
 }
 
 pub use error::GgufError;
