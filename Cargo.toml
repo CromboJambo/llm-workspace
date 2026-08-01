@@ -66,6 +66,7 @@ tracing-appender = "0.2"
 cudarc = { version = "0.19.4", features = ["std", "cublas", "cublaslt", "curand", "driver", "nvrtc", "f16", "f8", "cuda-12050", "dynamic-linking"], default-features = false }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
 gemm = { version = "0.19.0", features = ["wasm-simd128-enable"] }
+# pulp 0.22.x has nightly assertion bug; latest pinned
 half = { version = "2.7.1", features = ["num-traits", "use-intrinsics", "rand_distr"] }
 float8 = { version = "0.7.0", features = ["num-traits", "rand_distr"] }
 libc = "0.2.186"
