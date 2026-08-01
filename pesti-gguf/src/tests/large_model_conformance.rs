@@ -134,7 +134,7 @@ fn test_large_model_tensor_structure() {
         "Tensors should have at most 2 dimensions, found dims: {:?}",
         unique_dims
     );
-    let max_dims = unique_dims.iter().copied().max().unwrap_or(1);
+    let max_dims = *unique_dims.iter().max().unwrap_or(&1usize);
     eprintln!("✓ All tensors have {} dimensions or fewer", max_dims);
 
     // Validate tensor shapes are reasonable (no zero dimensions except for special cases)
