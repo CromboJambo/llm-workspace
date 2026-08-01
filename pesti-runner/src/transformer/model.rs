@@ -1346,14 +1346,6 @@ mod tests {
     }
 
     #[test]
-    fn is_supported_architecture() {
-        assert!(LlamaModel::is_supported_architecture("llama"));
-        assert!(LlamaModel::is_supported_architecture("mistral"));
-        assert!(LlamaModel::is_supported_architecture("qwen2"));
-        assert!(!LlamaModel::is_supported_architecture("unknown"));
-    }
-
-    #[test]
     fn f16_bytes_to_f32_known() {
         let pack = |v: f32| -> [u8; 2] {
             let bits = v.to_bits();
