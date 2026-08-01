@@ -27,6 +27,7 @@
 | Tests passing | **367 / 371** ✅ (53 in pesti-gguf + 314 in pesti-runner; 7 ignored) |
 | Tests failing | 0 |
 | Clippy warnings | 116 |
+| Coverage (manual summary) | ~52% GGUF crate, GPU stubbed by design |
 | Build (default) | ✅ Clean |
 | Build (mistralrs) | ✅ Clean |
 
