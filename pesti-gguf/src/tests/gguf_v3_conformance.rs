@@ -3,7 +3,7 @@
 //! These tests validate the parser against the actual wire format of real GGUF files,
 //! based on analysis of llama.cpp's implementation and hex dump inspection.
 
-use super::*;
+use crate::*;
 use std::path::Path;
 
 /// Test that parses a known GGUF v3 file and validates specific KV pairs
