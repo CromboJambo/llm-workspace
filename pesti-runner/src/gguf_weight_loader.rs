@@ -774,7 +774,7 @@ fn dequantize_q5_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
 fn dequantize_q6_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
     let num_full_blocks = element_count / 16;
     let remaining = element_count % 16;
-    let expected_size = (element_count as u64 / 2 + element_count as u64 / 4 + 256) as usize;
+    let expected_size = (num_full_blocks * 24 + if remaining > 0 { 3 + remaining.div_ceil(2) } else { 0 }) as usize;
 
     if data.len() < expected_size {
         return Err(RunnerError::Internal(format!(
@@ -808,13 +808,9 @@ fn dequantize_q6_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
 
         for i in 0..16usize {
             let q6_val = ((q6[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
-            let mask_bit = (mask >> i) & 1;
+            let mask_bit = (mask >> (i % 4)) & 1;
 
-            let combined = if mask_bit != 0 {
-                q6_val + 4
-            } else {
-                q6_val
-            };
+            let combined = if mask_bit != 0 { q6_val + 4 } else { q6_val };
 
             result.push(d * ((combined as f32 - 32.0) / 32.0) * scale);
         }
@@ -824,21 +820,21 @@ fn dequantize_q6_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
     if remaining > 0 {
         let d = f16_to_f32(&data[offset..offset + 2]);
         let mask = data[offset + 2];
-        let q6 = &data[offset + 3..offset + 3 + remaining];
+        let q6 = &data[offset + 3..offset + 3 + remaining.min(12)];
         let scale = data[offset + 15] as f32;
 
         for i in 0..remaining {
             let q6_val = ((q6[i / 4] >> (2 * (i % 4))) & 0x03) as i32;
-            let mask_bit = (mask >> i) & 1;
+            let mask_bit = (mask >> (i % 4)) & 1;
 
-            let combined = if mask_bit != 0 {
-                q6_val + 4
-            } else {
-                q6_val
-            };
+            let combined = if mask_bit != 0 { q6_val + 4 } else { q6_val };
 
             result.push(d * ((combined as f32 - 32.0) / 32.0) * scale);
         }
+    }
+
+    Ok(result)
+}
     }
 
     Ok(result)
