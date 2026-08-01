@@ -65,8 +65,8 @@ fn write_kv_value(buf: &mut Vec<u8>, value: &GgufKvValue) {
             for item in arr {
                 match item {
                     GgufKvValue::String(s) => {
-                        // String array elements: u32 length + data
-                        buf.extend_from_slice(&(s.len() as u32).to_le_bytes());
+                        // Real GGUF files use u64 for string array element lengths
+                        buf.extend_from_slice(&(s.len() as u64).to_le_bytes());
                         buf.extend_from_slice(s.as_bytes());
                     }
                     _ => {}
@@ -220,7 +220,6 @@ fn test_linear_dispatch_accuracy() {
 }
 
 #[test]
-    #[ignore] // Needs parser fix for real GGUF files
 fn test_dispatch_vs_cpu_output() {
     let dir = tempdir().unwrap();
     let gguf_path = dir.path().join("test.gguf");

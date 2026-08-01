@@ -9,11 +9,10 @@ use std::path::Path;
 /// Find a real GGUF model on disk.
 fn find_gguf_model() -> Option<&'static str> {
     // Prefer the smallest non-embedding model to keep test time reasonable.
-    // gemma-4-E2B-it-Q4_K_M is ~3.3GB — the smallest generative model available.
     const CANDIDATES: &[&str] = &[
-        "/mnt/data/state/ai/lmstudio/models/lmstudio-community/gemma-4-E2B-it-GGUF/gemma-4-E2B-it-Q4_K_M.gguf",
-        "/mnt/data/state/ai/lmstudio/models/lmstudio-community/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf",
-        "/mnt/data/state/ai/lmstudio/models/lmstudio-community/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+        "/mnt/data/state/ai/lmstudio/models/lmstudio-community/embeddinggemma-300m-qat-GGUF/embeddinggemma-300m-qat-Q4_0.gguf",
+        "/mnt/data/state/ai/lmstudio/models/lmstudio-community/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
+        "/mnt/data/state/ai/lmstudio/models/lmstudio-community/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q4_K_M.gguf",
     ];
     for path in CANDIDATES {
         if Path::new(path).is_file() {
