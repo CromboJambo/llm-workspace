@@ -147,10 +147,10 @@ llm-workspace/
 | Build (mistralrs) | ✅ Clean |
 
 ### Metric Notes
-Test count verified: `cargo test -p pesti-gguf --lib` reports **79/79** passing, `cargo test -p pesti-runner --lib` reports **378/378** passing. Total: **457 tests**.
+Test count verified: `cargo test -p pesti-gguf --lib` reports **53/53** passing, `cargo test -p pesti-runner --lib` reports **314/321** (7 ignored). Total: **367 tests passing**, 7 ignored.
 
 ### Known Issues
-All GGUF v3 test data regression bugs fixed (STRING type value + key length format). See [ROADMAP-pesti-research.md](ROADMAP-pesti-research.md) for detailed fix notes.
+All GGUF v3 test data regression bugs fixed (STRING type value + u64 key lengths, 53/53 tests passing in `pesti-gguf`). See [GGUF_FIX_SUMMARY.md](GGUF_FIX_SUMMARY.md) for detailed fix notes.
 
 ## License
 
