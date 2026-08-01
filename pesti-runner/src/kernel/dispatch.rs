@@ -33,8 +33,8 @@
 use crate::error::RunnerError;
 use crate::inference_engine::InferenceEngine;
 use crate::kernel::attention::{
-    AttentionArch, AttentionConfig, AttentionError, AttentionKernel, AttentionSlice,
-    CpuAttentionKernel, CudaAttentionKernel,
+    AttentionArch, AttentionConfig, AttentionKernel,
+    CpuAttentionKernel,
 };
 use crate::kernel::candle_bridge;
 use crate::kernel::device_buf::DeviceBuffer;
@@ -838,7 +838,7 @@ impl AttentionDispatch {
         start_pos: usize,
         head_dim: usize,
     ) -> Result<(), DispatchError> {
-        let cos_shape = [seq_len, head_dim / 2];
+        let _cos_shape = [seq_len, head_dim / 2];
         let (cos, sin) = candle_bridge::rope_embeddings(seq_len, head_dim, 10000.0, 0)
             .map_err(|e| DispatchError::Kernel(format!("rope_embeddings: {e}")))?;
 
@@ -990,7 +990,7 @@ impl AttentionDispatch {
         .map_err(|e| DispatchError::Kernel(format!("f16_to_tensor(v): {e}")))?;
 
         // Apply RoPE to Q
-        let cos_shape = [cache_len, self.head_dim / 2];
+        let _cos_shape = [cache_len, self.head_dim / 2];
         let (cos, sin) = candle_bridge::rope_embeddings(cache_len, self.head_dim, 10000.0, 0)
             .map_err(|e| DispatchError::Kernel(format!("rope_embeddings: {e}")))?;
 

@@ -155,7 +155,7 @@ pub fn rope_embeddings(
     let positions: Vec<f32> = (0..seq_len).map(|p| p as f32).collect();
 
     // Compute positions * inv_freq
-    let shape = (seq_len, dim);
+    let _shape = (seq_len, dim);
     let positions_t = Tensor::from_vec(positions, (seq_len, 1), bridge_device())?;
     let inv_freq_t = Tensor::from_vec(inv_freq, (1, dim), bridge_device())?;
 

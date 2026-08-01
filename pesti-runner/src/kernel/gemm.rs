@@ -673,7 +673,7 @@ mod tests {
         let b_host: Vec<f16> = (0..k * n)
             .map(|i| f16::from_f32((i % 7) as f32 + 0.3))
             .collect();
-        let c_init: Vec<f32> = vec![0.0f32; m * n];
+        let _c_init: Vec<f32> = vec![0.0f32; m * n];
 
         // Compute CPU reference
         let mut c_ref = vec![0.0f32; m * n];

@@ -1261,7 +1261,7 @@ mod tests {
     }
 
     #[ignore] // Needs GGUF v3 test data helper update
-    #[ignore] // Synthetic GGUF v3 helper removed - see note above
+     // Synthetic GGUF v3 helper removed - see note above
     fn load_gguf_weights_f16_tensor_is_f32() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.gguf");
@@ -1404,7 +1404,7 @@ mod tests {
     }
 
     #[ignore] // Parser doesn't handle large string arrays in vocab GGUFs
-    #[ignore] // Synthetic GGUF v3 helper removed - see note above
+     // Synthetic GGUF v3 helper removed - see note above
     fn load_gguf_real_vocab_file() {
         let path =
             std::path::PathBuf::from("/home/crombo/llama.cpp/models/ggml-vocab-llama-spm.gguf");
@@ -1488,7 +1488,7 @@ mod tests {
     }
 
     #[ignore] // Needs GGUF v3 test data helper update
-    #[ignore] // Synthetic GGUF v3 helper removed - see note above
+     // Synthetic GGUF v3 helper removed - see note above
     fn dequantize_bf16_to_f32() {
         // BF16 data for 4 elements
         let bf16_data: Vec<u8> = vec![

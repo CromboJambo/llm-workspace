@@ -713,7 +713,7 @@ mod tests {
     }
     /// Test extraction of tensor bytes from GGUF file
     #[ignore] // Needs GGUF v3 test data helper update
-    #[ignore] // Synthetic GGUF v3 helper removed - see note above
+     // Synthetic GGUF v3 helper removed - see note above
     fn extract_gguf_tensor_returns_bytes() {
         let dir = tempdir().unwrap();
         let path = PathBuf::from(dir.path().to_str().unwrap()).join("test.gguf");

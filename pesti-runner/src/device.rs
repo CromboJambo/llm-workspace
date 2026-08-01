@@ -508,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn test_device_selector_refresh() {
         let mut selector = DeviceSelector::new();
-        let initial_len = selector.local_devices.len();
+        let _initial_len = selector.local_devices.len();
         
         selector.refresh().await;
         

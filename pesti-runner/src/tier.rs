@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn tiered_execution_threshold() {
-        let execution = TieredExecution::new(Tier::CpuBaseline);
+        let _execution = TieredExecution::new(Tier::CpuBaseline);
 
         // Check that thresholds are set correctly based on initial tier
         match Tier::CpuBaseline.tier_up_threshold() {

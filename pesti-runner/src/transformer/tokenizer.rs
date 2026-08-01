@@ -198,9 +198,9 @@ pub fn tokenizer_config_from_header(header: &GgufHeader) -> GgufTokenizerConfig 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pesti_gguf::{compute_data_section_start, GgufKvPair, GgufTensorInfo};
-    use std::path::PathBuf;
-    use tempfile::tempdir;
+    use pesti_gguf::GgufKvPair;
+    
+    
 
     fn kv_pair_str(key: &str, value: &str) -> GgufKvPair {
         GgufKvPair {

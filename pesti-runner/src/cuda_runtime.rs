@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn test_device_memory_allocation_and_free() {
         // Initialize CUDA driver and create a context that stays alive for the test
-        let ctx = unsafe {
+        let _ctx = unsafe {
             cuda_core::init(0).expect("Failed to initialize CUDA");
             CudaContext::new(0).expect("Failed to create CUDA context")
         };

@@ -151,7 +151,7 @@ fn test_dispatch_real_model_hidden_states_match() {
     let path = Path::new(model_path);
 
     // Load CPU model
-    let mut cpu_model = pesti_runner::model::CpuModel::load_gguf(path)
+    let cpu_model = pesti_runner::model::CpuModel::load_gguf(path)
         .unwrap_or_else(|e| panic!("Failed to load GGUF at {}: {}", model_path, e));
 
     // Load dispatch model

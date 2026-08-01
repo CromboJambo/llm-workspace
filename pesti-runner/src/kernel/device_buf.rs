@@ -435,7 +435,7 @@ pub fn free_on<M: Into<MemoryManager>>(manager: M, handle: RawHandle) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::memory::{CpuMemoryBackend, CudaMemoryBackend};
+    use crate::kernel::memory::CpuMemoryBackend;
     use half::f16;
 
     #[test]

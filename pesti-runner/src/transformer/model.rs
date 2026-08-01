@@ -1125,7 +1125,7 @@ mod tests {
 
         // Compute offsets
         let mut offset = 0u64;
-        let tensors: Vec<GgufTensorInfo> = tensor_shapes
+        let _tensors: Vec<GgufTensorInfo> = tensor_shapes
             .iter()
             .enumerate()
             .map(|(i, shape)| {

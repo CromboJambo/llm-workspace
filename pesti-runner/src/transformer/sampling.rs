@@ -168,12 +168,12 @@ mod tests {
     #[test]
     fn sample_with_zero_temperature_is_deterministic() {
         let logits = vec![0.1, 0.9, 0.3, 0.7];
-        let config = SamplingConfig { seed: None,
+        let _config = SamplingConfig { seed: None,
             temperature: 0.0,
             top_p: 0.0,
             top_k: 0,
         };
-        let mut rng = StdRng::seed_from_u64(42);
+        let _rng = StdRng::seed_from_u64(42);
 
         // With temp=0, argmax should be used for deterministic behavior
         let result = argmax(&logits);

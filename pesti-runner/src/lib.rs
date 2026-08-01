@@ -72,8 +72,8 @@ pub mod mistralrs_backend {
 mod tests {
     use super::*;
     use candle_core::DType;
-    use pesti_plug_in::protocol::{InferenceRequest, InferenceResponse, RunnerConfig};
-    use tempfile::tempdir;
+    
+    
 
     // ── DeviceBackend ──────────────────────────────────────────────────
 

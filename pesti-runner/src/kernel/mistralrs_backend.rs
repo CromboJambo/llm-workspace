@@ -13,7 +13,7 @@
 use crate::kernel::device_buf::DeviceBuffer;
 use crate::kernel::{
     AttentionArch, AttentionConfig, AttentionError, AttentionKernel,
-    GemmArch, GemmConfig, GemmError, GemmKernel, Kvcache,
+    GemmArch, GemmError, GemmKernel, Kvcache,
 };
 use half::f16;
 
