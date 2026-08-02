@@ -20,6 +20,7 @@ candle-datasets.workspace = true
 tokenizers.workspace = true
 tiktoken-rs.workspace = true
 serde.workspace = true
+byteorder = "1.4"
 serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
@@ -31,6 +32,7 @@ anyhow.workspace = true
 pesti-plug-in = { path = "../llm-plug-in" }
 pesti-safetensors = { path = "../pesti-safetensors" }
 pesti-gguf = { path = "../pesti-gguf" }
+ggml-quants = "0.1"
 cudarc.workspace = true
 encoding_rs = "0.8"
 intel-mkl-src.workspace = true
