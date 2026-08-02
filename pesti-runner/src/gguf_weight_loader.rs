@@ -20,6 +20,7 @@ use std::path::Path;
 use pesti_gguf::parser::{extract_tensor_bytes_from_path, parse_gguf};
 use pesti_gguf::types::{GgufDtype, GgufHeader, GgufTensorInfo};
 
+use crate::dequantize::{dequantize_q4_0_ggml, dequantize_q4_1_ggml, dequantize_q8_0_ggml};
 use crate::error::{Result, RunnerError};
 
 /// A loaded GGUF model's tensors in memory.
@@ -110,7 +111,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
             Ok(f32_data.into_iter().flat_map(|v| v.to_le_bytes()).collect())
         }
         GgufDtype::Q4_0 => {
-            let dequantized = dequantize_q4_0(raw_data, element_count)
+            let dequantized = dequantize_q4_0_ggml(raw_data, element_count)
                 .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
@@ -118,7 +119,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
                 .collect())
         }
         GgufDtype::Q4_1 => {
-            let dequantized = dequantize_q4_1(raw_data, element_count)
+            let dequantized = dequantize_q4_1_ggml(raw_data, element_count)
                 .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
@@ -126,7 +127,7 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
                 .collect())
         }
         GgufDtype::Q8_0 => {
-            let dequantized = dequantize_q8_0(raw_data, element_count)
+            let dequantized = dequantize_q8_0_ggml(raw_data, element_count)
                 .map_err(|e| RunnerError::Dequant(tensor.name.clone(), e.to_string()))?;
             Ok(dequantized
                 .into_iter()
@@ -231,149 +232,6 @@ fn dequantize_tensor(tensor: &GgufTensorInfo, raw_data: &[u8]) -> Result<Vec<u8>
             tensor.dtype, tensor.name
         )))),
     }
-}
-
-// ── Dequantization implementations ───────────────────────────────────
-
-/// Dequantize Q4_0 data to f32.
-///
-/// Q4_0 block: 32 elements, 18 bytes (2-byte f16 scale + 16 bytes quantized, nibble-packed).
-/// dequantized = scale * (q - 8)
-fn dequantize_q4_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
-    let num_full_blocks = element_count / 32;
-    let remaining = element_count % 32;
-    let expected_size = num_full_blocks * 18
-        + if remaining > 0 {
-            2 + remaining.div_ceil(2)
-        } else {
-            0
-        };
-
-    if data.len() < expected_size {
-        return Err(RunnerError::Internal(format!(
-            "Q4_0 data too small: got {} bytes, need {}",
-            data.len(),
-            expected_size
-        )));
-    }
-
-    let mut result = Vec::with_capacity(element_count);
-
-    for block in 0..num_full_blocks {
-        let base = block * 18;
-        let scale = f16_to_f32(&data[base..base + 2]);
-
-        for i in 0..32usize {
-            if result.len() >= element_count {
-                break;
-            }
-            let nibble = (data[base + 2 + i / 2] >> (4 * (i & 1))) & 0x0F;
-            let q = nibble as i32 - 8;
-            result.push(scale * q as f32);
-        }
-    }
-
-    if remaining > 0 {
-        let base = num_full_blocks * 18;
-        let scale = f16_to_f32(&data[base..base + 2]);
-
-        let elems_in_block = remaining.min(32);
-        for i in 0..elems_in_block {
-            let nibble = (data[base + 2 + i / 2] >> (4 * (i & 1))) & 0x0F;
-            let q = nibble as i32 - 8;
-            result.push(scale * q as f32);
-        }
-    }
-
-    Ok(result)
-}
-
-/// Dequantize Q4_1 data to f32.
-///
-/// Q4_1 block: 32 elements, 20 bytes (2×f16 scale/min + 16 bytes quantized).
-/// dequantized = scale * q + min (q is unsigned 0-15, no offset)
-fn dequantize_q4_1(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
-    let num_full_blocks = element_count / 32;
-    let remaining = element_count % 32;
-    let expected_size = num_full_blocks * 20
-        + if remaining > 0 {
-            4 + remaining.div_ceil(2)
-        } else {
-            0
-        };
-
-    if data.len() < expected_size {
-        return Err(RunnerError::Internal(format!(
-            "Q4_1 data too small: got {} bytes, need {}",
-            data.len(),
-            expected_size
-        )));
-    }
-
-    let mut result = Vec::with_capacity(element_count);
-
-    for block in 0..num_full_blocks {
-        let base = block * 20;
-        let scale = f16_to_f32(&data[base..base + 2]);
-        let min = f16_to_f32(&data[base + 2..base + 4]);
-
-        for i in 0..32usize {
-            if result.len() >= element_count {
-                break;
-            }
-            let nibble = (data[base + 4 + i / 2] >> (4 * (i & 1))) & 0x0F;
-            let q = nibble as f32;
-            result.push(scale * q + min);
-        }
-    }
-
-    if remaining > 0 {
-        let base = num_full_blocks * 20;
-        let scale = f16_to_f32(&data[base..base + 2]);
-        let min = f16_to_f32(&data[base + 2..base + 4]);
-
-        let elems_in_block = remaining.min(32);
-        for i in 0..elems_in_block {
-            let nibble = (data[base + 4 + i / 2] >> (4 * (i & 1))) & 0x0F;
-            let q = nibble as f32;
-            result.push(scale * q + min);
-        }
-    }
-
-    Ok(result)
-}
-
-/// Dequantize Q8_0 data to f32.
-///
-/// Q8_0 block: 32 elements, 34 bytes (2 bytes scale + 32 bytes int8 quantized).
-/// dequantized = scale * quantized_value
-fn dequantize_q8_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
-    let num_blocks = element_count.div_ceil(32);
-    let expected_size = num_blocks * 34;
-
-    if data.len() < expected_size {
-        return Err(RunnerError::Internal(format!(
-            "Q8_0 data too small: got {} bytes, need {}",
-            data.len(), expected_size
-        )));
-    }
-
-    let mut result = Vec::with_capacity(element_count);
-
-    for block in 0..num_blocks {
-        let base = block * 34;
-        let scale = f16_to_f32(&data[base..base + 2]);
-
-        for i in 0..32usize {
-            if result.len() >= element_count {
-                break;
-            }
-            let q = data[base + 2 + i] as i8 as f32;
-            result.push(scale * q);
-        }
-    }
-
-    Ok(result)
 }
 
 // ── K-family dequantization implementations ─────────────────────────

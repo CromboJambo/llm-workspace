@@ -4,6 +4,7 @@
 //! Interface boundary: consumes WeightManifest from safetensors, emits InferenceResponse to guard.
 
 pub mod cuda_runtime;
+pub mod dequantize;
 pub mod device;
 pub mod device_discovery;
 pub mod error;
