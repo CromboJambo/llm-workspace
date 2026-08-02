@@ -353,9 +353,8 @@ fn dequantize_q8_0(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
 
     if data.len() < expected_size {
         return Err(RunnerError::Internal(format!(
-            "Q8_0 data too small: got {} bytes",
-            data.len(),
-            expected_size
+            "Q8_0 data too small: got {} bytes, need {}",
+            data.len(), expected_size
         )));
     }
 
@@ -553,7 +552,7 @@ fn dequantize_q3_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         for i in 0..16usize {
             let q3_val = ((q3[i / 2] >> (4 * (i % 2))) & 0x07) as u8;
             let mask_bit = (mask >> i) & 1;
-            let q = q3_val - (((mask_bit as i32) << 2) | ((mask_bit as i32) << 1));
+            let q = q3_val as i32 - (((mask_bit as i32) << 2) | ((mask_bit as i32) << 1));
             let scale = d * k_scale[i / 4] + d_min;
             result.push(scale);
         }
@@ -606,7 +605,7 @@ fn dequantize_q4_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
             let lo = (q4_0[i / 4] >> (4 * (i % 4))) & 0x0F;
             let hi = ((q4_h[i / 8] >> (i % 8)) & 1) as u32;
 
-            let q = lo + hi * 16;
+            let q = lo as u32 + hi * 16;
             result.push(d * ((q as f32 - min) / scale));
         }
         offset += 19;
@@ -616,6 +615,9 @@ fn dequantize_q4_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         let d = f16_to_f32(&data[offset..offset + 2]);
         let min = f16_to_f32(&data[offset + 2..offset + 4]);
         let scale = data[offset + 4] as f32;
+
+        // q4_0: 12 bytes (32 nibbles, 4 per byte) — need at least remaining.min(8) bytes
+        let q4_0 = &data[offset + 5..offset + 5 + remaining.min(8)];
 
         for i in 0..remaining {
             let lo = (q4_0[i / 4] >> (4 * (i % 4))) & 0x0F;
@@ -676,9 +678,13 @@ fn dequantize_q5_k(data: &[u8], element_count: usize) -> Result<Vec<f32>> {
         let min = f16_to_f32(&data[offset + 2..offset + 4]);
         let scale = data[offset + 4] as f32;
 
+        // q5_lo: 8 bytes (low nibbles for all 16 elements) — need at least remaining.min(8) bytes
+        let q5_lo = &data[offset + 5..offset + 5 + remaining.min(8)];
+        let q5_h = data[offset + 9];
+
         for i in 0..remaining {
             let lo = (q5_lo[i / 4] >> (4 * (i % 4))) & 0x0F;
-            let hi = ((q5_h[i / 8] >> (i % 8)) & 1) as i32;
+            let hi = ((q5_h >> i) & 1) as i32;
 
             let q = lo as i32 + hi * 16;
             result.push(d * ((q as f32 - min) / scale));
