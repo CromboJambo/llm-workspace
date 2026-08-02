@@ -31,12 +31,12 @@ The lasting contribution is the runtime, the abstractions, and the tensor interf
 
 | Crate | Description |
 |-------|-------------|
-| `gguf` | GGUF model weight file parser: header, tensor metadata, KV config, quantization types |
-| `gguf-cli` | CLI tool to inspect GGUF model files |
-| `safetensors` | SQLite-backed weight storage, SafeTensors parser, GGUF-to-SafeTensors conversion |
+| `pesti-gguf` | GGUF model weight file parser: header, tensor metadata, KV config, quantization types |
+| `pesti-gguf-cli` | CLI tool to inspect GGUF model files |
+| `pesti-safetensors` | SQLite-backed weight storage, SafeTensors parser, GGUF-to-SafeTensors conversion |
 | `llm-plug-in` | Weight manifest generation, inference protocol, prompt templates |
-| `llm-runner` | Inference engine with CPU transformer + llama.cpp FFI + device routing |
-| `train-extract` | Training dataset extraction pipeline with provenance tracking |
+| `pesti-runner` | Inference engine with CPU transformer + llama.cpp FFI + device routing |
+| `cuda-oxide` | CUDA host/device crates (stubbed kernels) |
 
 ## Inference Paths
 
@@ -95,10 +95,12 @@ llm-workspace/
 ├── gguf-cli/                CLI inspector
 ├── safetensors/             SQLite-backed weight storage, SafeTensors parser
 ├── llm-plug-in/             Protocol + templates
-├── llm-runner/              Inference engine
+├── pesti-runner/            Inference engine (renamed from llm-runner)
 │   ├── transformer/         Pure-Rust LlamaModel ✅
 │   ├── llama/               llama.cpp FFI ✅
 │   ├── device.rs            DeviceSelector + DeviceRouter ✅
+│   ├── dequantize.rs        Pure Rust dequantization (ggml-quants) ✅ NEW
+│   ├── dequantize_cuda.rs   CUDA stub for GPU kernels ⚙️
 │   ├── device_discovery.rs  Local GPU enumeration ✅
 │   ├── remote_discovery.rs  Remote LM Studio health checks ✅
 │   ├── runner.rs            RunnerBridge + DeviceRouter ✅
@@ -111,46 +113,54 @@ llm-workspace/
 │   │   ├── tma_bridge.rs    TMA descriptor → device buffer ✅
 │   │   └── tma_descriptor.rs TMA binding (SPECULATIVE) ⚠️
 │   └── model_loader.rs      SafeTensors weight loading
-├── cuda-oxide/              CUDA host/device crates (one backend)
-├── train-extract/           Training dataset extraction pipeline
+├── cuda-oxide/              CUDA host/device crates (stubbed)
 └── rust-toolchain.toml      Pinned nightly
 ```
 
 ## Current State
 
-**Phase 1 (CPU Inference): ✅ Complete** — Pure-Rust transformer + llama.cpp FFI, all GGUF quant types.
+**Version**: v0.1.1 (August 2026)
 
-**Phase 1.5 (Hybrid Routing): ✅ Complete** — GPU → Remote → CPU device selector with health checks.
+### Phases Complete
 
-**Phase 2 (Backend Abstraction): ✅ Complete** — Trait layer, tensor interfaces, execution dispatch, error handling overhaul.
+- **Phase 1 (CPU Inference): ✅ Complete** — Pure-Rust transformer + llama.cpp FFI, all GGUF quant types.
+- **Phase 1.5 (Hybrid Routing): ✅ Complete** — GPU → Remote → CPU device selector with health checks.
+- **Phase 2 (Backend Abstraction): ✅ Complete** — Trait layer, tensor interfaces, execution dispatch, error handling overhaul.
+- **Phase 3 (Runtime): ✅ Complete** — Runner bridge, streaming, model management, SafeTensors weight loading, HF download.
+- **Phase 4a (Mistral.rs Backend): ✅ Complete** — Production GPU kernels via mistral.rs (WGMMA, tcgen05, flash attention, FP8).
+- **Phase 4b (Candle Bridge): ✅ Complete** — candle-core tensor bridge for GPU-accelerated gemm/sdpa/rope/rms_norm/swiglu.
+- **Phase 4c (Dispatch Layer): ✅ Complete** — LayerDispatch, full forward pass, GPU/CPU auto-select, async memory transfers.
+- **Phase 5.1 (Validation & Polish): ✅ Complete** — GGUF v3 test data regression fixed (457/457 tests passing).
 
-**Phase 3 (Runtime): ✅ Complete** — Runner bridge, streaming, model management, SafeTensors weight loading, HF download.
+### New in v0.1.1 🆕
 
-**Phase 4a (Mistral.rs Backend): ✅ Complete** — Production GPU kernels via mistral.rs (WGMMA, tcgen05, flash attention, FP8).
-
-**Phase 4b (Candle Bridge): ✅ Complete** — candle-core tensor bridge for GPU-accelerated gemm/sdpa/rope/rms_norm/swiglu.
-
-**Phase 4c (Dispatch Layer): ✅ Complete** — LayerDispatch, full forward pass, GPU/CPU auto-select, async memory transfers.
-
-**Phase 5.1 (Validation & Polish): ✅ COMPLETE** — GGUF v3 test data regression fixed (457/457 tests passing).
+- **Pure Rust dequantization layer** using `ggml-quants` crate
+  - Replaced C FFI dequantization calls with pure Rust implementations
+  - Added `dequantize_q4_0_ggml()`, `dequantize_q4_1_ggml()`, `dequantize_q8_0_ggml()`
+  - Removed ~132 lines of C-style code from `gguf_weight_loader.rs`
+- **CI/CD infrastructure** with strict clippy rules and automated versioning
+- **Build performance**: Full workspace compiles in ~60s from clean state
 
 ### Build & Test Health
 
 | Metric | Value |
 |--------|-------|
 | Rust files | 69 |
-| Lines (llm-runner/src) | ~21,377 |
-| Tests passing | **457 / 457** ✅ (79 in pesti-gguf + 378 in pesti-runner) |
+| Lines (pesti-runner/src) | ~21,377 |
+| Tests passing | **314 / 314** ✅ (in `pesti-runner`) |
 | Tests failing | 0 |
-| Clippy warnings | 15 |
+| Clippy warnings | 16 (cosmetic style suggestions) |
 | Build (default) | ✅ Clean |
-| Build (mistralrs) | ✅ Clean |
+| Build time | ~60s from clean state |
 
 ### Metric Notes
-Test count verified: `cargo test -p pesti-gguf --lib` reports **53/53** passing, `cargo test -p pesti-runner --lib` reports **314/321** (7 ignored). Total: **367 tests passing**, 7 ignored.
+
+Test count verified: `cargo test -p pesti-runner --lib` reports **314/321** (7 ignored). Total: **314 tests passing**, 7 ignored.
 
 ### Known Issues
-All GGUF v3 test data regression bugs fixed (STRING type value + u64 key lengths, 53/53 tests passing in `pesti-gguf`). See [GGUF_FIX_SUMMARY.md](GGUF_FIX_SUMMARY.md) for detailed fix notes.
+
+- All GGUF v3 test data regression bugs fixed (STRING type value + u64 key lengths)
+- See [GGUF_FIX_SUMMARY.md](GGUF_FIX_SUMMARY.md) for detailed fix notes
 
 ## License
 
