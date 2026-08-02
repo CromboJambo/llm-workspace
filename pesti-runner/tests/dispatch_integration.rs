@@ -1,4 +1,4 @@
-//.//! Integration tests for GPU dispatch system.
+//! Integration tests for GPU dispatch system.
 
 use pesti_gguf::{GgufKvPair, GgufKvValue, GgufValueType};
 use pesti_runner::kernel::dispatch::{DispatchContext, LinearDispatch};
@@ -224,7 +224,7 @@ fn test_dispatch_vs_cpu_output() {
     let dir = tempdir().unwrap();
     let gguf_path = dir.path().join("test.gguf");
     make_test_gguf(&gguf_path);
-    
+
     let debug_path = std::path::PathBuf::from("/tmp/debug_test.gguf");
     if let Err(_) = std::fs::copy(&gguf_path, &debug_path) {
         println!("Saved test GGUF to {:?}", debug_path);
@@ -269,10 +269,79 @@ fn test_dispatch_vs_cpu_output() {
 }
 
 #[test]
-    #[ignore] // Needs parser fix for real GGUF files
+fn test_dispatch_conformance_real_model() {
+    // Find a real GGUF model on disk
+    let model_path = std::env::vars()
+        .find(|(k, _)| k == "HOME")
+        .map(|(_, home)| format!("{}/.lmstudio/.internal/bundled-models/nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", home))
+        .unwrap_or_else(|| "~/.lmstudio/...".to_string());
+
+    let path = std::path::Path::new(&model_path);
+    
+    if !path.exists() {
+        println!("Skipping conformance test: no real GGUF model found at {}", model_path);
+        return;
+    }
+
+    println!("\n=== Conformance: dispatch vs CPU baseline ===");
+    println!("Model: {}", model_path);
+
+    // Load CPU baseline
+    let mut cpu_model = CpuModel::load_gguf(path).expect("Failed to load GGUF");
+
+    // Load dispatch model
+    let mut dispatch_model = CpuModel::load_gguf(path).expect("Failed to load GGUF");
+    dispatch_model.enable_dispatch();
+
+    assert!(dispatch_model.can_use_dispatch(), "Dispatch should be enabled");
+
+    // Test with token 0 (BOS)
+    let token: u32 = 0;
+
+    // CPU path
+    let cpu_logits = cpu_model.decode(token).expect("CPU decode failed");
+
+    // Dispatch path
+    let dispatch_hidden = dispatch_model.llama_model.embed(token, 0).expect("Embed failed");
+    let dispatch_hidden = dispatch_model.forward_with_dispatch(&dispatch_hidden, 0).expect("Forward failed");
+    let dispatch_logits = dispatch_model.apply_output_head(&dispatch_hidden).expect("Output head failed");
+
+    // Compare with tolerance (1e-2 accounts for f16 precision loss)
+    if cpu_logits.len() != dispatch_logits.len() {
+        panic!(
+            "Length mismatch: CPU len={} vs Dispatch len={}",
+            cpu_logits.len(), dispatch_logits.len()
+        );
+    }
+
+    let mut max_diff = 0.0f32;
+    let mut max_idx = 0usize;
+
+    for (i, (a, b)) in cpu_logits.iter().zip(dispatch_logits.iter()).enumerate() {
+        let diff = (a - b).abs();
+        if diff > max_diff {
+            max_diff = diff;
+            max_idx = i;
+        }
+    }
+
+    println!("Max abs diff: {:.6e} at index {}", max_diff, max_idx);
+    println!(
+        "CPU[{}]={:.8}, Dispatch[{}]={:.8}",
+        max_idx, cpu_logits[max_idx], max_idx, dispatch_logits[max_idx]
+    );
+
+    if max_diff > 1e-2 {
+        panic!("Conformance failed: max diff {:.6e} exceeds tolerance 1e-2", max_diff);
+    }
+
+    println!("✅ CPU and dispatch outputs match within tolerance");
+}
+
+#[test]
 fn test_dispatch_cpu_fallback() {
     let dir = tempdir().unwrap();
-    let gguf_path = dir.path().join("test_dispatch_fallback.gguf");
+    let gguf_path = dir.path().join("test.gguf");
     make_test_gguf(&gguf_path);
 
     let mut model = CpuModel::load_gguf(&gguf_path).expect("Failed to load GGUF");
