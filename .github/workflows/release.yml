@@ -25,6 +25,17 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
       
+      - name: Install Rust toolchain (nightly for cuda-oxide)
+        uses: dtolnay/rust-toolchain@nightly
+      
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release"
+      
+      - name: Verify build with nightly
+        run: cargo check --workspace
+      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
