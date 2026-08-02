@@ -26,7 +26,6 @@ pesti-conformance/test-corpus/tiny-model.gguf
 pesti-gguf/src/parser.rs.bak
 pesti-gguf/src/parser.rs.fixed
 pesti-gguf/src/string_case.tmp
-conformance-corpus/
 lms-models/
 test_real_file_bin
 tarpaulin-report.json
